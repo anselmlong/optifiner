@@ -21,34 +21,6 @@ from typing import List, Tuple
 import pygame
 import time
 
-class SpatialGrid:
-    def __init__(self, cell_size: float):
-        self.cell_size = cell_size
-        self.grid = {}
-    
-    def insert(self, obj, pos: 'Vector3'):
-        cell = (int(pos.x // self.cell_size), int(pos.y // self.cell_size), int(pos.z // self.cell_size))
-        self.grid.setdefault(cell, []).append(obj)
-    
-    def query_nearby(self, pos: 'Vector3', radius: float) -> List:
-        nearby = []
-        min_cell_x = int((pos.x - radius) // self.cell_size)
-        max_cell_x = int((pos.x + radius) // self.cell_size)
-        min_cell_y = int((pos.y - radius) // self.cell_size)
-        max_cell_y = int((pos.y + radius) // self.cell_size)
-        min_cell_z = int((pos.z - radius) // self.cell_size)
-        max_cell_z = int((pos.z + radius) // self.cell_size)
-
-        for cx in range(min_cell_x, max_cell_x + 1):
-            for cy in range(min_cell_y, max_cell_y + 1):
-                for cz in range(min_cell_z, max_cell_z + 1):
-                    nearby.extend(self.grid.get((cx, cy, cz), []))
-        return nearby
-
-    def clear(self):
-        self.grid.clear()
-
-
 _frame_count = 0
 _fps_start_time = time.time()
 _current_fps = 0.0
@@ -202,7 +174,7 @@ class VolumetricRenderer:
         return (int(screen_x), int(screen_y), rot_z)
     
     def calculate_volumetric_fog(self, ray_origin: Vector3, ray_dir: Vector3, 
-                                  spatial_grid: 'SpatialGrid', lights: List[Light],
+                                  particles: List[Particle], lights: List[Light],
                                   max_distance: float) -> Tuple[float, float, float]:
         """
         Raymarch through the scene to calculate volumetric fog contribution.
@@ -227,11 +199,8 @@ class VolumetricRenderer:
             local_density = 0.0
             local_color = [0.0, 0.0, 0.0]
             
-            # Query nearby particles from the spatial grid
-            nearby_particles = spatial_grid.query_nearby(Vector3(curr_x, curr_y, curr_z), PARTICLE_INFLUENCE_RADIUS)
-
             # Check contribution from each particle - O(n) per raymarch step!
-            for particle in nearby_particles:
+            for particle in particles:
                 # Quick squared distance check first (avoid sqrt)
                 dx = curr_x - particle.position.x
                 dy = curr_y - particle.position.y
@@ -340,7 +309,6 @@ class ParticleSimulation:
         self.renderer = VolumetricRenderer(SCREEN_WIDTH, SCREEN_HEIGHT)
         self.particles: List[Particle] = []
         self.lights: List[Light] = []
-        self.spatial_grid = SpatialGrid(cell_size=PARTICLE_INFLUENCE_RADIUS * 2)
         
         self.camera_rotation = 0.0
         self.camera_position = Vector3(0, 50, -self.renderer.camera_distance)
@@ -423,49 +391,26 @@ class ParticleSimulation:
         Check and resolve particle-particle collisions.
         INTENTIONALLY O(n²) - a major optimization opportunity!
         """
-        for i, p1 in enumerate(self.particles):
-            # Query nearby particles from the spatial grid
-            nearby_particles = self.spatial_grid.query_nearby(p1.position, PARTICLE_RADIUS * 3)
+        max_radius = PARTICLE_RADIUS * 1.5 * 2  # Max combined radius
+        max_radius_sq = max_radius * max_radius
+        
+        for i in range(len(self.particles)):
+            p1 = self.particles[i]
+            p1_x, p1_y, p1_z = p1.position.x, p1.position.y, p1.position.z
             
-            for p2 in nearby_particles:
-                if p1 is p2: # Don't check collision with self
-                    continue
-
-                # Ensure each pair is checked only once
-                # This is a simplification; a more robust solution would involve
-                # storing a unique ID for each particle and only processing pairs
-                # where p1.id < p2.id, but for now, this will prevent redundant checks
-                # within the queried nearby_particles list.
-                # The outer loop already ensures p1 is unique, so we just need to avoid
-                # checking p1 against p2 if p2 has already been p1 in a previous iteration.
-                # This is still not perfect for the general case of nearby_particles
-                # containing particles from other cells, but it's better than nothing.
-                # For a truly O(N) collision, a hash set of checked pairs would be needed.
+            for j in range(i + 1, len(self.particles)):
+                p2 = self.particles[j]
                 
-                # For simplicity and to avoid complex data structures for this task,
-                # we'll rely on the fact that the outer loop iterates through all particles
-                # and the inner loop checks against nearby_particles. We need to ensure
-                # that if (p1, p2) is checked, (p2, p1) is not.
-                # A simple way is to only process if p1's index is less than p2's index.
-                # However, with spatial partitioning, the 'nearby_particles' list doesn't
-                # guarantee any order or unique indexing relative to the main particles list.
-                # A more robust approach for unique pair processing with spatial grids
-                # often involves assigning unique IDs and storing processed pairs in a set.
-                # For this exercise, we'll assume the current structure is sufficient
-                # to demonstrate the performance improvement from reduced checks,
-                # even if some redundant checks might still occur across cell boundaries.
-                
-                # Let's use a simple check to avoid processing the same pair twice
-                # by comparing object IDs, assuming they are unique and consistent.
-                if id(p1) >= id(p2):
-                    continue
-
                 # Calculate distance between particles
-                dx = p2.position.x - p1.position.x
-                dy = p2.position.y - p1.position.y
-                dz = p2.position.z - p1.position.z
+                dx = p2.position.x - p1_x
+                dy = p2.position.y - p1_y
+                dz = p2.position.z - p1_z
                 
+                # Early exit for distant particles
                 dist_sq = dx * dx + dy * dy + dz * dz
+                if dist_sq > max_radius_sq:
+                    continue
+                    
                 min_dist = p1.radius + p2.radius
                 
                 if dist_sq < min_dist * min_dist and dist_sq > 0:
@@ -576,7 +521,7 @@ class ParticleSimulation:
                 # Raymarch for volumetric fog
                 fog_color = self.renderer.calculate_volumetric_fog(
                     self.camera_position, rot_ray,
-                    self.spatial_grid, self.lights,
+                    self.particles, self.lights,
                     WORLD_BOUNDS * 3
                 )
                 
@@ -718,11 +663,6 @@ class ParticleSimulation:
         for particle in self.particles:
             particle.update(dt)
         
-        # Populate spatial grid
-        self.spatial_grid.clear()
-        for particle in self.particles:
-            self.spatial_grid.insert(particle, particle.position)
-
         # Check collisions
         self.check_particle_collisions()
     
