@@ -2,6 +2,7 @@
 
 import os
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -74,8 +75,9 @@ class WorkerConfig(BaseModel):
     agent_type: AgentType = AgentType.GENERAL
     max_iterations: int = 10
 
-    # Workspace settings
-    workspace_root: str = "/app"
+    # Workspace settings - real path, no emulation
+    # This will be set dynamically when a workspace is created
+    workspace_root: str = ""
 
     # Execution settings
     execution_timeout: int = 60
@@ -89,6 +91,9 @@ class WorkerConfig(BaseModel):
         temperature = float(os.getenv("MODEL_TEMPERATURE", "0.0"))
         max_tokens = int(os.getenv("MODEL_MAX_TOKENS", "8192"))
 
+        # Workspace root comes from WORKSPACE_ROOT env or will be set dynamically
+        workspace_root = os.getenv("WORKSPACE_ROOT", "")
+
         return cls(
             model=ModelConfig(
                 provider=ModelProvider(provider),
@@ -98,7 +103,7 @@ class WorkerConfig(BaseModel):
             ),
             agent_type=AgentType(os.getenv("AGENT_TYPE", "general")),
             max_iterations=int(os.getenv("MAX_ITERATIONS", "10")),
-            workspace_root=os.getenv("WORKSPACE_ROOT", "/app"),
+            workspace_root=workspace_root,
             execution_timeout=int(os.getenv("EXECUTION_TIMEOUT", "60")),
             benchmark_timeout=int(os.getenv("BENCHMARK_TIMEOUT", "30")),
         )

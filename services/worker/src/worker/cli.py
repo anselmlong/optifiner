@@ -2,11 +2,13 @@
 """CLI for testing the evolution agents.
 
 This CLI runs multiple agents on a target repository, each trying to improve
-the codebase. Improvements are measured by an evaluator script that returns
+the codebase. Improvements are measured by a benchmark script that returns
 a score.
 
 All execution happens on the host machine with workspace isolation
 (/tmp/optifiner_workspaces/) to provide safe sandboxing without containers.
+
+The benchmark script is always at: <workspace_root>/optifiner_benchmark.py
 """
 
 import json
@@ -29,7 +31,7 @@ from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 
 from worker.observability import AgentObserver, set_observer
-from worker.workspace import WorkspaceManager, set_workspace, isolated_workspace
+from worker.workspace import WorkspaceManager, set_workspace, isolated_workspace, BENCHMARK_SCRIPT_NAME
 from worker.evaluator import get_evaluator, evaluate as queue_evaluate
 
 # Set up console for rich output
@@ -411,7 +413,7 @@ def run_benchmark_builder_cli(
     max_iterations: int = 30,
     verbosity: int = 1,
 ) -> tuple[bool, str, Path | None]:
-    """Run the benchmark builder agent to create run_validator.py.
+    """Run the benchmark builder agent to create optifiner_benchmark.py.
     
     Args:
         repository_path: Path to the target repository.
@@ -421,7 +423,7 @@ def run_benchmark_builder_cli(
         verbosity: Verbosity level.
         
     Returns:
-        Tuple of (success, message, evaluator_path).
+        Tuple of (success, message, benchmark_path).
     """
     from worker.benchmark_builder import run_benchmark_builder
     from worker.config import ModelConfig, ModelProvider
@@ -430,7 +432,7 @@ def run_benchmark_builder_cli(
     console.print(f"[dim]This agent will:[/dim]")
     console.print(f"[dim]  1. Analyze the codebase[/dim]")
     console.print(f"[dim]  2. Modify files to expose metrics (FPS, timing, etc.) if needed[/dim]")
-    console.print(f"[dim]  3. Create run_validator.py benchmark script[/dim]")
+    console.print(f"[dim]  3. Create {BENCHMARK_SCRIPT_NAME} benchmark script[/dim]")
     console.print(f"[dim]  4. Test and iterate until it works[/dim]")
     console.print(f"[dim]All changes become the baseline for evolution agents.[/dim]")
     
@@ -461,7 +463,7 @@ def run_benchmark_builder_cli(
         )
         
         if success:
-            # Copy ALL changes back to the original repo (not just run_validator.py)
+            # Copy ALL changes back to the original repo (not just the benchmark script)
             # The benchmark builder may have modified the codebase to expose metrics
             # These modifications become the baseline for evolution agents
             console.print(f"[dim]Copying all modifications back to repository...[/dim]")
@@ -499,12 +501,12 @@ def run_benchmark_builder_cli(
                 if len(modified_files) > 10:
                     console.print(f"[dim]  ... and {len(modified_files) - 10} more[/dim]")
             
-            validator_path = repository_path / "run_validator.py"
-            if validator_path.exists():
-                console.print(f"[green]✓ Benchmark script ready at {validator_path}[/green]")
-                return True, message, validator_path
+            benchmark_path = repository_path / BENCHMARK_SCRIPT_NAME
+            if benchmark_path.exists():
+                console.print(f"[green]✓ Benchmark script ready at {benchmark_path}[/green]")
+                return True, message, benchmark_path
             else:
-                console.print(f"[red]✗ run_validator.py not created[/red]")
+                console.print(f"[red]✗ {BENCHMARK_SCRIPT_NAME} not created[/red]")
                 return False, "Benchmark script was not created", None
         
         console.print(f"[red]✗ Benchmark builder failed: {message}[/red]")
@@ -540,7 +542,7 @@ def run_benchmark_builder_cli(
 @click.option("--early-stop/--no-early-stop", default=True,
               help="Stop generation early when improvement found (default: enabled)")
 @click.option("--build-benchmark", "-b", is_flag=True,
-              help="Run benchmark builder agent to create evaluator script")
+              help="Run benchmark builder agent to create optifiner_benchmark.py")
 def main(
     repository: str,
     evaluator: str | None,
@@ -562,15 +564,15 @@ def main(
 
     REPOSITORY: Path to the target repository to evolve.
 
-    The evaluator script should output a JSON object with a "score" field,
-    or just a number. Higher scores are better.
+    The benchmark script must output JSON with these required fields:
+        - score: Primary metric value (number, non-null)
+        - metric_name: Name of the metric (e.g., "FPS", "throughput")
+        - test_gate: Boolean, must be true for valid run
 
-    Example evaluator output:
-        {"score": 60.5, "metrics": {"fps": 60.5}}
-    or just:
-        60.5
+    Example output:
+        {"score": 60.5, "metric_name": "FPS", "test_gate": true, "metrics": {...}}
 
-    If no evaluator is provided, use --build-benchmark to automatically
+    If no benchmark exists, use --build-benchmark to automatically
     create one using the Benchmark Builder Agent.
 
     VERBOSITY LEVELS:
@@ -602,29 +604,50 @@ def main(
         if not evaluator_path.exists():
             console.print(f"[red]Error: Evaluator not found: {evaluator_path}[/red]")
             sys.exit(1)
-    elif build_benchmark or not (repository_path / "run_validator.py").exists():
-        # Need to build benchmark
-        if not build_benchmark:
-            console.print("[yellow]No evaluator provided and no run_validator.py found.[/yellow]")
-            console.print("[yellow]Running benchmark builder agent to create one...[/yellow]")
-        
-        success, message, created_path = run_benchmark_builder_cli(
-            repository_path,
-            model_provider,
-            model_name,
-            max_iterations=30,
-            verbosity=verbosity,
-        )
-        
-        if not success:
-            console.print(f"[red]Failed to create benchmark: {message}[/red]")
-            sys.exit(1)
-        
-        evaluator_path = created_path
     else:
-        # Use existing run_validator.py
-        evaluator_path = repository_path / "run_validator.py"
-        console.print(f"[dim]Using existing evaluator: {evaluator_path}[/dim]")
+        # Check for benchmark script - try new name first, then legacy name
+        benchmark_path = repository_path / BENCHMARK_SCRIPT_NAME
+        legacy_path = repository_path / "run_validator.py"
+        
+        if benchmark_path.exists():
+            evaluator_path = benchmark_path
+            console.print(f"[dim]Using existing benchmark: {evaluator_path}[/dim]")
+        elif legacy_path.exists():
+            evaluator_path = legacy_path
+            console.print(f"[dim]Using legacy benchmark: {evaluator_path}[/dim]")
+        elif build_benchmark:
+            # Explicitly requested to build benchmark
+            success, message, created_path = run_benchmark_builder_cli(
+                repository_path,
+                model_provider,
+                model_name,
+                max_iterations=30,
+                verbosity=verbosity,
+            )
+            
+            if not success:
+                console.print(f"[red]Failed to create benchmark: {message}[/red]")
+                sys.exit(1)
+            
+            evaluator_path = created_path
+        else:
+            # No benchmark found, need to build one
+            console.print(f"[yellow]No benchmark found ({BENCHMARK_SCRIPT_NAME} or run_validator.py).[/yellow]")
+            console.print("[yellow]Running benchmark builder agent to create one...[/yellow]")
+            
+            success, message, created_path = run_benchmark_builder_cli(
+                repository_path,
+                model_provider,
+                model_name,
+                max_iterations=30,
+                verbosity=verbosity,
+            )
+            
+            if not success:
+                console.print(f"[red]Failed to create benchmark: {message}[/red]")
+                sys.exit(1)
+            
+            evaluator_path = created_path
 
     if evaluator_path is None:
         console.print("[red]Error: No evaluator available[/red]")

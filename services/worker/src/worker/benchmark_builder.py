@@ -1,10 +1,12 @@
 """Benchmark Builder Agent - creates benchmark scripts for codebases.
 
 This agent analyzes a target codebase and generates a benchmark script
-(run_validator.py) that:
+(optifiner_benchmark.py) that:
 1. Returns a score (primary metric like FPS, throughput, etc.)
 2. Contains tests to ensure the application works correctly
 3. Exposes metrics that would otherwise be hidden (FPS, memory usage, etc.)
+
+The benchmark script is ALWAYS at: <workspace_root>/optifiner_benchmark.py
 
 The agent can:
 - Read and analyze the codebase
@@ -30,21 +32,34 @@ from pydantic import BaseModel, Field
 from worker.config import ModelConfig, WorkerConfig, get_llm
 from worker.observability import AgentObserver, get_observer
 from worker.state import AgentState
-from worker.workspace import WorkspaceManager, set_workspace, get_workspace
+from worker.workspace import WorkspaceManager, set_workspace, get_workspace, BENCHMARK_SCRIPT_NAME
 from worker.tools import get_benchmark_builder_tools
+from worker.tools.evaluate import run_benchmark_for_validation
 
 
 # System prompt for the benchmark builder agent
 BENCHMARK_BUILDER_PROMPT = '''You are an expert Benchmark Builder Agent. Your task is to analyze a codebase and create a comprehensive benchmark script.
 
 ## Your Goal
-Create a benchmark script at `/app/run_validator.py` that:
+Create a benchmark script at `{workspace_root}/optifiner_benchmark.py` that:
 1. **Returns a score** - The primary performance metric (FPS, throughput, latency inverse, etc.)
-2. **Contains functional tests** - Verifies the application works correctly
+2. **Contains functional tests** - Verifies the application works correctly (test_gate)
 3. **Exposes hidden metrics** - If necessary, MODIFY the codebase files to expose FPS, memory usage, or other metrics
 
+## CRITICAL: Benchmark Script Location
+The benchmark script MUST be written to this EXACT path:
+    {benchmark_path}
+
+This is a FIXED location. The evaluate tool will ONLY look for the script at this path.
+
+## CRITICAL: Testing the Benchmark
+- **DO NOT** run the benchmark script using `python` or `run_python_file` commands
+- **DO NOT** run it with `bash` or `run_bash` commands
+- **ALWAYS** use the `evaluate` tool to test your benchmark script
+- The evaluate tool knows where the benchmark is and handles execution correctly
+
 ## IMPORTANT: You CAN and SHOULD Edit Codebase Files
-You have FULL permission to edit any file in the codebase at `/app`. This is critical because:
+You have FULL permission to edit any file in the codebase. This is critical because:
 - Many applications don't expose performance metrics by default
 - You need to add instrumentation code to measure FPS, timing, memory, etc.
 - Your modifications become the BASELINE for optimization agents
@@ -94,16 +109,15 @@ while running:
 
 Then your benchmark script can import and call `get_fps()`.
 
-## Output Format
-Your benchmark script MUST output JSON to stdout with this format:
+## REQUIRED Output Format
+Your benchmark script MUST output JSON to stdout with this EXACT format:
+
 ```json
 {{
     "score": 60.5,
-    "passed": true,
-    "tests_passed": 5,
-    "tests_total": 5,
+    "metric_name": "FPS",
+    "test_gate": true,
     "metrics": {{
-        "fps": 60.5,
         "memory_mb": 128.5,
         "load_time_ms": 150
     }},
@@ -111,24 +125,31 @@ Your benchmark script MUST output JSON to stdout with this format:
 }}
 ```
 
-Required fields:
-- `score`: Primary benchmark score (higher is better)
-- `passed`: Boolean - whether all tests passed
+### Required Fields (ALL THREE ARE MANDATORY):
+- `score`: Primary benchmark score as a NUMBER (higher is better). Must NOT be null for success.
+- `metric_name`: STRING naming what the score measures (e.g., "FPS", "throughput", "benchmark_score")
+- `test_gate`: BOOLEAN - true if all tests pass, false otherwise. Must be true for success.
 
-Optional but recommended:
-- `tests_passed`, `tests_total`: Test statistics
-- `metrics`: Additional metrics dict
+### Optional Fields:
+- `metrics`: Object with additional metrics
 - `message`: Human-readable summary
+
+### SUCCESS CRITERIA:
+The benchmark is considered SUCCESSFUL when BOTH conditions are met:
+1. `test_gate` is `true`
+2. `score` is NOT null
+
+Once your benchmark passes both conditions, your job is complete and the code becomes the base for evolution agents.
 
 ## Workflow
 1. **Explore the codebase** using list_dir, read_file, grep, glob_search
 2. **Understand the application** - What does it do? How is it run? What metrics matter?
 3. **Identify what to measure** - FPS for games, throughput for servers, latency for APIs, etc.
 4. **MODIFY THE CODEBASE** to expose metrics if they're not already available
-5. **Write the benchmark script** at `/app/run_validator.py` that reads these metrics
-6. **Test the script** by running it with run_bash or run_python_file
+5. **Write the benchmark script** at `{benchmark_path}`
+6. **Test with evaluate tool** - Use the `evaluate` tool to test your script (NOT python/bash!)
 7. **Fix any errors** - Install dependencies, fix bugs, iterate until it works
-8. **Verify baseline** - Ensure the script runs successfully and returns valid output
+8. **Verify success** - Ensure evaluate shows: test_gate=PASSED and score is not null
 
 ## Important: Your Changes Are The Baseline
 After you're done, evolution agents will receive a COPY of this modified codebase.
@@ -145,7 +166,7 @@ Use run_bash to install any needed dependencies:
 The benchmark script should:
 - Accept `--quiet` flag to output only JSON (no other stdout)
 - Handle errors gracefully and return JSON even on failure
-- Be runnable from the repository root (`/app`)
+- Be runnable from the repository root
 - Complete within reasonable time (usually under 60 seconds)
 
 ## Available Tools
@@ -156,15 +177,16 @@ The benchmark script should:
 - `multi_edit`: Multiple edits to one file
 - `grep`: Search for patterns in files
 - `glob_search`: Find files by pattern
-- `run_bash`: Execute shell commands
-- `run_python`: Execute Python code
-- `run_python_file`: Run a Python file
+- `run_bash`: Execute shell commands (for pip install, etc. - NOT for running benchmark!)
+- `run_python`: Execute Python code (for testing pieces - NOT for running benchmark!)
+- `run_python_file`: Run a Python file (NOT for running benchmark!)
+- `evaluate`: Run the benchmark and get results (ALWAYS use this to test your benchmark!)
 
 ## Example Benchmark Script Structure
 
 ```python
 #!/usr/bin/env python3
-"""Benchmark and test script for [Application Name]."""
+"""Benchmark script for [Application Name]."""
 
 import json
 import sys
@@ -188,32 +210,36 @@ def run_tests():
 def measure_performance():
     """Measure the primary performance metric."""
     # ... measurement code ...
-    return score, metrics
+    return score, {{"additional_metric": value}}
 
 def main():
     quiet = "--quiet" in sys.argv
     
     try:
         tests_passed, tests_total = run_tests()
-        score, metrics = measure_performance()
+        score, extra_metrics = measure_performance()
         
         result = {{
             "score": score,
-            "passed": tests_passed == tests_total,
-            "tests_passed": tests_passed,
-            "tests_total": tests_total,
-            "metrics": metrics,
+            "metric_name": "FPS",  # or "throughput", "benchmark_score", etc.
+            "test_gate": tests_passed == tests_total,
+            "metrics": {{
+                "tests_passed": tests_passed,
+                "tests_total": tests_total,
+                **extra_metrics
+            }},
             "message": f"Score: {{score}}, Tests: {{tests_passed}}/{{tests_total}}"
         }}
         
         print(json.dumps(result))
-        sys.exit(0 if result["passed"] else 1)
+        sys.exit(0 if result["test_gate"] else 1)
         
     except Exception as e:
         result = {{
-            "score": 0,
-            "passed": False,
-            "error": str(e)
+            "score": None,
+            "metric_name": "error",
+            "test_gate": False,
+            "message": str(e)
         }}
         print(json.dumps(result))
         sys.exit(1)
@@ -222,11 +248,9 @@ if __name__ == "__main__":
     main()
 ```
 
-Now, explore the codebase at /app and create the benchmark script!
+Now, explore the codebase and create the benchmark script at {benchmark_path}!
+Remember: Use `evaluate` tool to test it, NOT python or bash commands!
 '''
-
-
-# Tools are imported from worker.tools.get_benchmark_builder_tools()
 
 
 def create_benchmark_builder_agent(
@@ -251,7 +275,13 @@ def create_benchmark_builder_agent(
         config.model = model_config
     
     obs = observer or get_observer()
-    tools = get_benchmark_builder_tools()  # From worker.tools
+    
+    # Get tools including evaluate for testing the benchmark
+    tools = get_benchmark_builder_tools()
+    
+    # Also add evaluate tool so agent can test the benchmark
+    from worker.tools.evaluate import evaluate
+    tools = tools + [evaluate]
     
     llm = get_llm(config.model)
     llm_with_tools = llm.bind_tools(tools)
@@ -262,7 +292,19 @@ def create_benchmark_builder_agent(
         """The main agent reasoning node."""
         nonlocal system_prompt_logged
         
-        system_prompt = BENCHMARK_BUILDER_PROMPT
+        # Get workspace info for the prompt
+        ws = get_workspace()
+        if ws:
+            workspace_root = str(ws.workspace_root)
+            benchmark_path = str(ws.benchmark_path)
+        else:
+            workspace_root = config.workspace_root
+            benchmark_path = f"{workspace_root}/{BENCHMARK_SCRIPT_NAME}"
+        
+        system_prompt = BENCHMARK_BUILDER_PROMPT.format(
+            workspace_root=workspace_root,
+            benchmark_path=benchmark_path,
+        )
         
         if obs and not system_prompt_logged:
             obs.on_system_prompt(system_prompt)
@@ -381,7 +423,7 @@ def run_benchmark_builder(
     model_config: ModelConfig | None = None,
     observer: AgentObserver | None = None,
 ) -> tuple[bool, str]:
-    """Run the benchmark builder agent to create run_validator.py.
+    """Run the benchmark builder agent to create optifiner_benchmark.py.
     
     Args:
         workspace: The workspace manager for the target codebase.
@@ -391,7 +433,7 @@ def run_benchmark_builder(
         
     Returns:
         Tuple of (success, message). Success is True if benchmark script was created
-        and runs successfully.
+        and passes validation (test_gate=True, score not null).
     """
     # Set up workspace context
     set_workspace(workspace)
@@ -400,7 +442,7 @@ def run_benchmark_builder(
     if model_config:
         config.model = model_config
     config.max_iterations = max_iterations
-    config.workspace_root = str(workspace.actual_root)
+    config.workspace_root = str(workspace.workspace_root)
     
     obs = observer or get_observer()
     agent = create_benchmark_builder_agent(config, observer=obs)
@@ -413,24 +455,30 @@ def run_benchmark_builder(
                 "model": f"{config.model.provider.value}/{config.model.model_name}",
                 "max_iterations": max_iterations,
                 "workspace": config.workspace_root,
+                "benchmark_path": str(workspace.benchmark_path),
             },
         )
     
-    task = """Analyze the codebase at /app and create a benchmark script at /app/run_validator.py.
+    task = f"""Analyze the codebase at {workspace.workspace_root} and create a benchmark script at {workspace.benchmark_path}.
 
-The script should:
-1. Run functional tests to verify the application works
-2. Measure performance (FPS, throughput, etc.)
-3. Output JSON with score, passed status, and metrics
+The script MUST output JSON with these REQUIRED fields:
+- score: The primary metric value (number, not null)
+- metric_name: Name of what score measures (e.g., "FPS", "throughput")
+- test_gate: Boolean, true if all tests pass
 
-After creating the script, run it to verify it works correctly. Fix any errors until it runs successfully.
+SUCCESS = test_gate is true AND score is not null.
+
+IMPORTANT:
+- Write the benchmark to: {workspace.benchmark_path}
+- Test it using the `evaluate` tool, NOT python/bash commands!
+- Keep iterating until evaluate shows: test_gate=PASSED and score is a number
 """
     
     initial_state = AgentState(
         messages=[HumanMessage(content=task)],
         task=task,
         task_type="benchmark_builder",
-        workspace_root="/app",  # Virtual root
+        workspace_root=str(workspace.workspace_root),
         agent_id="benchmark-builder",
         max_iterations=max_iterations,
     )
@@ -443,67 +491,42 @@ After creating the script, run it to verify it works correctly. Fix any errors u
     try:
         final_state = agent.invoke(initial_state, config={"recursion_limit": recursion_limit})
         
-        # Check if benchmark script was created
-        validator_path = workspace.actual_root / "run_validator.py"
-        if not validator_path.exists():
+        # Verify the benchmark was created and passes
+        result = run_benchmark_for_validation(workspace.workspace_root)
+        
+        if result.error:
             if obs:
                 obs.on_agent_end(
                     agent_id="benchmark-builder",
                     success=False,
-                    summary="Failed to create run_validator.py",
+                    summary=f"Benchmark error: {result.error}",
                 )
-            return False, "Benchmark script was not created"
+            return False, f"Benchmark failed: {result.error}"
         
-        # Test the script
-        result = subprocess.run(
-            [sys.executable, str(validator_path), "--quiet"],
-            capture_output=True,
-            text=True,
-            timeout=120,
-            cwd=str(workspace.actual_root),
-            env={**os.environ, "WORKSPACE_ROOT": str(workspace.actual_root)},
-        )
-        
-        if result.returncode != 0:
-            error_msg = result.stderr or result.stdout
+        if not result.is_valid:
+            reasons = []
+            if not result.test_gate:
+                reasons.append("test_gate is false")
+            if result.score is None:
+                reasons.append("score is null")
+            
             if obs:
                 obs.on_agent_end(
                     agent_id="benchmark-builder",
                     success=False,
-                    summary=f"Benchmark script failed: {error_msg[:200]}",
+                    summary=f"Benchmark incomplete: {', '.join(reasons)}",
                 )
-            return False, f"Benchmark script created but failed to run: {error_msg}"
+            return False, f"Benchmark did not pass: {', '.join(reasons)}"
         
-        # Verify JSON output
-        try:
-            output = result.stdout.strip()
-            # Handle pygame-style garbage prefix
-            json_start = output.find("{")
-            if json_start >= 0:
-                data = json.loads(output[json_start:])
-            else:
-                data = json.loads(output)
-            
-            if "score" not in data:
-                return False, "Benchmark output missing 'score' field"
-            
-            if obs:
-                obs.on_agent_end(
-                    agent_id="benchmark-builder",
-                    success=True,
-                    summary=f"Created benchmark script. Score: {data['score']}",
-                )
-            
-            return True, f"Benchmark script created successfully. Score: {data['score']}"
-            
-        except json.JSONDecodeError as e:
-            if obs:
-                obs.on_agent_end(
-                    agent_id="benchmark-builder",
-                    success=False,
-                    summary=f"Invalid JSON output: {e}",
-                )
-            return False, f"Benchmark script output is not valid JSON: {e}"
+        # Success!
+        if obs:
+            obs.on_agent_end(
+                agent_id="benchmark-builder",
+                success=True,
+                summary=f"Benchmark created. {result.metric_name}: {result.score}",
+            )
+        
+        return True, f"Benchmark script created successfully. {result.metric_name}: {result.score}"
         
     except subprocess.TimeoutExpired:
         if obs:

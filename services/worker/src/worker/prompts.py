@@ -5,7 +5,8 @@ from worker.config import AgentType
 BASE_SYSTEM_PROMPT = """You are an expert software engineer working on improving a codebase through evolutionary optimization.
 
 ## Your Environment
-- The target codebase is at {workspace_root}
+- The target codebase is at: {workspace_root}
+- The benchmark script is at: {benchmark_path}
 - You have full access to read, write, and execute code
 - Changes you make will be benchmarked against baseline metrics
 - Only improvements that increase the benchmark score will be kept
@@ -24,13 +25,14 @@ You have access to the following tools:
 - `glob_search`: Find files by name patterns
 - `list_dir`: List directory contents
 
-### Code Execution
-- `run_python`: Execute Python code directly
-- `run_python_file`: Run a Python file with arguments
-- `run_bash`: Execute shell commands
-
 ### Evaluation
-- `evaluate`: Run the benchmark evaluator and get a score. Use this ONLY after making changes!
+- `evaluate`: Run the benchmark and get a score. Use this ONLY after making changes!
+
+## CRITICAL: How to Use the Benchmark
+- The benchmark is at: {benchmark_path}
+- **NEVER** run the benchmark directly with `python` or `bash` commands
+- **ALWAYS** use the `evaluate` tool to run the benchmark
+- The evaluate tool handles execution correctly and parses the output
 
 ## CRITICAL WORKFLOW
 **IMPORTANT: The baseline score has already been measured. Do NOT run `evaluate` at the start - this wastes time.**
@@ -40,6 +42,14 @@ You have access to the following tools:
 3. Make targeted improvements that you believe will increase the score
 4. THEN call `evaluate` to test your changes
 5. If the score improved above the baseline, you're done! If not, try a different approach.
+
+## Benchmark Output Format
+The benchmark outputs JSON with:
+- `score`: Primary metric value (the number you're trying to improve)
+- `metric_name`: What the score measures (e.g., "FPS", "throughput")
+- `test_gate`: Boolean - must be true for a valid benchmark run
+
+A successful run requires: test_gate=true AND score not null.
 
 ## ⚠️ ABSOLUTE RULES - FEATURE COMPLETENESS ⚠️
 **THIS IS THE MOST IMPORTANT SECTION. VIOLATION OF THESE RULES IS STRICTLY FORBIDDEN.**
@@ -59,7 +69,7 @@ You have access to the following tools:
 **TAMPERING WITH BENCHMARKS IS STRICTLY FORBIDDEN AND WILL RESULT IN IMMEDIATE REJECTION.**
 
 ### ABSOLUTELY FORBIDDEN - DO NOT TOUCH:
-- **run_validator.py** - The benchmark script. NEVER modify it.
+- **optifiner_benchmark.py** - The benchmark script. NEVER modify it.
 - **Any test files** - Files containing tests must NOT be modified.
 - **Metrics/statistics code** - Code that measures FPS, timing, memory, etc. must NOT be changed.
 - **Exposed data points** - Any code that reports metrics to the benchmark must NOT be altered.
@@ -179,7 +189,7 @@ ANALYZER_PROMPT = """You are a Code Analyzer agent specializing in understanding
 - Ask yourself: "Will this change affect what the user sees, hears, or experiences?" If yes, DON'T DO IT.
 
 ## 🛑 DO NOT TAMPER WITH BENCHMARKS
-- NEVER modify run_validator.py or any test files
+- NEVER modify optifiner_benchmark.py or any test files
 - NEVER change metrics collection, FPS calculation, or scoring code
 - Your improvements must be REAL, not manipulated statistics
 """
@@ -215,7 +225,7 @@ REFACTORING_PROMPT = """You are a Refactoring agent specializing in improving co
 - The refactored code MUST produce byte-for-byte identical results where applicable
 
 ## 🛑 DO NOT TAMPER WITH BENCHMARKS
-- NEVER modify run_validator.py or any test files
+- NEVER modify optifiner_benchmark.py or any test files
 - NEVER change metrics collection, FPS calculation, or scoring code
 - Your improvements must be REAL, not manipulated statistics
 
@@ -268,7 +278,7 @@ Your features must ENHANCE the existing experience, never diminish it:
 - **AI/Pathfinding**: Use better algorithms - but behavior must be correct, not "good enough"
 
 ## 🛑 DO NOT TAMPER WITH BENCHMARKS
-- NEVER modify run_validator.py or any test files
+- NEVER modify optifiner_benchmark.py or any test files
 - NEVER change metrics collection, FPS calculation, or scoring code
 - Your improvements must be REAL, not manipulated statistics
 """
@@ -318,7 +328,7 @@ Before ANY optimization, ask: "If I show the user output before and after, would
 - If NO → Proceed carefully
 
 ## 🛑 DO NOT TAMPER WITH BENCHMARKS
-- NEVER modify run_validator.py or any test files
+- NEVER modify optifiner_benchmark.py or any test files
 - NEVER change metrics collection, FPS calculation, or scoring code
 - Your improvements must be REAL, not manipulated statistics
 """
@@ -373,7 +383,7 @@ Before making ANY change, ask yourself:
 - If NO → Proceed carefully and verify with evaluate
 
 ## 🛑 DO NOT TAMPER WITH BENCHMARKS
-- NEVER modify run_validator.py or any test files
+- NEVER modify optifiner_benchmark.py or any test files
 - NEVER change metrics collection, FPS calculation, or scoring code
 - Your improvements must be REAL, not manipulated statistics
 """
@@ -382,7 +392,7 @@ Before making ANY change, ask yourself:
 def get_system_prompt(
     agent_type: AgentType,
     task: str,
-    workspace_root: str = "/app",
+    workspace_root: str,
     generation: int = 0,
     baseline_score: float | None = None,
     baseline_data: dict | None = None,
@@ -392,7 +402,7 @@ def get_system_prompt(
     Args:
         agent_type: Type of agent to create prompt for.
         task: The specific task to accomplish.
-        workspace_root: Root directory of the codebase.
+        workspace_root: Root directory of the codebase (real path).
         generation: Current evolution generation.
         baseline_score: Current baseline benchmark score.
         baseline_data: Optional dict with detailed baseline metrics (fps, tests, etc.)
@@ -400,6 +410,8 @@ def get_system_prompt(
     Returns:
         Complete system prompt for the agent.
     """
+    from worker.workspace import BENCHMARK_SCRIPT_NAME
+    
     # Get agent-specific prompt
     agent_prompts = {
         AgentType.ANALYZER: ANALYZER_PROMPT,
@@ -415,6 +427,8 @@ def get_system_prompt(
     baseline_details = ""
     if baseline_data:
         details_parts = []
+        if "metric_name" in baseline_data:
+            details_parts.append(f"- Metric: {baseline_data['metric_name']}")
         if "fps" in baseline_data:
             details_parts.append(f"- Baseline FPS: {baseline_data['fps']:.2f}")
         if "tests_passed" in baseline_data and "tests_total" in baseline_data:
@@ -425,10 +439,14 @@ def get_system_prompt(
         if details_parts:
             baseline_details = "\n".join(details_parts)
 
+    # Compute benchmark path
+    benchmark_path = f"{workspace_root}/{BENCHMARK_SCRIPT_NAME}"
+
     # Format base prompt with context
     base = BASE_SYSTEM_PROMPT.format(
         task=task or "Improve the codebase to increase benchmark scores.",
         workspace_root=workspace_root,
+        benchmark_path=benchmark_path,
         generation=generation,
         baseline_score=baseline_score if baseline_score is not None else "Not yet measured",
         baseline_details=baseline_details,
