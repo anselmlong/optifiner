@@ -1138,18 +1138,18 @@ def main(
                 try:
                     with ThreadPoolExecutor(max_workers=parallel) as executor:
                         futures = {executor.submit(run_agent_parallel, i): i for i in range(agents)}
+                        early_stop_triggered = False
 
                         for future in as_completed(futures):
-                            if early_stop and _stop_generation.is_set() and generation_improved:
-                                for f in futures:
-                                    f.cancel()
-                                console.print(f"[yellow]⚡ Early stop - cancelling remaining agents[/yellow]")
-                                break
-
+                            # Check early stop AFTER getting result to not discard already-completed work
+                            # We still process results that beat the current best score
                             try:
                                 result, workspace = future.result()
                             except Exception:
                                 progress.update(task_id, advance=1)
+                                # Only break if early stop was already triggered and we got an error
+                                if early_stop_triggered:
+                                    continue
                                 continue
 
                             generation_results.append(result)
@@ -1205,8 +1205,13 @@ def main(
                                 if new_result[0] is not None:
                                     current_baseline_data = new_result[2]
 
-                                if early_stop:
+                                if early_stop and not early_stop_triggered:
                                     _stop_generation.set()
+                                    early_stop_triggered = True
+                                    # Cancel remaining futures but continue processing completed ones
+                                    for f in futures:
+                                        f.cancel()
+                                    console.print(f"[yellow]⚡ Early stop - cancelling remaining agents[/yellow]")
 
                             if workspace:
                                 workspace.cleanup()
