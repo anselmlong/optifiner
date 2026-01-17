@@ -19,6 +19,15 @@ from typing import List, Tuple
 
 
 import pygame
+import time
+
+_frame_count = 0
+_fps_start_time = time.time()
+_current_fps = 0.0
+
+def get_fps():
+    return _current_fps
+
 
 
 # Configuration
@@ -33,7 +42,6 @@ GRAVITY = 0.15
 BOUNCE_DAMPING = 0.7
 WORLD_BOUNDS = 200.0
 PARTICLE_INFLUENCE_RADIUS = PARTICLE_RADIUS * 3  # Pre-calculated
-PARTICLE_INFLUENCE_RADIUS_SQ = PARTICLE_INFLUENCE_RADIUS * PARTICLE_INFLUENCE_RADIUS
 
 
 @dataclass
@@ -199,10 +207,11 @@ class VolumetricRenderer:
                 dz = curr_z - particle.position.z
                 dist_sq = dx * dx + dy * dy + dz * dz
                 
-                if dist_sq < PARTICLE_INFLUENCE_RADIUS_SQ:
+                influence_radius = particle.radius * 3
+                if dist_sq < influence_radius * influence_radius:
                     dist = math.sqrt(dist_sq)
                     # Falloff based on distance
-                    falloff = 1.0 - (dist / PARTICLE_INFLUENCE_RADIUS)
+                    falloff = 1.0 - (dist / influence_radius)
                     falloff = falloff * falloff
                     
                     local_density += falloff * 0.5
@@ -290,7 +299,6 @@ class ParticleSimulation:
     """Main simulation class"""
     
     def __init__(self):
-
         pygame.init()
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
         pygame.display.set_caption("Volumetric Particle Simulation - Optimize Me!")
@@ -304,9 +312,6 @@ class ParticleSimulation:
         self.camera_rotation = 0.0
         self.camera_position = Vector3(0, 50, -self.renderer.camera_distance)
         self.time = 0.0
-
-
-
         
         self._init_particles()
         self._init_lights()
@@ -686,8 +691,14 @@ class ParticleSimulation:
         
         pygame.display.flip()
     
-    def run(self) -> None:
+    def run(self, benchmark_frames: int = 0) -> None:
         """Run the simulation."""
+        global _frame_count, _fps_start_time, _current_fps
+        
+        _frame_count = 0
+        _fps_start_time = time.time()
+        
+        frame_counter = 0
         while self.running:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
@@ -701,19 +712,35 @@ class ParticleSimulation:
             
             self.update(dt)
             self.render()
+
+            _frame_count += 1
+            frame_counter += 1
+            elapsed = time.time() - _fps_start_time
+            if elapsed >= 1.0:
+                _current_fps = _frame_count / elapsed
+                _frame_count = 0
+                _fps_start_time = time.time()
+            
+            if benchmark_frames > 0 and frame_counter >= benchmark_frames:
+                self.running = False
+
     
     def cleanup(self) -> None:
         """Clean up pygame resources"""
         pygame.quit()
 
 
-def main():
-    """Main entry point"""
+def run_simulation(benchmark_frames: int = 0):
     sim = ParticleSimulation()
     try:
-        sim.run()
+        sim.run(benchmark_frames=benchmark_frames)
     finally:
         sim.cleanup()
+
+def main():
+    """Main entry point"""
+    run_simulation()
+
 
 
 if __name__ == "__main__":
