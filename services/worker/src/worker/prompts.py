@@ -30,20 +30,22 @@ You have access to the following tools:
 - `run_bash`: Execute shell commands
 
 ### Evaluation
-- `evaluate`: Run the benchmark evaluator and get a score. Use this to test your improvements!
+- `evaluate`: Run the benchmark evaluator and get a score. Use this ONLY after making changes!
 
 ## CRITICAL WORKFLOW
+**IMPORTANT: The baseline score has already been measured. Do NOT run `evaluate` at the start - this wastes time.**
+
 1. First, explore the codebase to understand what you're working with
 2. Read the relevant files before making any changes
 3. Make targeted improvements that you believe will increase the score
-4. Call `evaluate` to test your changes
-5. If the score improved, you're done! If not, try a different approach.
+4. THEN call `evaluate` to test your changes
+5. If the score improved above the baseline, you're done! If not, try a different approach.
 
 ## Guidelines
 1. ALWAYS read files before editing them to understand the exact content
 2. Make precise, minimal changes - don't rewrite entire files unnecessarily
 3. Preserve existing code style and conventions
-4. Use `evaluate` after making changes to verify improvement
+4. Use `evaluate` ONLY after making changes to verify improvement (not before!)
 5. Focus on changes that will improve the benchmark score
 
 ## Current Task
@@ -52,8 +54,9 @@ You have access to the following tools:
 ## Context
 - Generation: {generation}
 - Baseline Score: {baseline_score}
+{baseline_details}
 
-Your goal is to IMPROVE the score. The higher the score, the better!
+Your goal is to IMPROVE the score above {baseline_score}. The higher the score, the better!
 """
 
 ANALYZER_PROMPT = """You are a Code Analyzer agent specializing in understanding codebases and identifying optimization opportunities.
@@ -73,7 +76,8 @@ ANALYZER_PROMPT = """You are a Code Analyzer agent specializing in understanding
    - Inefficient data structures
    - Missing parallelization opportunities
    - Memory-intensive operations
-4. Make improvements and use `evaluate` to verify they work!
+4. Make improvements
+5. THEN use `evaluate` to verify they work (NOT before making changes!)
 """
 
 REFACTORING_PROMPT = """You are a Refactoring agent specializing in improving code quality and performance through restructuring.
@@ -89,7 +93,7 @@ REFACTORING_PROMPT = """You are a Refactoring agent specializing in improving co
 1. NEVER change the external interface (function signatures, return types)
 2. Maintain exact same functionality - all tests must pass
 3. Focus on the highest-impact changes first
-4. Make incremental changes and verify with `evaluate`
+4. Make changes FIRST, then verify with `evaluate` (don't evaluate before changes!)
 5. Preserve comments and documentation
 
 ## Common Optimizations
@@ -116,7 +120,7 @@ FEATURE_PROMPT = """You are a Feature agent specializing in adding new capabilit
 3. Don't break existing functionality
 4. Focus on features that directly improve benchmark scores
 5. Keep implementations simple and maintainable
-6. Use `evaluate` to verify improvements
+6. Make changes FIRST, then use `evaluate` to verify (don't evaluate before changes!)
 """
 
 OPTIMIZER_PROMPT = """You are an Optimizer agent specializing in fine-tuning code for maximum performance.
@@ -129,12 +133,12 @@ OPTIMIZER_PROMPT = """You are an Optimizer agent specializing in fine-tuning cod
 - Profile and eliminate micro-inefficiencies
 
 ## Optimization Strategies
-1. Profile the code to find actual bottlenecks
+1. Understand the code structure first (don't run evaluate yet!)
 2. Focus on the hot paths - code that runs most frequently
 3. Consider memory vs. speed tradeoffs
 4. Use appropriate data types (e.g., numpy arrays vs lists)
 5. Minimize allocations in loops
-6. Always verify with `evaluate`!
+6. Make optimizations, THEN verify with `evaluate`
 """
 
 GENERAL_PROMPT = """You are a General-purpose evolution agent capable of any type of code improvement.
@@ -147,12 +151,12 @@ Adapt your approach based on what the codebase needs:
 - Optimization: Fine-tune for maximum efficiency
 
 ## Improvement Process
-1. Explore and understand the codebase (list_dir, read_file)
+1. Explore and understand the codebase (list_dir, read_file) - DON'T run evaluate yet!
 2. Identify the most impactful improvements
 3. Plan your changes carefully
 4. Implement changes incrementally
-5. Call `evaluate` to test your improvements
-6. If score improved, you're done! If not, try something else.
+5. THEN call `evaluate` to test your improvements (only after making changes!)
+6. If score improved above baseline, you're done! If not, try something else.
 """
 
 
@@ -162,6 +166,7 @@ def get_system_prompt(
     workspace_root: str = "/app",
     generation: int = 0,
     baseline_score: float | None = None,
+    baseline_data: dict | None = None,
 ) -> str:
     """Generate the system prompt for an agent.
 
@@ -171,6 +176,7 @@ def get_system_prompt(
         workspace_root: Root directory of the codebase.
         generation: Current evolution generation.
         baseline_score: Current baseline benchmark score.
+        baseline_data: Optional dict with detailed baseline metrics (fps, tests, etc.)
 
     Returns:
         Complete system prompt for the agent.
@@ -186,12 +192,27 @@ def get_system_prompt(
 
     agent_prompt = agent_prompts.get(agent_type, GENERAL_PROMPT)
 
+    # Build baseline details string
+    baseline_details = ""
+    if baseline_data:
+        details_parts = []
+        if "fps" in baseline_data:
+            details_parts.append(f"- Baseline FPS: {baseline_data['fps']:.2f}")
+        if "tests_passed" in baseline_data and "tests_total" in baseline_data:
+            details_parts.append(f"- Tests: {baseline_data['tests_passed']}/{baseline_data['tests_total']} passed")
+        if "metrics" in baseline_data:
+            for k, v in baseline_data["metrics"].items():
+                details_parts.append(f"- {k}: {v}")
+        if details_parts:
+            baseline_details = "\n".join(details_parts)
+
     # Format base prompt with context
     base = BASE_SYSTEM_PROMPT.format(
         task=task or "Improve the codebase to increase benchmark scores.",
         workspace_root=workspace_root,
         generation=generation,
         baseline_score=baseline_score if baseline_score is not None else "Not yet measured",
+        baseline_details=baseline_details,
     )
 
     return f"{base}\n\n{agent_prompt}"
