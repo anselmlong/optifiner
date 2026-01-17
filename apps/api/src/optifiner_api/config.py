@@ -8,11 +8,8 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     """Application settings."""
 
-    # Database
-    DATABASE_URL: str = "postgresql://optifiner:optifiner_dev@postgres:5432/optifiner"
-
-    # Redis
-    REDIS_URL: str = "redis://redis:6379/0"
+    # Database - PostgreSQL
+    DATABASE_URL: str = "postgresql://optifiner:optifiner_dev@localhost:5432/optifiner"
 
     # GitHub App
     GITHUB_APP_ID: str | None = None
@@ -23,7 +20,7 @@ class Settings(BaseSettings):
     WORKER_WORKSPACE_PATH: str = "apps/workspace"
 
     # CORS
-    CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:8000"]
+    CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173", "http://localhost:8000"]
 
     class Config:
         """Pydantic config."""

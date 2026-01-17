@@ -29,17 +29,16 @@ interface RunConfigModalProps {
 }
 
 const MODEL_OPTIONS = [
-  { provider: 'anthropic', models: ['claude-sonnet-4-20250514', 'claude-3-5-sonnet-20241022', 'claude-3-haiku-20240307'] },
-  { provider: 'openai', models: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo'] },
-  { provider: 'google', models: ['gemini-2.0-flash', 'gemini-1.5-pro', 'gemini-1.5-flash'] },
-  { provider: 'deepseek', models: ['deepseek-chat', 'deepseek-coder'] },
+  { provider: 'anthropic', models: ['claude-opus-4.5', 'claude-sonnet-4.5', 'claude-haiku-4.5'] },
+  { provider: 'openai', models: ['gpt-5.2-codex', 'gpt-5.2'] },
+  { provider: 'google', models: ['gemini-3-flash-preview', 'gemini-3-pro-preview'] },
 ]
 
 const PROVIDER_OPTIONS = MODEL_OPTIONS.map(p => ({ value: p.provider, label: p.provider.charAt(0).toUpperCase() + p.provider.slice(1) }))
 
 export function RunConfigModal({ isOpen, onClose, onStart, projectName }: RunConfigModalProps) {
   const [models, setModels] = useState<ModelConfig[]>([
-    { id: '1', provider: 'anthropic', modelName: 'claude-sonnet-4-20250514', apiKey: '', instances: 1 }
+    { id: '1', provider: 'anthropic', modelName: 'claude-sonnet-4.5', apiKey: '', instances: 1 }
   ])
   const [maxCost, setMaxCost] = useState<number>(10)
   const [userPrompt, setUserPrompt] = useState<string>('Optimize the code for better performance while maintaining correctness.')
@@ -50,7 +49,7 @@ export function RunConfigModal({ isOpen, onClose, onStart, projectName }: RunCon
     setModels([...models, { 
       id: newId, 
       provider: 'anthropic', 
-      modelName: 'claude-sonnet-4-20250514', 
+      modelName: 'claude-sonnet-4.5', 
       apiKey: '', 
       instances: 1 
     }])

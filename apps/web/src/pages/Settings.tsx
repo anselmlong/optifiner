@@ -43,9 +43,13 @@ export function Settings() {
                   value={settings.model}
                   onChange={(e) => updateSettings({ model: e.target.value as typeof settings.model })}
                   options={[
-                    { value: 'claude-sonnet', label: 'Claude Sonnet 4.5 (Recommended)' },
-                    { value: 'gpt-4o', label: 'GPT-4o' },
-                    { value: 'deepseek-coder', label: 'DeepSeek Coder (Cost-effective)' }
+                    { value: 'claude-opus-4.5', label: 'Claude Opus 4.5' },
+                    { value: 'claude-sonnet-4.5', label: 'Claude Sonnet 4.5 (Recommended)' },
+                    { value: 'claude-haiku-4.5', label: 'Claude Haiku 4.5' },
+                    { value: 'gpt-5.2-codex', label: 'GPT-5.2 Codex' },
+                    { value: 'gpt-5.2', label: 'GPT-5.2' },
+                    { value: 'gemini-3-flash-preview', label: 'Gemini 3 Flash Preview' },
+                    { value: 'gemini-3-pro-preview', label: 'Gemini 3 Pro Preview' }
                   ]}
                 />
                 <Input
@@ -60,19 +64,19 @@ export function Settings() {
                 <h4 className="text-sm font-medium text-slate-900 dark:text-white mb-3">Model Comparison</h4>
                 <div className="grid grid-cols-3 gap-4 text-sm">
                   <div>
-                    <p className="text-slate-500 mb-1">Claude Sonnet</p>
-                    <p className="text-slate-900 dark:text-white">Best quality, moderate cost</p>
-                    <p className="text-xs text-slate-400">~$0.003/1K tokens</p>
+                    <p className="text-slate-500 mb-1">Claude 4.5 Series</p>
+                    <p className="text-slate-900 dark:text-white">Best quality, recommended</p>
+                    <p className="text-xs text-slate-400">Opus / Sonnet / Haiku</p>
                   </div>
                   <div>
-                    <p className="text-slate-500 mb-1">GPT-4o</p>
-                    <p className="text-slate-900 dark:text-white">Fast, good quality</p>
-                    <p className="text-xs text-slate-400">~$0.005/1K tokens</p>
+                    <p className="text-slate-500 mb-1">GPT-5.2 Series</p>
+                    <p className="text-slate-900 dark:text-white">Fast, excellent for code</p>
+                    <p className="text-xs text-slate-400">Codex / Standard</p>
                   </div>
                   <div>
-                    <p className="text-slate-500 mb-1">DeepSeek</p>
-                    <p className="text-slate-900 dark:text-white">Budget-friendly, decent quality</p>
-                    <p className="text-xs text-slate-400">~$0.0001/1K tokens</p>
+                    <p className="text-slate-500 mb-1">Gemini 3 Series</p>
+                    <p className="text-slate-900 dark:text-white">Cost-effective, fast</p>
+                    <p className="text-xs text-slate-400">Flash / Pro Preview</p>
                   </div>
                 </div>
               </div>

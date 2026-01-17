@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import {
@@ -9,7 +9,8 @@ import {
   faTrash,
   faEllipsisV,
   faChartLine,
-  faFolder
+  faFolder,
+  faSpinner
 } from '@fortawesome/free-solid-svg-icons'
 import { faGithub as faGithubBrand } from '@fortawesome/free-brands-svg-icons'
 import { Header } from '../components/layout/Header'
@@ -21,9 +22,14 @@ import { ProgressBar } from '../components/ui/ProgressBar'
 import { useStore } from '../store'
 
 export function Projects() {
-  const { projects } = useStore()
+  const { projects, projectsLoading, projectsError, fetchProjects } = useStore()
   const [searchQuery, setSearchQuery] = useState('')
   const [filter, setFilter] = useState<'all' | 'active' | 'paused' | 'completed'>('all')
+
+  // Fetch projects on mount
+  useEffect(() => {
+    fetchProjects()
+  }, [fetchProjects])
 
   const filteredProjects = projects.filter(project => {
     const matchesSearch = project.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -224,17 +230,38 @@ export function Projects() {
           ))}
         </div>
 
+        {/* Loading State */}
+        {projectsLoading && (
+          <Card className="py-12 text-center">
+            <FontAwesomeIcon icon={faSpinner} className="text-4xl text-primary-500 mb-4 animate-spin" />
+            <h3 className="text-lg font-semibold text-slate-900 dark:text-white mb-2">Loading projects...</h3>
+          </Card>
+        )}
+
+        {/* Error State */}
+        {projectsError && !projectsLoading && (
+          <Card className="py-12 text-center">
+            <h3 className="text-lg font-semibold text-red-500 mb-2">Error loading projects</h3>
+            <p className="text-slate-500 mb-4">{projectsError}</p>
+            <Button variant="primary" onClick={() => fetchProjects()}>
+              Retry
+            </Button>
+          </Card>
+        )}
+
         {/* Empty State */}
-        {filteredProjects.length === 0 && (
+        {!projectsLoading && !projectsError && filteredProjects.length === 0 && (
           <Card className="py-12 text-center">
             <FontAwesomeIcon icon={faFolder} className="text-4xl text-slate-300 dark:text-slate-600 mb-4" />
             <h3 className="text-lg font-semibold text-slate-900 dark:text-white mb-2">No projects found</h3>
             <p className="text-slate-500 mb-4">
               {searchQuery ? 'Try adjusting your search or filters' : 'Create your first evolution project to get started'}
             </p>
-            <Button icon={faPlus} variant="primary">
-              Create New Project
-            </Button>
+            <Link to="/projects/new">
+              <Button icon={faPlus} variant="primary">
+                Create New Project
+              </Button>
+            </Link>
           </Card>
         )}
       </div>

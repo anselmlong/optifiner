@@ -44,7 +44,7 @@ export function NewProject() {
   }
 
   const [modelConfigs, setModelConfigs] = useState<ModelConfigItem[]>([
-    { id: '1', model: 'claude-sonnet', apiKey: '', agentCount: 5 }
+    { id: '1', model: 'claude-sonnet-4.5', apiKey: '', agentCount: 5 }
   ])
 
   const [formData, setFormData] = useState({
@@ -57,7 +57,9 @@ export function NewProject() {
     targetFitness: 0.9,
     maxCost: 10,
     autoGenerateBenchmarks: true,
-    benchmarkTimeout: 30
+    benchmarkTimeout: 30,
+    parallelAgents: 5,  // Run 5 agents in parallel
+    generations: 5,     // Run 5 generations
   })
 
   const totalAgents = modelConfigs.reduce((sum, config) => sum + config.agentCount, 0)
@@ -65,7 +67,7 @@ export function NewProject() {
   const addModelConfig = () => {
     setModelConfigs([...modelConfigs, {
       id: Date.now().toString(),
-      model: 'gpt-4o',
+      model: 'gpt-5.2-codex',
       apiKey: '',
       agentCount: 3
     }])
@@ -110,14 +112,18 @@ export function NewProject() {
 
     // Map model selection to provider/model_name
     const modelMapping: Record<string, { provider: string; model_name: string }> = {
-      'claude-sonnet': { provider: 'anthropic', model_name: 'claude-sonnet-4-20250514' },
-      'gpt-4o': { provider: 'openai', model_name: 'gpt-4o' },
-      'deepseek-coder': { provider: 'deepseek', model_name: 'deepseek-coder' }
+      'claude-opus-4.5': { provider: 'anthropic', model_name: 'claude-opus-4.5' },
+      'claude-sonnet-4.5': { provider: 'anthropic', model_name: 'claude-sonnet-4.5' },
+      'claude-haiku-4.5': { provider: 'anthropic', model_name: 'claude-haiku-4.5' },
+      'gpt-5.2-codex': { provider: 'openai', model_name: 'gpt-5.2-codex' },
+      'gpt-5.2': { provider: 'openai', model_name: 'gpt-5.2' },
+      'gemini-3-flash-preview': { provider: 'google', model_name: 'gemini-3-flash-preview' },
+      'gemini-3-pro-preview': { provider: 'google', model_name: 'gemini-3-pro-preview' }
     }
 
     // Build models array from all configurations
     const models = modelConfigs.map(config => {
-      const mapping = modelMapping[config.model] || modelMapping['claude-sonnet']
+      const mapping = modelMapping[config.model] || modelMapping['claude-sonnet-4.5']
       return {
         provider: mapping.provider,
         model_name: mapping.model_name,
@@ -137,7 +143,10 @@ export function NewProject() {
           branch: formData.branch || 'main',
           total_cost_limit: formData.maxCost,
           user_prompt: formData.description || `Optimize ${formData.name}`,
-          models
+          models,
+          parallel: formData.parallelAgents,
+          generations: formData.generations,
+          early_stop: true,
         })
       })
 
@@ -322,9 +331,13 @@ export function NewProject() {
                           value={config.model}
                           onChange={(e) => updateModelConfig(config.id, { model: e.target.value })}
                           options={[
-                            { value: 'claude-sonnet', label: 'Claude Sonnet 4.5' },
-                            { value: 'gpt-4o', label: 'GPT-4o' },
-                            { value: 'deepseek-coder', label: 'DeepSeek Coder' }
+                            { value: 'claude-opus-4.5', label: 'Claude Opus 4.5' },
+                            { value: 'claude-sonnet-4.5', label: 'Claude Sonnet 4.5' },
+                            { value: 'claude-haiku-4.5', label: 'Claude Haiku 4.5' },
+                            { value: 'gpt-5.2-codex', label: 'GPT-5.2 Codex' },
+                            { value: 'gpt-5.2', label: 'GPT-5.2' },
+                            { value: 'gemini-3-flash-preview', label: 'Gemini 3 Flash Preview' },
+                            { value: 'gemini-3-pro-preview', label: 'Gemini 3 Pro Preview' }
                           ]}
                         />
                         <div>
@@ -345,7 +358,7 @@ export function NewProject() {
                       <Input
                         label="API Key"
                         type="password"
-                        placeholder={`Enter ${config.model === 'claude-sonnet' ? 'Anthropic' : config.model === 'gpt-4o' ? 'OpenAI' : 'DeepSeek'} API key`}
+                        placeholder={`Enter ${config.model.startsWith('claude') ? 'Anthropic' : config.model.startsWith('gpt') ? 'OpenAI' : 'Google'} API key`}
                         value={config.apiKey}
                         onChange={(e) => updateModelConfig(config.id, { apiKey: e.target.value })}
                       />
@@ -385,6 +398,37 @@ export function NewProject() {
                         <p className="text-xs text-slate-500 mt-1">{option.description}</p>
                       </button>
                     ))}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5">
+                      Parallel Agents
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={10}
+                      value={formData.parallelAgents}
+                      onChange={(e) => setFormData({ ...formData, parallelAgents: Math.max(1, parseInt(e.target.value) || 1) })}
+                      className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500"
+                    />
+                    <p className="text-xs text-slate-500 mt-1">Number of agents running at same time</p>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5">
+                      Generations
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={20}
+                      value={formData.generations}
+                      onChange={(e) => setFormData({ ...formData, generations: Math.max(1, parseInt(e.target.value) || 1) })}
+                      className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500"
+                    />
+                    <p className="text-xs text-slate-500 mt-1">Evolution cycles to run</p>
                   </div>
                 </div>
 
@@ -473,17 +517,27 @@ export function NewProject() {
                   <div className="p-4 rounded-lg bg-slate-50 dark:bg-slate-800/50 col-span-2">
                     <p className="text-xs text-slate-500 uppercase tracking-wider mb-2">Models & Agents</p>
                     <div className="space-y-2">
-                      {modelConfigs.map((config, i) => (
-                        <div key={config.id} className="flex items-center justify-between text-sm">
-                          <span className="text-slate-600 dark:text-slate-400">
-                            {config.model === 'claude-sonnet' ? 'Claude Sonnet 4.5' :
-                             config.model === 'gpt-4o' ? 'GPT-4o' : 'DeepSeek Coder'}
-                          </span>
-                          <span className="font-medium text-slate-900 dark:text-white">
-                            {config.agentCount} agent{config.agentCount !== 1 ? 's' : ''}
-                          </span>
-                        </div>
-                      ))}
+                      {modelConfigs.map((config, i) => {
+                        const modelLabels: Record<string, string> = {
+                          'claude-opus-4.5': 'Claude Opus 4.5',
+                          'claude-sonnet-4.5': 'Claude Sonnet 4.5',
+                          'claude-haiku-4.5': 'Claude Haiku 4.5',
+                          'gpt-5.2-codex': 'GPT-5.2 Codex',
+                          'gpt-5.2': 'GPT-5.2',
+                          'gemini-3-flash-preview': 'Gemini 3 Flash Preview',
+                          'gemini-3-pro-preview': 'Gemini 3 Pro Preview'
+                        }
+                        return (
+                          <div key={config.id} className="flex items-center justify-between text-sm">
+                            <span className="text-slate-600 dark:text-slate-400">
+                              {modelLabels[config.model] || config.model}
+                            </span>
+                            <span className="font-medium text-slate-900 dark:text-white">
+                              {config.agentCount} agent{config.agentCount !== 1 ? 's' : ''}
+                            </span>
+                          </div>
+                        )
+                      })}
                       <div className="pt-2 border-t border-slate-200 dark:border-slate-700 flex items-center justify-between">
                         <span className="font-medium text-slate-700 dark:text-slate-300">Total</span>
                         <span className="font-bold text-slate-900 dark:text-white">{totalAgents} agents</span>
