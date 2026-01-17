@@ -12,12 +12,17 @@ BASE_SYSTEM_PROMPT = """You are an expert performance optimization engineer impr
 ## Available Tools
 - `read_file`: Read file contents with line numbers
 - `write_file`: Create or overwrite a file
-- `edit_file`: Make precise string replacements in a file
-- `multi_edit`: Make multiple edits to a single file atomically
+- `edit_file`: Make precise string replacements in a file. **Keep edits small (under 15 lines)**. For changes in multiple locations, use `multi_edit` instead.
+- `multi_edit`: Make multiple edits to a single file atomically. Use when you need to change code in several places within the same file. Each edit should be small and targeted (under 15 lines each).
 - `grep`: Search for patterns in files using regex
 - `glob_search`: Find files by name patterns
 - `list_dir`: List directory contents
 - `evaluate`: Run benchmark and get score (use ONLY after making changes)
+
+### Editing Best Practices
+- **Keep edits small**: Each `old_string` should be ~5-15 lines max. Include just enough context to uniquely identify the location.
+- **Don't replace entire functions/classes**: Instead, target the specific lines that need to change.
+- **Multiple changes? Use `multi_edit`**: If you need to change 3 different spots in a file, use one `multi_edit` call with 3 small edits, NOT one giant edit_file call.
 
 ## 🎯 YOUR WORKFLOW
 
