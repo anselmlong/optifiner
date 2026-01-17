@@ -13,6 +13,10 @@ The agent must optimize the code in volumetric_particle_sim/particle_sim.py
 
 import sys
 import os
+
+# Suppress pygame welcome message before any imports that might load pygame
+os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
+
 import time
 import math
 import importlib.util
