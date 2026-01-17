@@ -301,6 +301,7 @@ def evaluate(message: str = "") -> str:
     try:
         # Run the benchmark script with --quiet flag
         cmd = [_get_python_executable(), str(benchmark_path), "--quiet"]
+        print(f"[evaluate] Running: {benchmark_path}")
         
         result = subprocess.run(
             cmd,
@@ -386,7 +387,7 @@ def run_benchmark_for_validation(workspace_root: Path) -> BenchmarkResult:
             cmd,
             capture_output=True,
             text=True,
-            timeout=DEFAULT_TIMEOUT,
+            timeout=BENCHMARK_TIMEOUT,
             cwd=str(workspace_root),
             env={**os.environ, "WORKSPACE_ROOT": str(workspace_root)},
         )
@@ -398,6 +399,6 @@ def run_benchmark_for_validation(workspace_root: Path) -> BenchmarkResult:
         return _parse_benchmark_output(result.stdout.strip())
         
     except subprocess.TimeoutExpired:
-        return BenchmarkResult(error=f"Timed out after {DEFAULT_TIMEOUT} seconds")
+        return BenchmarkResult(error=f"Timed out after {BENCHMARK_TIMEOUT} seconds. Benchmark must complete within {BENCHMARK_TIMEOUT}s.")
     except Exception as e:
         return BenchmarkResult(error=str(e))

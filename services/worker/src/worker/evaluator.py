@@ -24,6 +24,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 
+from worker.tools.evaluate import BENCHMARK_TIMEOUT
+
+
 @dataclass
 class EvaluationRequest:
     """A request to evaluate a workspace."""
@@ -31,7 +34,7 @@ class EvaluationRequest:
     request_id: str
     workspace_path: str
     evaluator_path: str
-    timeout: int = 120
+    timeout: int = BENCHMARK_TIMEOUT
     callback: Callable[[dict[str, Any]], None] | None = None
     
     # Result is set after evaluation completes
@@ -307,7 +310,7 @@ class EvaluatorQueue:
         self,
         workspace_path: str,
         evaluator_path: str,
-        timeout: int = 120,
+        timeout: int = BENCHMARK_TIMEOUT,
         wait: bool = True,
     ) -> dict[str, Any] | None:
         """Submit an evaluation request.
@@ -343,7 +346,7 @@ class EvaluatorQueue:
         self,
         workspace_path: str,
         evaluator_path: str,
-        timeout: int = 120,
+        timeout: int = BENCHMARK_TIMEOUT,
     ) -> dict[str, Any]:
         """Synchronously evaluate a workspace (blocks until complete).
         
@@ -387,7 +390,7 @@ def get_evaluator() -> EvaluatorQueue:
 def evaluate(
     workspace_path: str,
     evaluator_path: str,
-    timeout: int = 120,
+    timeout: int = BENCHMARK_TIMEOUT,
 ) -> dict[str, Any]:
     """Evaluate a workspace using the global evaluator queue.
     

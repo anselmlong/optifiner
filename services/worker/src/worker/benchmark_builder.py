@@ -36,7 +36,7 @@ from worker.observability import AgentObserver, get_observer
 from worker.state import AgentState
 from worker.workspace import WorkspaceManager, set_workspace, get_workspace, BENCHMARK_SCRIPT_NAME
 from worker.tools import get_benchmark_builder_tools
-from worker.tools.evaluate import run_benchmark_for_validation
+from worker.tools.evaluate import run_benchmark_for_validation, set_benchmark_dev_mode, BENCHMARK_TIMEOUT
 
 
 # System prompt for the benchmark builder agent
@@ -174,7 +174,7 @@ The benchmark script should:
 - Accept `--quiet` flag to output only JSON (no other stdout)
 - Handle errors gracefully and return JSON even on failure
 - Be runnable from the repository root
-- Complete within reasonable time (usually under 60 seconds)
+- **CRITICAL: Complete within {timeout} seconds** - benchmarks that take longer will timeout and fail!
 
 ## Available Tools
 - `list_dir`: List directory contents
@@ -311,6 +311,7 @@ def create_benchmark_builder_agent(
         system_prompt = BENCHMARK_BUILDER_PROMPT.format(
             workspace_root=workspace_root,
             benchmark_path=benchmark_path,
+            timeout=BENCHMARK_TIMEOUT,
         )
         
         if obs and not system_prompt_logged:
@@ -560,6 +561,9 @@ def run_benchmark_builder(
         Tuple of (success, message). Success is True if benchmark script was created
         and passes validation (test_gate=True, score not null).
     """
+    # Set benchmark dev mode - timeouts tell agent to retry (they can fix the benchmark)
+    set_benchmark_dev_mode(True)
+    
     # Set up workspace context
     set_workspace(workspace)
     
