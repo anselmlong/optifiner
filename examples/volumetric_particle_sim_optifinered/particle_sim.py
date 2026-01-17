@@ -171,11 +171,11 @@ class VolumetricRenderer:
         Raymarch through the scene to calculate volumetric fog contribution.
         Optimized with spatial grid and pre-extracted data.
         """
-        accumulated_color = [0.0, 0.0, 0.0]
-        accumulated_density = 0.0
+        acc_r, acc_g, acc_b = 0.0, 0.0, 0.0
+        acc_density = 0.0
         step_size = max_distance / RAYMARCH_STEPS
-        
         inv_grid_size = 1.0 / grid_size
+        fog_factor = step_size * FOG_DENSITY
         
         for step in range(RAYMARCH_STEPS):
             t = step * step_size
@@ -183,62 +183,54 @@ class VolumetricRenderer:
             curr_y = ray_oy + ray_dy * t
             curr_z = ray_oz + ray_dz * t
             
-            local_density = 0.0
-            local_color_r = 0.0
-            local_color_g = 0.0
-            local_color_b = 0.0
-            
-            # Spatial grid lookup
             cell = (int(curr_x * inv_grid_size), int(curr_y * inv_grid_size), int(curr_z * inv_grid_size))
-            nearby_particles = grid.get(cell, [])
-            
-            for px, py, pz, p_infl, p_infl_sq, pr, pg, pb, pem in nearby_particles:
-                dx = curr_x - px
-                dy = curr_y - py
-                dz = curr_z - pz
-                dist_sq = dx * dx + dy * dy + dz * dz
+            nearby_particles = grid.get(cell)
+            if not nearby_particles:
+                continue
                 
-                if dist_sq < p_infl_sq:
-                    dist = math.sqrt(dist_sq)
-                    falloff = 1.0 - (dist / p_infl)
-                    falloff = falloff * falloff
-                    
-                    local_density += falloff * 0.5
-                    emission = pem * falloff
-                    local_color_r += pr * emission
-                    local_color_g += pg * emission
-                    local_color_b += pb * emission
+            local_density = 0.0
+            local_r, local_g, local_b = 0.0, 0.0, 0.0
             
-            # Add light contribution
-            for lx_pos, ly_pos, lz_pos, l_col, l_int in lights_data:
-                lx = curr_x - lx_pos
-                ly = curr_y - ly_pos
-                lz = curr_z - lz_pos
-                light_dist_sq = lx * lx + ly * ly + lz * lz
-                if light_dist_sq > 0:
-                    attenuation = l_int / (1.0 + light_dist_sq * 0.0001)
-                    local_color_r += l_col[0] * attenuation * 0.1
-                    local_color_g += l_col[1] * attenuation * 0.1
-                    local_color_b += l_col[2] * attenuation * 0.1
+            for px, py, pz, p_infl, p_infl_sq, inv_p_infl, pr, pg, pb, pem in nearby_particles:
+                dx = curr_x - px
+                d2 = dx * dx
+                if d2 >= p_infl_sq: continue
+                dy = curr_y - py
+                d2 += dy * dy
+                if d2 >= p_infl_sq: continue
+                dz = curr_z - pz
+                d2 += dz * dz
+                if d2 >= p_infl_sq: continue
+                
+                falloff = 1.0 - math.sqrt(d2) * inv_p_infl
+                falloff_sq = falloff * falloff
+                local_density += falloff_sq * 0.5
+                emission = pem * falloff_sq
+                local_r += pr * emission
+                local_g += pg * emission
+                local_b += pb * emission
             
             if local_density > 0:
-                alpha = 1.0 - math.exp(-local_density * step_size * FOG_DENSITY)
-                if alpha > 1.0: alpha = 1.0
+                for lx, ly, lz, lc0, lc1, lc2, l_int in lights_data:
+                    ldx, ldy, ldz = curr_x - lx, curr_y - ly, curr_z - lz
+                    ld2 = ldx*ldx + ldy*ldy + ldz*ldz
+                    attenuation = l_int / (1.0 + ld2 * 0.0001)
+                    local_r += lc0 * attenuation
+                    local_g += lc1 * attenuation
+                    local_b += lc2 * attenuation
                 
-                remaining = 1.0 - accumulated_density
-                accumulated_color[0] += local_color_r * alpha * remaining
-                accumulated_color[1] += local_color_g * alpha * remaining
-                accumulated_color[2] += local_color_b * alpha * remaining
-                accumulated_density += alpha * remaining
+                alpha = 1.0 - math.exp(-local_density * fog_factor)
+                remaining = 1.0 - acc_density
+                factor = alpha * remaining
+                acc_r += local_r * factor
+                acc_g += local_g * factor
+                acc_b += local_b * factor
+                acc_density += factor
                 
-                if accumulated_density > 0.95:  # Slightly earlier cutoff
+                if acc_density > 0.95:
                     break
         
-        return (
-            min(1.0, accumulated_color[0]),
-            min(1.0, accumulated_color[1]),
-            min(1.0, accumulated_color[2])
-        )
+        return (min(1.0, acc_r), min(1.0, acc_g), min(1.0, acc_b))
     
     def shade_particle(self, particle: Particle, lights: List[Light], 
                        view_dir: Vector3) -> Tuple[int, int, int]:
@@ -510,7 +502,7 @@ class ParticleSimulation:
             min_z = int((pz - infl) / grid_size)
             max_z = int((pz + infl) / grid_size)
             
-            p_info = (px, py, pz, infl, infl*infl, p.color[0]/255.0, p.color[1]/255.0, p.color[2]/255.0, p.emission)
+            p_info = (px, py, pz, infl, infl*infl, 1.0/infl, p.color[0]/255.0, p.color[1]/255.0, p.color[2]/255.0, p.emission)
             
             for i in range(min_x, max_x + 1):
                 for j in range(min_y, max_y + 1):
@@ -520,7 +512,9 @@ class ParticleSimulation:
                         grid[key].append(p_info)
         
         # Pre-extract light data
-        lights_data = [(l.position.x, l.position.y, l.position.z, l.color, l.intensity) for l in self.lights]
+        lights_data = [(l.position.x, l.position.y, l.position.z, 
+                        l.color[0] * 0.1, l.color[1] * 0.1, l.color[2] * 0.1, 
+                        l.intensity) for l in self.lights]
         
         inv_width = 1.0 / width
         inv_height = 1.0 / height
@@ -529,42 +523,52 @@ class ParticleSimulation:
         cos_r = math.cos(self.camera_rotation)
         sin_r = math.sin(self.camera_rotation)
         
+        # Pre-calculate nx dependent values
+        nx_vals = [(sx * sample_rate) * inv_width for sx in range(small_w)]
+        swirl_x1 = [math.sin(nx * 3 + self.time * 0.5) for nx in nx_vals]
+        swirl_x2 = [math.cos(nx * 2 - self.time * 0.4) for nx in nx_vals]
+        cloud_x1 = [nx * 6 for nx in nx_vals]
+        cloud_x2 = [nx * 3 for nx in nx_vals]
+        ray_x_vals = [(nx * 2 - 1) * fov_scale * aspect for nx in nx_vals]
+        
         for sy in range(small_h):
             y = sy * sample_rate
             ny = y * inv_height
             ndc_y = 1 - ny * 2
             ray_y = ndc_y * fov_scale
             
+            swirl_y1 = math.cos(ny * 2 + self.time * 0.3)
+            swirl_y2 = math.sin(ny * 4 + self.time * 0.6)
+            cloud_y1 = ny * 4 + self.time * 0.2
+            cloud_y2 = -ny * 5 + self.time * 0.15
+            
             for sx in range(small_w):
-                x = sx * sample_rate
-                nx = x * inv_width
-                
-                swirl = math.sin(nx * 3 + self.time * 0.5) * math.cos(ny * 2 + self.time * 0.3)
-                swirl2 = math.cos(nx * 2 - self.time * 0.4) * math.sin(ny * 4 + self.time * 0.6)
+                swirl = swirl_x1[sx] * swirl_y1
+                swirl2 = swirl_x2[sx] * swirl_y2
                 
                 base_r = int(15 + 25 * ny + 15 * swirl)
                 base_g = int(5 + 15 * (1 - ny) + 10 * swirl2)
                 base_b = int(35 + 40 * ny + 20 * abs(swirl))
                 
-                cloud = math.sin(nx * 6 + ny * 4 + self.time * 0.2) * 0.5 + 0.5
-                cloud *= math.cos(nx * 3 - ny * 5 + self.time * 0.15) * 0.5 + 0.5
+                cloud = (math.sin(cloud_x1[sx] + cloud_y1) * 0.5 + 0.5) * \
+                        (math.cos(cloud_x2[sx] + cloud_y2) * 0.5 + 0.5)
                 
                 base_r = int(min(60, base_r + cloud * 30))
                 base_g = int(min(40, base_g + cloud * 15))
                 base_b = int(min(80, base_b + cloud * 25))
                 
-                # Pre-calculate ray direction components
-                ndc_x = nx * 2 - 1
-                ray_x = ndc_x * fov_scale * aspect
+                ray_x = ray_x_vals[sx]
                 ray_z = 1.0
                 ray_len = math.sqrt(ray_x * ray_x + ray_y * ray_y + ray_z * ray_z)
-                ray_x /= ray_len
-                ray_y_norm = ray_y / ray_len
-                ray_z /= ray_len
+                inv_ray_len = 1.0 / ray_len
                 
-                rot_ray_x = ray_x * cos_r + ray_z * sin_r
-                rot_ray_y = ray_y_norm
-                rot_ray_z = -ray_x * sin_r + ray_z * cos_r
+                rx = ray_x * inv_ray_len
+                ry = ray_y * inv_ray_len
+                rz = ray_z * inv_ray_len
+                
+                rot_ray_x = rx * cos_r + rz * sin_r
+                rot_ray_y = ry
+                rot_ray_z = -rx * sin_r + rz * cos_r
                 
                 fog_color = self.renderer.calculate_volumetric_fog(
                     self.camera_position.x, self.camera_position.y, self.camera_position.z,
