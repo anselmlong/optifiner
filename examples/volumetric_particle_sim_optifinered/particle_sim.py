@@ -16,8 +16,6 @@ import math
 import random
 from dataclasses import dataclass
 from typing import List, Tuple
-import time
-
 # Set SDL to use dummy video driver if no display available (for headless testing)
 if os.environ.get("SDL_VIDEODRIVER") is None and os.environ.get("DISPLAY") is None:
     # Check if we're in a headless environment
@@ -27,6 +25,16 @@ if os.environ.get("SDL_VIDEODRIVER") is None and os.environ.get("DISPLAY") is No
         pass
 
 import pygame
+import time
+
+_frame_count = 0
+_fps_start_time = time.time()
+_current_fps = 0.0
+
+def get_fps():
+    global _current_fps
+    return _current_fps
+
 
 
 # Configuration
@@ -240,35 +248,43 @@ class VolumetricRenderer:
     
     def shade_particle(self, particle: Particle, lights: List[Light], 
                        view_dir: Vector3) -> Tuple[int, int, int]:
-        """Calculate shading for a single particle"""
+        """Calculate beautiful shading for a single particle"""
         base_color = list(particle.color)
-        final_color = [c * 0.1 for c in base_color]  # Ambient
+        # Soft ambient with slight blue tint for depth
+        final_color = [c * 0.15 + 10 for c in base_color]
+        final_color[2] += 15  # Blue ambient boost
         
         for light in lights:
             # Calculate light direction and distance
             light_dir = (light.position - particle.position).normalize()
             light_dist = (light.position - particle.position).length()
             
-            # Diffuse lighting with quadratic falloff
-            attenuation = light.intensity / (1.0 + light_dist * light_dist * 0.0001)
+            # Softer diffuse lighting with smoother falloff
+            attenuation = light.intensity / (1.0 + light_dist * light_dist * 0.00008)
+            attenuation = min(1.2, attenuation)  # Cap for softer look
             
-            # Fresnel-like rim lighting
+            # Enhanced fresnel-like rim lighting for that glowy look
             fresnel = 1.0 - abs(view_dir.dot(light_dir))
-            fresnel = fresnel ** 3
+            fresnel = fresnel ** 2  # Softer falloff
             
-            final_color[0] += base_color[0] * light.color[0] * attenuation * (0.7 + fresnel * 0.3)
-            final_color[1] += base_color[1] * light.color[1] * attenuation * (0.7 + fresnel * 0.3)
-            final_color[2] += base_color[2] * light.color[2] * attenuation * (0.7 + fresnel * 0.3)
+            # Color mixing with light
+            final_color[0] += base_color[0] * light.color[0] * attenuation * (0.6 + fresnel * 0.4)
+            final_color[1] += base_color[1] * light.color[1] * attenuation * (0.6 + fresnel * 0.4)
+            final_color[2] += base_color[2] * light.color[2] * attenuation * (0.6 + fresnel * 0.4)
         
-        # Add emission
-        final_color[0] += base_color[0] * particle.emission * 0.5
-        final_color[1] += base_color[1] * particle.emission * 0.5
-        final_color[2] += base_color[2] * particle.emission * 0.5
+        # Add emission with bloom-like effect
+        emission_boost = 1.0 + particle.emission * 0.8
+        final_color[0] = final_color[0] * emission_boost + base_color[0] * particle.emission * 0.3
+        final_color[1] = final_color[1] * emission_boost + base_color[1] * particle.emission * 0.3
+        final_color[2] = final_color[2] * emission_boost + base_color[2] * particle.emission * 0.3
+        
+        # Soft HDR-like tone mapping for nicer color distribution
+        final_color = [c / (1 + c / 300) for c in final_color]
         
         return (
-            min(255, int(final_color[0])),
-            min(255, int(final_color[1])),
-            min(255, int(final_color[2]))
+            min(255, max(0, int(final_color[0]))),
+            min(255, max(0, int(final_color[1]))),
+            min(255, max(0, int(final_color[2])))
         )
 
 
@@ -290,21 +306,21 @@ class ParticleSimulation:
         self.camera_position = Vector3(0, 50, -self.renderer.camera_distance)
         self.time = 0.0
         
-        self.fps_history: List[float] = []
-        self.frame_count = 0
-        
         self._init_particles()
         self._init_lights()
     
     def _init_particles(self) -> None:
         """Initialize particles with random positions and properties"""
+        # Dreamy cosmic palette - soft pastels and rich jewel tones
         colors = [
-            (255, 100, 50),   # Orange
-            (50, 150, 255),   # Blue
-            (255, 50, 150),   # Pink
-            (50, 255, 150),   # Cyan
-            (255, 255, 100),  # Yellow
-            (150, 100, 255),  # Purple
+            (255, 120, 200),  # Hot pink
+            (120, 200, 255),  # Sky blue
+            (255, 200, 120),  # Peach gold
+            (200, 120, 255),  # Lavender
+            (120, 255, 200),  # Mint
+            (255, 150, 150),  # Coral
+            (150, 255, 255),  # Aqua
+            (255, 220, 180),  # Warm cream
         ]
         
         for i in range(NUM_PARTICLES):
@@ -328,17 +344,19 @@ class ParticleSimulation:
             color = random.choice(colors)
             radius = random.uniform(PARTICLE_RADIUS * 0.5, PARTICLE_RADIUS * 1.5)
             mass = radius ** 2
-            emission = random.uniform(0.2, 1.0) if random.random() > 0.7 else 0.0
+            # More particles emit light for prettier effect
+            emission = random.uniform(0.3, 1.0) if random.random() > 0.4 else random.uniform(0.0, 0.2)
             
             self.particles.append(Particle(pos, vel, color, radius, mass, emission))
     
     def _init_lights(self) -> None:
         """Initialize orbiting lights"""
+        # Vibrant light colors for dramatic effect
         light_colors = [
-            (1.0, 0.8, 0.6),
-            (0.6, 0.8, 1.0),
-            (1.0, 0.6, 0.8),
-            (0.8, 1.0, 0.6),
+            (1.0, 0.6, 0.9),   # Magenta
+            (0.5, 0.8, 1.0),   # Cyan blue
+            (1.0, 0.85, 0.5),  # Golden
+            (0.6, 1.0, 0.8),   # Mint green
         ]
         
         for i in range(NUM_LIGHTS):
@@ -346,9 +364,9 @@ class ParticleSimulation:
             self.lights.append(Light(
                 position=Vector3(0, 0, 0),
                 color=light_colors[i % len(light_colors)],
-                intensity=150.0,
-                orbit_radius=WORLD_BOUNDS * 0.6,
-                orbit_speed=0.5 + i * 0.1,
+                intensity=200.0,  # Brighter lights for more dramatic effect
+                orbit_radius=WORLD_BOUNDS * 0.7,
+                orbit_speed=0.4 + i * 0.12,  # Slightly varied speeds
                 orbit_phase=phase
             ))
     
@@ -418,15 +436,35 @@ class ParticleSimulation:
     
     def render_volumetric_background(self, surface: pygame.Surface) -> None:
         """
-        Render volumetric fog background - INTENTIONALLY SLOW!
-        Per-pixel raymarching without any optimization.
+        Render beautiful gradient background with nebula-like effects.
+        INTENTIONALLY SLOW - per-pixel calculations!
         """
-        # Only render every Nth pixel for performance, then scale up
-        # But still intentionally slow
-        sample_rate = 32  # Sample every 32nd pixel - still very slow due to O(n) per step
+        # Create a background surface with smooth gradients
+        sample_rate = 8  # Finer sampling for smoother look
         
         for y in range(0, self.renderer.height, sample_rate):
             for x in range(0, self.renderer.width, sample_rate):
+                # Normalized coordinates
+                nx = x / self.renderer.width
+                ny = y / self.renderer.height
+                
+                # Animated swirling effect based on time and position
+                swirl = math.sin(nx * 3 + self.time * 0.5) * math.cos(ny * 2 + self.time * 0.3)
+                swirl2 = math.cos(nx * 2 - self.time * 0.4) * math.sin(ny * 4 + self.time * 0.6)
+                
+                # Deep space gradient - dark blue to purple to deep magenta
+                base_r = int(15 + 25 * ny + 15 * swirl)
+                base_g = int(5 + 15 * (1 - ny) + 10 * swirl2)
+                base_b = int(35 + 40 * ny + 20 * abs(swirl))
+                
+                # Add subtle nebula clouds
+                cloud = math.sin(nx * 6 + ny * 4 + self.time * 0.2) * 0.5 + 0.5
+                cloud *= math.cos(nx * 3 - ny * 5 + self.time * 0.15) * 0.5 + 0.5
+                
+                base_r = int(min(60, base_r + cloud * 30))
+                base_g = int(min(40, base_g + cloud * 15))
+                base_b = int(min(80, base_b + cloud * 25))
+                
                 # Calculate ray direction for this pixel
                 ndc_x = (x / self.renderer.width) * 2 - 1
                 ndc_y = 1 - (y / self.renderer.height) * 2
@@ -454,17 +492,25 @@ class ParticleSimulation:
                     WORLD_BOUNDS * 3
                 )
                 
+                # Blend fog with beautiful background
+                fog_strength = (fog_color[0] + fog_color[1] + fog_color[2]) / 3
+                blend = min(1.0, fog_strength * 2)
+                
+                final_r = int(base_r * (1 - blend) + fog_color[0] * 255 * blend)
+                final_g = int(base_g * (1 - blend) + fog_color[1] * 255 * blend)
+                final_b = int(base_b * (1 - blend) + fog_color[2] * 255 * blend)
+                
                 color = (
-                    int(fog_color[0] * 255),
-                    int(fog_color[1] * 255),
-                    int(fog_color[2] * 255)
+                    min(255, max(0, final_r)),
+                    min(255, max(0, final_g)),
+                    min(255, max(0, final_b))
                 )
                 
                 # Fill the sampled area
                 pygame.draw.rect(surface, color, (x, y, sample_rate, sample_rate))
     
     def render_particles(self, surface: pygame.Surface) -> None:
-        """Render particles with depth sorting and shading"""
+        """Render particles with depth sorting and beautiful soft shading"""
         # Calculate view direction
         view_dir = Vector3(
             math.sin(self.camera_rotation),
@@ -499,41 +545,72 @@ class ParticleSimulation:
             # Calculate shading
             color = self.renderer.shade_particle(particle, self.lights, view_dir)
             
-            # Draw particle with glow effect - multiple circles for glow
-            if particle.emission > 0:
-                for glow_i in range(3, 0, -1):
-                    glow_radius = screen_radius + glow_i * 3
-                    glow_alpha = particle.emission * (1 - glow_i / 4)
-                    glow_color = (
-                        int(color[0] * glow_alpha),
-                        int(color[1] * glow_alpha),
-                        int(color[2] * glow_alpha)
-                    )
-                    if glow_radius > 0:
-                        pygame.draw.circle(surface, glow_color, (screen_x, screen_y), glow_radius)
+            # Depth-based atmospheric fade (distant particles are more blue/purple)
+            depth_fade = min(1.0, depth / 600)
+            atmosphere_color = (
+                int(color[0] * (1 - depth_fade * 0.5) + 80 * depth_fade * 0.5),
+                int(color[1] * (1 - depth_fade * 0.4) + 60 * depth_fade * 0.4),
+                int(color[2] * (1 - depth_fade * 0.2) + 120 * depth_fade * 0.2)
+            )
+            color = atmosphere_color
             
-            # Draw main particle
-            if screen_radius > 0:
-                pygame.draw.circle(surface, color, (screen_x, screen_y), screen_radius)
+            # Create soft glow surface with alpha blending - INTENTIONALLY per-particle
+            glow_surface = pygame.Surface((screen_radius * 6, screen_radius * 6), pygame.SRCALPHA)
+            center = screen_radius * 3
+            
+            # Outer soft glow (large, very transparent)
+            for glow_i in range(8, 0, -1):
+                glow_radius = int(screen_radius * (1 + glow_i * 0.5))
+                alpha = int(25 * (1 - glow_i / 9) * (0.5 + particle.emission * 0.5))
+                glow_color = (color[0], color[1], color[2], alpha)
+                if glow_radius > 0:
+                    pygame.draw.circle(glow_surface, glow_color, (center, center), glow_radius)
+            
+            # Inner brighter glow
+            for glow_i in range(4, 0, -1):
+                glow_radius = int(screen_radius * (1 + glow_i * 0.2))
+                alpha = int(60 * (1 - glow_i / 5))
+                glow_color = (
+                    min(255, color[0] + 30),
+                    min(255, color[1] + 30),
+                    min(255, color[2] + 30),
+                    alpha
+                )
+                if glow_radius > 0:
+                    pygame.draw.circle(glow_surface, glow_color, (center, center), glow_radius)
+            
+            # Core particle - solid with soft edge
+            if screen_radius > 2:
+                # Soft edge ring
+                edge_color = (color[0], color[1], color[2], 180)
+                pygame.draw.circle(glow_surface, edge_color, (center, center), screen_radius)
                 
-                # Highlight - INTENTIONALLY calculating this per-particle
-                highlight_offset = Vector3(
-                    -math.sin(self.camera_rotation) * particle.radius * 0.3,
-                    particle.radius * 0.3,
-                    -math.cos(self.camera_rotation) * particle.radius * 0.3
+                # Bright core
+                core_radius = max(1, int(screen_radius * 0.7))
+                core_color = (
+                    min(255, color[0] + 50),
+                    min(255, color[1] + 50),
+                    min(255, color[2] + 50),
+                    220
                 )
-                highlight_pos = particle.position + highlight_offset
-                hx, hy, hd = self.renderer.project_point(
-                    highlight_pos, self.camera_position, self.camera_rotation
-                )
-                if hx > 0 and hd > 0:
-                    highlight_radius = max(1, screen_radius // 4)
-                    highlight_color = (
+                pygame.draw.circle(glow_surface, core_color, (center, center), core_radius)
+                
+                # Hot center highlight
+                if screen_radius > 4:
+                    hot_radius = max(1, int(screen_radius * 0.3))
+                    hot_color = (
                         min(255, color[0] + 100),
                         min(255, color[1] + 100),
-                        min(255, color[2] + 100)
+                        min(255, color[2] + 80),
+                        255
                     )
-                    pygame.draw.circle(surface, highlight_color, (hx, hy), highlight_radius)
+                    pygame.draw.circle(glow_surface, hot_color, (center - screen_radius//4, center - screen_radius//4), hot_radius)
+            else:
+                # Small particles - just a bright dot
+                pygame.draw.circle(glow_surface, (*color, 255), (center, center), max(1, screen_radius))
+            
+            # Blit the glow surface onto main surface
+            surface.blit(glow_surface, (screen_x - center, screen_y - center), special_flags=pygame.BLEND_ALPHA_SDL2)
     
     def update(self, dt: float) -> None:
         """Update simulation state"""
@@ -554,8 +631,8 @@ class ParticleSimulation:
     
     def render(self) -> None:
         """Render the complete scene"""
-        # Clear screen with dark background
-        self.screen.fill((5, 5, 15))
+        # Clear screen with deep space background
+        self.screen.fill((8, 4, 20))
         
         # Render volumetric fog background
         self.render_volumetric_background(self.screen)
@@ -563,35 +640,28 @@ class ParticleSimulation:
         # Render particles on top
         self.render_particles(self.screen)
         
-        # Draw FPS counter
-        fps = self.clock.get_fps()
-        self.fps_history.append(fps)
-        if len(self.fps_history) > 60:
-            self.fps_history.pop(0)
-        avg_fps = sum(self.fps_history) / len(self.fps_history) if self.fps_history else 0
-        
-        font = pygame.font.Font(None, 36)
-        fps_text = font.render(f"FPS: {avg_fps:.1f}", True, (255, 255, 255))
-        self.screen.blit(fps_text, (10, 10))
-        
-        particles_text = font.render(f"Particles: {len(self.particles)}", True, (255, 255, 255))
-        self.screen.blit(particles_text, (10, 40))
+        # Draw subtle vignette effect - INTENTIONALLY slow per-pixel
+        vignette = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        for y in range(0, SCREEN_HEIGHT, 16):
+            for x in range(0, SCREEN_WIDTH, 16):
+                # Distance from center normalized
+                dx = (x - SCREEN_WIDTH / 2) / (SCREEN_WIDTH / 2)
+                dy = (y - SCREEN_HEIGHT / 2) / (SCREEN_HEIGHT / 2)
+                dist = math.sqrt(dx * dx + dy * dy)
+                alpha = int(min(80, dist * dist * 60))
+                pygame.draw.rect(vignette, (0, 0, 0, alpha), (x, y, 16, 16))
+        self.screen.blit(vignette, (0, 0))
         
         pygame.display.flip()
     
-    def run(self, max_frames: int = None) -> float:
-        """
-        Run the simulation.
-        
-        Args:
-            max_frames: If set, stop after this many frames and return average FPS
-            
-        Returns:
-            Average FPS if max_frames is set, otherwise 0
-        """
-        self.frame_count = 0
+    def run(self, duration: float = 0.0) -> None:
+        """Run the simulation."""
         start_time = time.time()
-        
+        while self.running:
+            if duration > 0 and (time.time() - start_time) > duration:
+                self.running = False
+                break
+
         while self.running:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
@@ -602,42 +672,24 @@ class ParticleSimulation:
             
             dt = self.clock.tick(60) / 1000.0
             dt = min(dt, 0.1)  # Cap delta time
+
+            global _frame_count, _fps_start_time, _current_fps
+            _frame_count += 1
+            elapsed = time.time() - _fps_start_time
+            if elapsed >= 1.0:
+                _current_fps = _frame_count / elapsed
+                _frame_count = 0
+                _fps_start_time = time.time()
             
             self.update(dt)
             self.render()
-            
-            self.frame_count += 1
-            
-            if max_frames and self.frame_count >= max_frames:
-                break
-        
-        elapsed = time.time() - start_time
-        avg_fps = self.frame_count / elapsed if elapsed > 0 else 0
-        
-        return avg_fps
     
     def cleanup(self) -> None:
         """Clean up pygame resources"""
         pygame.quit()
 
-
-def get_simulation_stats(sim: ParticleSimulation) -> dict:
-    """Get current simulation statistics for validation"""
-    return {
-        'num_particles': len(sim.particles),
-        'num_lights': len(sim.lights),
-        'camera_rotation': sim.camera_rotation,
-        'time': sim.time,
-        'particles_in_bounds': sum(
-            1 for p in sim.particles 
-            if abs(p.position.x) <= WORLD_BOUNDS and
-               abs(p.position.y) <= WORLD_BOUNDS and
-               abs(p.position.z) <= WORLD_BOUNDS
-        ),
-        'avg_particle_velocity': sum(
-            p.velocity.length() for p in sim.particles
-        ) / len(sim.particles) if sim.particles else 0,
-    }
+    def stop(self):
+        self.running = False
 
 
 def main():

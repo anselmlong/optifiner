@@ -22,7 +22,6 @@ class ModelConfig(BaseModel):
     provider: ModelProvider
     model_name: str
     temperature: float = 0.0
-    max_tokens: int = 4096
     timeout: float = 60.0  # seconds for model call timeout
     max_retries: int = 3  # number of retries on timeout/transient errors
 
@@ -33,7 +32,6 @@ class ModelConfig(BaseModel):
             provider=ModelProvider.ANTHROPIC,
             model_name="claude-sonnet-4-20250514",
             temperature=0.0,
-            max_tokens=8192,
             timeout=60.0,
             max_retries=3,
         )
@@ -45,7 +43,6 @@ class ModelConfig(BaseModel):
             provider=ModelProvider.GOOGLE,
             model_name="gemini-2.5-flash",
             temperature=0.0,
-            max_tokens=8192,
             timeout=50.0,  # Shorter timeout for faster model
             max_retries=3,
         )
@@ -57,7 +54,6 @@ class ModelConfig(BaseModel):
             provider=ModelProvider.GOOGLE,
             model_name="gemini-3-flash-preview",
             temperature=0.0,
-            max_tokens=8192,
             timeout=50.0,
             max_retries=3,
         )
@@ -69,8 +65,18 @@ class ModelConfig(BaseModel):
             provider=ModelProvider.OPENAI,
             model_name="gpt-4o",
             temperature=0.0,
-            max_tokens=4096,
             timeout=60.0,
+            max_retries=3,
+        )
+
+    @classmethod
+    def gpt5_nano(cls) -> "ModelConfig":
+        """GPT-5 Nano configuration (fast, lightweight model)."""
+        return cls(
+            provider=ModelProvider.OPENAI,
+            model_name="gpt-5-nano",
+            temperature=0.0,
+            timeout=50.0,  # Shorter timeout for faster model
             max_retries=3,
         )
 
@@ -109,7 +115,6 @@ class WorkerConfig(BaseModel):
         provider = os.getenv("MODEL_PROVIDER", "google")
         model_name = os.getenv("MODEL_NAME", "gemini-2.5-flash")
         temperature = float(os.getenv("MODEL_TEMPERATURE", "0.0"))
-        max_tokens = int(os.getenv("MODEL_MAX_TOKENS", "8192"))
 
         # Workspace root comes from WORKSPACE_ROOT env or will be set dynamically
         workspace_root = os.getenv("WORKSPACE_ROOT", "")
@@ -124,7 +129,6 @@ class WorkerConfig(BaseModel):
                 provider=ModelProvider(provider),
                 model_name=model_name,
                 temperature=temperature,
-                max_tokens=max_tokens,
                 timeout=timeout,
                 max_retries=max_retries,
             ),
@@ -156,7 +160,6 @@ def get_llm(config: ModelConfig):
             model=config.model_name,
             api_key=api_key,
             temperature=config.temperature,
-            max_tokens=config.max_tokens,
             timeout=config.timeout,
             max_retries=config.max_retries,
         )
@@ -174,7 +177,6 @@ def get_llm(config: ModelConfig):
             model=config.model_name,
             google_api_key=api_key,
             temperature=config.temperature,
-            max_output_tokens=config.max_tokens,
             timeout=config.timeout,
             max_retries=config.max_retries,
         )
@@ -192,7 +194,6 @@ def get_llm(config: ModelConfig):
             model=config.model_name,
             api_key=api_key,
             temperature=config.temperature,
-            max_tokens=config.max_tokens,
             timeout=config.timeout,
             max_retries=config.max_retries,
         )
