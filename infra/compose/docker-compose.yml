@@ -1,0 +1,102 @@
+version: '3.8'
+
+services:
+  # Redis for task queue and state management
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # PostgreSQL for evolution history and metrics
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: optifiner
+      POSTGRES_PASSWORD: optifiner_dev
+      POSTGRES_DB: optifiner
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U optifiner"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # API backend (FastAPI)
+  api:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.api
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://optifiner:optifiner_dev@postgres:5432/optifiner
+      - REDIS_URL=redis://redis:6379/0
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ../../apps/api:/app/api:ro
+      - target_codebase:/workspaces
+
+  # Worker container - runs LangGraph agents
+  worker:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.worker
+    environment:
+      - OPTIFINER_ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPTIFINER_GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - OPTIFINER_REDIS_URL=redis://redis:6379/0
+      - OPTIFINER_WORKSPACE_PATH=/app
+      - OPTIFINER_DEFAULT_MODEL=claude-sonnet-4-20250514
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      # Mount target codebase - this is where the agent operates
+      - target_codebase:/app
+      # For development: mount worker source
+      - ../../services/worker/src:/worker/src:ro
+    deploy:
+      # Allow multiple worker replicas for parallel agents
+      replicas: 1
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+
+  # Web frontend (React)
+  web:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.web
+    ports:
+      - "3000:3000"
+    environment:
+      - VITE_API_URL=http://localhost:8000
+      - VITE_WS_URL=ws://localhost:8000
+    depends_on:
+      - api
+    volumes:
+      - ../../apps/web:/app:ro
+      - /app/node_modules
+
+volumes:
+  redis_data:
+  postgres_data:
+  # Shared volume for target codebase that agents work on
+  target_codebase:
