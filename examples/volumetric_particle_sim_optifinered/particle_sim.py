@@ -131,30 +131,6 @@ class Light:
     orbit_phase: float
 
 
-class SpatialGrid:
-    """Spatial partitioning for faster proximity queries"""
-    def __init__(self, cell_size: float):
-        self.cell_size = cell_size
-        self.cells = {}
-
-    def update(self, particles: List['Particle']):
-        self.cells = {}
-        for p in particles:
-            cx = int(p.position.x // self.cell_size)
-            cy = int(p.position.y // self.cell_size)
-            cz = int(p.position.z // self.cell_size)
-            cell = (cx, cy, cz)
-            if cell not in self.cells:
-                self.cells[cell] = []
-            ir = p.radius * 3
-            # Pre-calculate and store as tuple for speed
-            self.cells[cell].append((
-                p.position.x, p.position.y, p.position.z,
-                ir * ir, ir, p.emission,
-                p.color[0] / 255.0, p.color[1] / 255.0, p.color[2] / 255.0
-            ))
-
-
 class VolumetricRenderer:
     """Software-based volumetric renderer - intentionally unoptimized"""
     
@@ -189,11 +165,11 @@ class VolumetricRenderer:
         return (int(screen_x), int(screen_y), rot_z)
     
     def calculate_volumetric_fog(self, ray_origin: Vector3, ray_dir: Vector3, 
-                                  grid: SpatialGrid, lights: List[Light],
+                                  particles: List[Particle], lights: List[Light],
                                   max_distance: float) -> Tuple[float, float, float]:
         """
         Raymarch through the scene to calculate volumetric fog contribution.
-        Optimized with spatial grid.
+        This is INTENTIONALLY slow - per-pixel, no vectorization.
         """
         accumulated_color = [0.0, 0.0, 0.0]
         accumulated_density = 0.0
@@ -203,9 +179,6 @@ class VolumetricRenderer:
         ray_ox, ray_oy, ray_oz = ray_origin.x, ray_origin.y, ray_origin.z
         ray_dx, ray_dy, ray_dz = ray_dir.x, ray_dir.y, ray_dir.z
         
-        cell_size = grid.cell_size
-        grid_cells = grid.cells
-
         for step in range(RAYMARCH_STEPS):
             # Calculate current position along ray
             t = step * step_size
@@ -217,32 +190,26 @@ class VolumetricRenderer:
             local_density = 0.0
             local_color = [0.0, 0.0, 0.0]
             
-            # Check contribution from nearby particles using spatial grid
-            cx = int(curr_x // cell_size)
-            cy = int(curr_y // cell_size)
-            cz = int(curr_z // cell_size)
-            
-            for dx in range(-1, 2):
-                for dy in range(-1, 2):
-                    for dz in range(-1, 2):
-                        cell = (cx + dx, cy + dy, cz + dz)
-                        if cell in grid_cells:
-                            for px, py, pz, ir_sq, ir, pemission, pcol0, pcol1, pcol2 in grid_cells[cell]:
-                                dx_p = curr_x - px
-                                dy_p = curr_y - py
-                                dz_p = curr_z - pz
-                                dist_sq = dx_p * dx_p + dy_p * dy_p + dz_p * dz_p
-                                
-                                if dist_sq < ir_sq:
-                                    dist = math.sqrt(dist_sq)
-                                    falloff = 1.0 - (dist / ir)
-                                    falloff = falloff * falloff
-                                    
-                                    local_density += falloff * 0.5
-                                    emission = pemission * falloff
-                                    local_color[0] += pcol0 * emission
-                                    local_color[1] += pcol1 * emission
-                                    local_color[2] += pcol2 * emission
+            # Check contribution from each particle - O(n) per raymarch step!
+            for particle in particles:
+                # Quick squared distance check first (avoid sqrt)
+                dx = curr_x - particle.position.x
+                dy = curr_y - particle.position.y
+                dz = curr_z - particle.position.z
+                dist_sq = dx * dx + dy * dy + dz * dz
+                
+                influence_radius = particle.radius * 3
+                if dist_sq < influence_radius * influence_radius:
+                    dist = math.sqrt(dist_sq)
+                    # Falloff based on distance
+                    falloff = 1.0 - (dist / influence_radius)
+                    falloff = falloff * falloff
+                    
+                    local_density += falloff * 0.5
+                    emission = particle.emission * falloff
+                    local_color[0] += particle.color[0] / 255.0 * emission
+                    local_color[1] += particle.color[1] / 255.0 * emission
+                    local_color[2] += particle.color[2] / 255.0 * emission
             
             # Add light contribution at this point
             for light in lights:
@@ -484,7 +451,7 @@ class ParticleSimulation:
     def render_volumetric_background(self, surface: pygame.Surface) -> None:
         """
         Render beautiful gradient background with nebula-like effects.
-        Optimized with spatial grid and pre-calculated data.
+        INTENTIONALLY SLOW - per-pixel calculations!
         """
         # Create a background surface with smooth gradients
         sample_rate = 16  # Coarser sampling (was 8)
@@ -504,10 +471,6 @@ class ParticleSimulation:
         time_06 = self.time * 0.6
         time_02 = self.time * 0.2
         time_015 = self.time * 0.15
-
-        # Create and update spatial grid for fog
-        grid = SpatialGrid(cell_size=40.0)
-        grid.update(self.particles)
         
         for y in range(0, height, sample_rate):
             ny = y * inv_height
@@ -555,7 +518,7 @@ class ParticleSimulation:
                 # Raymarch for volumetric fog
                 fog_color = self.renderer.calculate_volumetric_fog(
                     self.camera_position, rot_ray,
-                    grid, self.lights,
+                    self.particles, self.lights,
                     WORLD_BOUNDS * 3
                 )
                 
