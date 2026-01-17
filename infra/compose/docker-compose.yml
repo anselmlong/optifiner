@@ -62,7 +62,7 @@ services:
       - OPTIFINER_GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - OPTIFINER_REDIS_URL=redis://redis:6379/0
       - OPTIFINER_WORKSPACE_PATH=/app
-      - OPTIFINER_DEFAULT_MODEL=gemini-3-flash
+      - OPTIFINER_DEFAULT_MODEL=gemini-3-flash-preview
     depends_on:
       redis:
         condition: service_healthy

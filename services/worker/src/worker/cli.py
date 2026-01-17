@@ -355,8 +355,8 @@ Remember: Only improvements that INCREASE the score are kept!"""
 @click.option("--model-provider", default="google",
               type=click.Choice(["anthropic", "google", "openai"]),
               help="LLM provider (default: google)")
-@click.option("--model-name", default="gemini-3-flash",
-              help="Model name (default: gemini-3-flash)")
+@click.option("--model-name", default="gemini-3-flash-preview",
+              help="Model name (default: gemini-3-flash-preview)")
 @click.option("--output", "-o", type=click.Path(), help="Output file for results (JSON)")
 def main(
     repository: str,

@@ -38,7 +38,7 @@ class ModelConfig(BaseModel):
         """Gemini 3 Flash configuration."""
         return cls(
             provider=ModelProvider.GOOGLE,
-            model_name="gemini-3-flash",
+            model_name="gemini-3-flash-preview",
             temperature=0.0,
             max_tokens=8192,
         )
@@ -85,7 +85,7 @@ class WorkerConfig(BaseModel):
     def from_env(cls) -> "WorkerConfig":
         """Create configuration from environment variables."""
         provider = os.getenv("MODEL_PROVIDER", "google")
-        model_name = os.getenv("MODEL_NAME", "gemini-3-flash")
+        model_name = os.getenv("MODEL_NAME", "gemini-3-flash-preview")
         temperature = float(os.getenv("MODEL_TEMPERATURE", "0.0"))
         max_tokens = int(os.getenv("MODEL_MAX_TOKENS", "8192"))
 

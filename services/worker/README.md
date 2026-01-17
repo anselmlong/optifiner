@@ -36,7 +36,7 @@ evolution-cli REPOSITORY [OPTIONS]
 | `--max-iterations` | `-i` | 15 | Max tool calls per agent |
 | `--task` | `-t` | "Improve..." | Task description |
 | `--model-provider` | | google | LLM provider |
-| `--model-name` | | gemini-3-flash | Model name |
+| `--model-name` | | gemini-3-flash-preview | Model name |
 | `--output` | `-o` | | JSON output file |
 
 ### Example
