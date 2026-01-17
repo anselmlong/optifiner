@@ -149,6 +149,18 @@ class WorkerService:
             result = json.loads(result_data)
             task_info["result"] = result
 
+        # Check for evaluation data separately
+        eval_key = f"evaluation:{task_id}"
+        eval_data = await self.redis_client.get(eval_key)
+        if eval_data:
+            task_info["evaluation_data"] = json.loads(eval_data)
+
+        # Check for workflow data separately
+        workflow_key = f"workflow:{task_id}"
+        workflow_data = await self.redis_client.get(workflow_key)
+        if workflow_data:
+            task_info["workflow_data"] = json.loads(workflow_data)
+
         return {
             "success": True,
             "task": task_info,
@@ -180,6 +192,7 @@ class WorkerService:
             "error": result.error,
             "iterations": result.iterations,
             "messages_count": result.messages_count,
+            "evaluation_data": result.evaluation_data,
         }
         await self.redis_client.setex(result_key, 3600, json.dumps(result_data))
 
@@ -201,9 +214,256 @@ class WorkerService:
         for key in task_keys[:limit]:
             task_data = await self.redis_client.get(key)
             if task_data:
-                tasks.append(json.loads(task_data))
+                task_info = json.loads(task_data)
+                task_id = task_info.get("task_id")
+                
+                # Add result if available
+                if task_id:
+                    result_key = f"result:{task_id}"
+                    result_data = await self.redis_client.get(result_key)
+                    if result_data:
+                        task_info["result"] = json.loads(result_data)
+                    
+                    # Add evaluation data if available
+                    eval_key = f"evaluation:{task_id}"
+                    eval_data = await self.redis_client.get(eval_key)
+                    if eval_data:
+                        task_info["evaluation_data"] = json.loads(eval_data)
+                
+                tasks.append(task_info)
 
         # Sort by task_id (which includes timestamp from UUID)
         tasks.sort(key=lambda x: x.get("task_id", ""), reverse=True)
 
         return tasks
+
+    async def get_evaluation_data(self, task_id: str) -> dict[str, Any]:
+        """Get evaluation data for a completed task.
+
+        Args:
+            task_id: Task identifier
+
+        Returns:
+            Dictionary with evaluation data
+        """
+        await self.connect()
+
+        eval_key = f"evaluation:{task_id}"
+        eval_data = await self.redis_client.get(eval_key)
+
+        if not eval_data:
+            return {
+                "success": False,
+                "error": f"Evaluation data not found for task: {task_id}",
+            }
+
+        return {
+            "success": True,
+            "task_id": task_id,
+            "evaluation_data": json.loads(eval_data),
+        }
+
+    async def store_evaluation_data(
+        self, task_id: str, evaluation_data: dict[str, Any]
+    ) -> None:
+        """Store evaluation data for a task.
+
+        Args:
+            task_id: Task identifier
+            evaluation_data: Evaluation data dictionary
+        """
+        await self.connect()
+
+        eval_key = f"evaluation:{task_id}"
+        await self.redis_client.setex(
+            eval_key, 3600, json.dumps(evaluation_data)
+        )  # 1 hour TTL
+
+    async def list_evaluations(self, limit: int = 50) -> list[dict[str, Any]]:
+        """List all evaluations with their data.
+
+        Args:
+            limit: Maximum number of evaluations to return
+
+        Returns:
+            List of evaluation data dictionaries
+        """
+        await self.connect()
+
+        # Get all evaluation keys
+        eval_keys = await self.redis_client.keys("evaluation:*")
+        evaluations = []
+
+        for key in eval_keys[:limit]:
+            eval_data = await self.redis_client.get(key)
+            if eval_data:
+                task_id = key.replace("evaluation:", "")
+                eval_info = json.loads(eval_data)
+                eval_info["task_id"] = task_id
+                evaluations.append(eval_info)
+
+        # Sort by task_id (reverse chronological order)
+        evaluations.sort(key=lambda x: x.get("task_id", ""), reverse=True)
+
+        return evaluations
+
+    async def get_evaluations_by_repo(self, repo_dir: str) -> list[dict[str, Any]]:
+        """Get all evaluations for a specific repository.
+
+        Args:
+            repo_dir: Directory name of the repository
+
+        Returns:
+            List of evaluation data for the repository
+        """
+        await self.connect()
+
+        # Get all tasks for this repo
+        task_keys = await self.redis_client.keys("task:*")
+        evaluations = []
+
+        for key in task_keys:
+            task_data = await self.redis_client.get(key)
+            if task_data:
+                task_info = json.loads(task_data)
+                if task_info.get("repo_dir") == repo_dir:
+                    task_id = task_info.get("task_id")
+                    if task_id:
+                        eval_key = f"evaluation:{task_id}"
+                        eval_data = await self.redis_client.get(eval_key)
+                        if eval_data:
+                            eval_info = json.loads(eval_data)
+                            eval_info["task_id"] = task_id
+                            eval_info["repo_dir"] = repo_dir
+                            evaluations.append(eval_info)
+
+        # Sort by task_id (reverse chronological order)
+        evaluations.sort(key=lambda x: x.get("task_id", ""), reverse=True)
+
+        return evaluations
+
+    async def store_workflow_data(self, task_id: str, workflow_data: dict[str, Any]) -> None:
+        """Store workflow data for a task.
+
+        Args:
+            task_id: Task identifier
+            workflow_data: Workflow data dictionary (iterations, events, tool calls, etc.)
+        """
+        await self.connect()
+
+        workflow_key = f"workflow:{task_id}"
+        await self.redis_client.setex(
+            workflow_key, 3600, json.dumps(workflow_data)
+        )  # 1 hour TTL
+
+    async def get_workflow_data(self, task_id: str) -> dict[str, Any]:
+        """Get workflow data for a task.
+
+        Args:
+            task_id: Task identifier
+
+        Returns:
+            Dictionary with workflow data
+        """
+        await self.connect()
+
+        workflow_key = f"workflow:{task_id}"
+        workflow_data = await self.redis_client.get(workflow_key)
+
+        if not workflow_data:
+            return {
+                "success": False,
+                "error": f"Workflow data not found for task: {task_id}",
+            }
+
+        return {
+            "success": True,
+            "task_id": task_id,
+            "workflow_data": json.loads(workflow_data),
+        }
+
+    async def get_workflow_events(self, task_id: str) -> dict[str, Any]:
+        """Get workflow events for a task.
+
+        Args:
+            task_id: Task identifier
+
+        Returns:
+            Dictionary with workflow events
+        """
+        workflow_result = await self.get_workflow_data(task_id)
+        
+        if not workflow_result.get("success"):
+            return workflow_result
+
+        workflow_data = workflow_result.get("workflow_data", {})
+        events = workflow_data.get("events", [])
+
+        return {
+            "success": True,
+            "task_id": task_id,
+            "events": events,
+            "event_count": len(events),
+        }
+
+    async def get_workflow_iterations(self, task_id: str) -> dict[str, Any]:
+        """Get workflow iteration information for a task.
+
+        Args:
+            task_id: Task identifier
+
+        Returns:
+            Dictionary with iteration information
+        """
+        workflow_result = await self.get_workflow_data(task_id)
+        
+        if not workflow_result.get("success"):
+            return workflow_result
+
+        workflow_data = workflow_result.get("workflow_data", {})
+        iterations = workflow_data.get("iterations", [])
+        total_iterations = workflow_data.get("total_iterations", 0)
+
+        return {
+            "success": True,
+            "task_id": task_id,
+            "iterations": iterations,
+            "total_iterations": total_iterations,
+        }
+
+    async def get_workflow_tools(self, task_id: str) -> dict[str, Any]:
+        """Get tool call history for a task.
+
+        Args:
+            task_id: Task identifier
+
+        Returns:
+            Dictionary with tool call information
+        """
+        workflow_result = await self.get_workflow_data(task_id)
+        
+        if not workflow_result.get("success"):
+            return workflow_result
+
+        workflow_data = workflow_result.get("workflow_data", {})
+        tool_calls = workflow_data.get("tool_calls", [])
+
+        # Group by tool name
+        tools_summary = {}
+        for call in tool_calls:
+            tool_name = call.get("tool_name", "unknown")
+            if tool_name not in tools_summary:
+                tools_summary[tool_name] = {
+                    "count": 0,
+                    "calls": [],
+                }
+            tools_summary[tool_name]["count"] += 1
+            tools_summary[tool_name]["calls"].append(call)
+
+        return {
+            "success": True,
+            "task_id": task_id,
+            "tool_calls": tool_calls,
+            "total_calls": len(tool_calls),
+            "tools_summary": tools_summary,
+        }
