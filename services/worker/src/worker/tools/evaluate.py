@@ -85,8 +85,8 @@ class BenchmarkResult(BaseModel):
     
     @property
     def is_valid(self) -> bool:
-        """Check if the benchmark passed (test_gate=True and score not null)."""
-        return self.test_gate and self.score is not None
+        """Check if the benchmark passed (test_gate=True, score not null, and score not 0)."""
+        return self.test_gate and self.score is not None and self.score != 0
 
 
 def _get_python_executable() -> str:
@@ -179,7 +179,11 @@ def _format_result(result: BenchmarkResult) -> str:
         Formatted string for the agent.
     """
     if result.error:
-        return f"Benchmark Error: {result.error}"
+        return (
+            f"Benchmark Error: {result.error}\n\n"
+            f"[BENCHMARK FAILED - error]\n"
+            f"Please fix the benchmark script and try again."
+        )
     
     parts = []
     
@@ -216,6 +220,8 @@ def _format_result(result: BenchmarkResult) -> str:
             reasons.append("tests failed")
         if result.score is None:
             reasons.append("score is null")
+        elif result.score == 0:
+            reasons.append("score is 0 (invalid benchmark - please fix and retry)")
         parts.append(f"\n[BENCHMARK FAILED - {', '.join(reasons)}]")
     
     return "\n".join(parts)
@@ -287,7 +293,9 @@ def evaluate(message: str = "") -> str:
             error_output = result.stderr.strip() if result.stderr else result.stdout.strip()
             return (
                 f"Benchmark execution failed (exit code {result.returncode}):\n"
-                f"{error_output[:2000]}"
+                f"{error_output[:2000]}\n\n"
+                f"[BENCHMARK FAILED - execution error]\n"
+                f"Please fix the benchmark script and try again."
             )
         
         # Parse and format the output
@@ -296,11 +304,23 @@ def evaluate(message: str = "") -> str:
         return _format_result(parsed)
         
     except subprocess.TimeoutExpired:
-        return f"Error: Benchmark timed out after {_evaluator_timeout} seconds."
+        return (
+            f"Error: Benchmark timed out after {_evaluator_timeout} seconds.\n\n"
+            f"[BENCHMARK FAILED - timeout]\n"
+            f"Please fix the benchmark script to complete faster and try again."
+        )
     except PermissionError:
-        return f"Error: Permission denied running benchmark: {benchmark_path}"
+        return (
+            f"Error: Permission denied running benchmark: {benchmark_path}\n\n"
+            f"[BENCHMARK FAILED - permission error]\n"
+            f"Please fix the permissions and try again."
+        )
     except Exception as e:
-        return f"Error running benchmark: {e}"
+        return (
+            f"Error running benchmark: {e}\n\n"
+            f"[BENCHMARK FAILED - error]\n"
+            f"Please fix the issue and try again."
+        )
 
 
 def run_benchmark_for_validation(workspace_root: Path) -> BenchmarkResult:

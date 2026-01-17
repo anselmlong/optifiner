@@ -1,105 +1,130 @@
 #!/usr/bin/env python3
+"""Benchmark script for Volumetric 3D Particle Simulation."""
+
 import json
 import sys
 import time
-import subprocess
 import os
+import pygame # Import pygame at the top level
 
-def run_simulation_and_get_fps(duration=5):
-    """Runs the particle simulation in a subprocess and captures FPS."""
-    # Set SDL to use dummy video driver for headless testing
-    env = os.environ.copy()
-    env["SDL_VIDEODRIVER"] = "dummy"
+# Add the current directory to the path to import particle_sim
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-    command = [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "particle_sim.py")]
+from particle_sim import ParticleSimulation, SCREEN_WIDTH, SCREEN_HEIGHT
 
-    process = subprocess.Popen(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        cwd=os.path.dirname(os.path.abspath(__file__)),
-        env=env
-    )
-
-    # Allow the simulation to run for the specified duration
-    # We'll terminate it after the duration if it doesn't exit on its own
+def run_functional_test() -> bool:
+    """
+    Runs a short simulation to check if the application starts and runs without crashing.
+    """
+    # print("Running functional test...", file=sys.stderr)
+    sim = None
     try:
-        stdout, stderr = process.communicate(timeout=duration + 10) # Add buffer for cleanup
-    except subprocess.TimeoutExpired:
-        process.kill()
-        stdout, stderr = process.communicate()
-        stderr += "\nSimulation terminated due to timeout.\n"
+        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+        
+        sim = ParticleSimulation()
+        # Run for a very short duration to ensure it initializes and renders at least one frame
+        start_time = time.time()
+        while time.time() - start_time < 0.5: # Run for 0.5 seconds
+            sim.run_frame()
+            if not sim.running:
+                break
+        # print("Functional test passed: Simulation ran without immediate crash.", file=sys.stderr)
+        return True
+    except Exception as e:
+        # print(f"Functional test failed: {e}", file=sys.stderr)
+        return False
+    finally:
+        if sim:
+            sim.cleanup()
+        # Pygame quit is handled by sim.cleanup(), but ensure it's fully quit if not already
+        if pygame.get_init():
+            pygame.quit()
 
-    final_fps = 0.0
-    total_frames = 0
-    total_time = 0.0
 
-    for line in stdout.splitlines():
-        if line.startswith("FINAL_FPS:"):
-            final_fps = float(line.split(":")[1])
-        elif line.startswith("TOTAL_FRAMES:"):
-            total_frames = int(line.split(":")[1])
-        elif line.startswith("TOTAL_TIME:"):
-            total_time = float(line.split(":")[1])
+def measure_performance(duration: int = 5) -> tuple[float, dict]:
+    """
+    Measures the average FPS over a given duration.
+    """
+    # print(f"Measuring performance for {duration} seconds...", file=sys.stderr)
+    sim = None
+    fps_values = []
+    try:
+        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
-    if process.returncode != 0 and "Simulation terminated due to timeout." not in stderr:
-        raise RuntimeError(f"Simulation subprocess failed with exit code {process.returncode}. Stderr: {stderr}")
+        sim = ParticleSimulation()
+        sim.running = True # Ensure the simulation loop runs
 
-    return final_fps, total_frames, total_time, stdout, stderr
+        start_time = time.time()
+        frame_count = 0
+        
+        # Run the simulation for the specified duration
+        while time.time() - start_time < duration:
+            sim.run_frame()
+            if not sim.running:
+                break
+            
+            current_fps = sim.get_fps()
+            if current_fps > 0: # Only record valid FPS values
+                fps_values.append(current_fps)
+            frame_count += 1
 
-def run_tests():
-    """Placeholder for functional tests. For now, just return true."""
-    # In a real scenario, you would add assertions here to check if the simulation
-    # behaves as expected (e.g., particles stay within bounds, don't overlap excessively).
-    return True, "All functional tests passed (placeholder)."
+        if not fps_values:
+            # print("Warning: No FPS values recorded during performance measurement.", file=sys.stderr)
+            return 0.0, {}
+
+        avg_fps = sum(fps_values) / len(fps_values)
+        # print(f"Average FPS: {avg_fps:.2f}", file=sys.stderr)
+        return avg_fps, {"frames_rendered": frame_count}
+
+    except Exception as e:
+        # print(f"Performance measurement failed: {e}", file=sys.stderr)
+        return 0.0, {}
+    finally:
+        if sim:
+            sim.cleanup()
+        # Pygame quit is handled by sim.cleanup(), but ensure it's fully quit if not already
+        if pygame.get_init():
+            pygame.quit()
 
 def main():
     quiet = "--quiet" in sys.argv
     
-    score = None
-    metric_name = "FPS"
-    test_gate = False
-    metrics = {}
-    message = ""
-
     try:
-        test_gate, test_message = run_tests()
-        if not test_gate:
-            raise RuntimeError(f"Functional tests failed: {test_message}")
-
-        # Run simulation for 5 seconds to get an average FPS
-        fps, total_frames, total_time, stdout, stderr = run_simulation_and_get_fps(duration=5)
-        score = fps
-        metrics["total_frames_rendered"] = total_frames
-        metrics["total_simulation_time"] = total_time
-        metrics["simulation_stdout"] = stdout
-        metrics["simulation_stderr"] = stderr
+        test_gate_passed = run_functional_test()
         
-        message = f"Simulation ran for {total_time:.2f} seconds. Average FPS: {fps:.2f}. {test_message}"
+        score, extra_metrics = 0.0, {}
+        if test_gate_passed:
+            score, extra_metrics = measure_performance(duration=5) # Measure over 5 seconds
+
+        result = {
+            "score": score if test_gate_passed else None,
+            "metric_name": "FPS",
+            "test_gate": test_gate_passed,
+            "metrics": {
+                **extra_metrics
+            },
+            "message": f"Functional test: {'PASSED' if test_gate_passed else 'FAILED'}. Average FPS: {score:.2f}"
+        }
+        
+        if not quiet:
+            print(json.dumps(result, indent=4))
+        else:
+            print(json.dumps(result))
+        
+        sys.exit(0 if result["test_gate"] and result["score"] is not None else 1)
         
     except Exception as e:
-        test_gate = False
-        score = None
-        message = f"Benchmark failed: {e}"
-        metrics["error"] = str(e)
-        if "stdout" in locals(): metrics["simulation_stdout"] = stdout
-        if "stderr" in locals(): metrics["simulation_stderr"] = stderr
-
-    result = {
-        "score": score,
-        "metric_name": metric_name,
-        "test_gate": test_gate,
-        "metrics": metrics,
-        "message": message
-    }
-    
-    if not quiet:
-        print(json.dumps(result, indent=4))
-    else:
-        print(json.dumps(result))
-    
-    sys.exit(0 if test_gate and score is not None else 1)
+        result = {
+            "score": None,
+            "metric_name": "error",
+            "test_gate": False,
+            "message": str(e)
+        }
+        if not quiet:
+            print(json.dumps(result, indent=4))
+        else:
+            print(json.dumps(result))
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
