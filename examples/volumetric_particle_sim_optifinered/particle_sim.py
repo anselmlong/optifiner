@@ -19,6 +19,11 @@ from typing import List, Tuple
 
 
 import pygame
+try:
+    import numpy as np
+    HAS_NUMPY = True
+except ImportError:
+    HAS_NUMPY = False
 
 
 # Configuration
@@ -141,12 +146,9 @@ class VolumetricRenderer:
         self.fov = 60.0
         self.camera_distance = 400.0
         
-    def project_point(self, point: Vector3, camera_pos: Vector3, camera_rot: float) -> Tuple[int, int, float]:
+    def project_point(self, point: Vector3, camera_pos: Vector3, cos_r: float, sin_r: float) -> Tuple[int, int, float]:
         """Project 3D point to 2D screen coordinates"""
         # Rotate point around Y axis relative to camera
-        cos_r = math.cos(camera_rot)
-        sin_r = math.sin(camera_rot)
-        
         rel_x = point.x - camera_pos.x
         rel_y = point.y - camera_pos.y
         rel_z = point.z - camera_pos.z
@@ -615,7 +617,7 @@ class ParticleSimulation:
         for particle in sorted_particles:
             # Project particle position
             screen_x, screen_y, depth = self.renderer.project_point(
-                particle.position, self.camera_position, self.camera_rotation
+                particle.position, self.camera_position, cos_r, sin_r
             )
             
             if screen_x < 0 or depth <= 0:
