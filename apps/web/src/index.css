@@ -7,18 +7,18 @@
     --bg-primary: #FFFFFF;
     --bg-secondary: #F8FAFC;
     --bg-tertiary: #F1F5F9;
-    --bg-sidebar: linear-gradient(180deg, #E0F2FE 0%, #DBEAFE 100%);
-    
+    --bg-sidebar: linear-gradient(180deg, #F0FDF4 0%, #DCFCE7 100%);
+
     --surface-primary: #FFFFFF;
     --surface-elevated: #FFFFFF;
     --surface-hover: #F8FAFC;
     --surface-active: #F1F5F9;
-    --surface-selected: #EFF6FF;
-    
+    --surface-selected: #F0FDF4;
+
     --border-primary: #E2E8F0;
     --border-secondary: #CBD5E1;
     --border-subtle: #F1F5F9;
-    
+
     --text-primary: #0F172A;
     --text-secondary: #475569;
     --text-tertiary: #64748B;
@@ -26,25 +26,25 @@
   }
 
   .dark {
-    --bg-primary: #0F172A;
-    --bg-secondary: #1E293B;
-    --bg-tertiary: #334155;
-    --bg-sidebar: #0F172A;
-    
-    --surface-primary: #1E293B;
-    --surface-elevated: #334155;
-    --surface-hover: #334155;
-    --surface-active: #475569;
-    --surface-selected: #1E3A5F;
-    
-    --border-primary: #334155;
-    --border-secondary: #475569;
-    --border-subtle: #1E293B;
-    
-    --text-primary: #F8FAFC;
-    --text-secondary: #CBD5E1;
-    --text-tertiary: #94A3B8;
-    --text-muted: #64748B;
+    --bg-primary: #111827;
+    --bg-secondary: #1F2937;
+    --bg-tertiary: #374151;
+    --bg-sidebar: #111827;
+
+    --surface-primary: #1F2937;
+    --surface-elevated: #374151;
+    --surface-hover: #374151;
+    --surface-active: #4B5563;
+    --surface-selected: #16A34A;
+
+    --border-primary: #374151;
+    --border-secondary: #4B5563;
+    --border-subtle: #1F2937;
+
+    --text-primary: #F0FDF4;
+    --text-secondary: #D1D5DB;
+    --text-tertiary: #9CA3AF;
+    --text-muted: #6B7280;
   }
 
   * {
@@ -57,12 +57,101 @@
 }
 
 @layer components {
-  .sidebar-gradient {
-    background: linear-gradient(180deg, #E0F2FE 0%, #DBEAFE 100%);
+  /* Tech typography */
+  .font-tech-header {
+    @apply font-tech font-bold tracking-tight;
   }
-  
+
+  .font-tech-label {
+    @apply font-tech font-semibold text-xs tracking-widest uppercase;
+  }
+
+  .font-tech-value {
+    @apply font-tech font-bold;
+  }
+
+  .font-tech-mono {
+    @apply font-mono;
+  }
+
+  /* Sidebar gradient with tech feel */
+  .sidebar-gradient {
+    background: linear-gradient(180deg, #F0FDF4 0%, #DCFCE7 100%);
+  }
+
   .dark .sidebar-gradient {
-    background: #0F172A;
+    background: linear-gradient(180deg, #1F2937 0%, #111827 100%);
+  }
+
+  /* Tech borders and glows */
+  .tech-border {
+    @apply border border-primary-200 dark:border-primary-700;
+  }
+
+  .tech-border-glow {
+    @apply border border-primary-300 dark:border-primary-600 shadow-glow-primary dark:shadow-lg;
+  }
+
+  .tech-card {
+    @apply rounded-lg border border-slate-200 dark:border-slate-700 backdrop-blur-sm;
+  }
+
+  /* Terminal-like code block */
+  .terminal-block {
+    @apply bg-charcoal-900 dark:bg-charcoal-950 text-primary-100 rounded font-mono text-sm;
+    border: 1px solid rgba(34, 197, 94, 0.2);
+    box-shadow: inset 0 0 10px rgba(34, 197, 94, 0.05);
+  }
+
+  /* Tech glow effects */
+  .tech-glow {
+    @apply shadow-glow-primary;
+  }
+
+  .tech-glow-hover:hover {
+    @apply shadow-glow-primary;
+  }
+
+  /* Grid pattern background subtle effect */
+  .grid-pattern {
+    background-image:
+      linear-gradient(rgba(34, 197, 94, 0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(34, 197, 94, 0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+  }
+
+  .dark .grid-pattern {
+    background-image:
+      linear-gradient(rgba(34, 197, 94, 0.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(34, 197, 94, 0.05) 1px, transparent 1px);
+    background-size: 40px 40px;
+  }
+
+  /* Stats panel with tech styling */
+  .stat-panel {
+    @apply p-4 rounded-lg border border-slate-200 dark:border-slate-700;
+  }
+
+  .stat-label {
+    @apply font-tech-label text-slate-600 dark:text-slate-400;
+  }
+
+  .stat-value {
+    @apply font-tech-value text-2xl text-slate-900 dark:text-primary-400 mt-1;
+  }
+
+  /* Button tech styling */
+  .btn-tech {
+    @apply font-tech font-semibold tracking-wide transition-all duration-200;
+  }
+
+  .btn-tech:hover {
+    @apply shadow-glow-primary;
+  }
+
+  /* Badge tech styling */
+  .badge-tech {
+    @apply font-tech text-xs font-bold uppercase tracking-widest;
   }
 }
 
@@ -77,20 +166,20 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #CBD5E1;
+  background: #DCFCE7;
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #94A3B8;
+  background: #86EFAC;
 }
 
 .dark ::-webkit-scrollbar-thumb {
-  background: #475569;
+  background: #4B5563;
 }
 
 .dark ::-webkit-scrollbar-thumb:hover {
-  background: #64748B;
+  background: #22C55E;
 }
 
 /* Modal animations */
