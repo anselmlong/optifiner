@@ -398,8 +398,36 @@ def git_reset(workspace: str) -> None:
         pass
 
 
-def run_single_agent_isolated(
-    source_workspace: str,
+def create_agent_workspace(source_workspace: str, agent_id: str) -> WorkspaceManager:
+    """Create an isolated workspace for an agent by copying from source.
+    
+    Args:
+        source_workspace: Path to the source workspace to copy.
+        agent_id: Unique ID for this agent (used in workspace path).
+        
+    Returns:
+        Configured WorkspaceManager with files copied.
+        
+    Raises:
+        ValueError: If source doesn't have the benchmark script.
+        Exception: If workspace setup fails.
+    """
+    # Create workspace with unique ID based on agent_id
+    workspace_id = agent_id.replace("-", "")[:16]
+    workspace = WorkspaceManager(workspace_id=workspace_id)
+    workspace.setup(source_workspace)
+    
+    # Verify benchmark file exists (required for evolution agents)
+    benchmark_path = workspace.workspace_root / BENCHMARK_SCRIPT_NAME
+    if not benchmark_path.exists():
+        workspace.cleanup()
+        raise ValueError(f"Benchmark script not found after copying from {source_workspace}")
+    
+    return workspace
+
+
+def run_agent_in_workspace(
+    workspace: WorkspaceManager,
     evaluator_path: str,
     agent_type: str,
     agent_id: str,
@@ -414,10 +442,10 @@ def run_single_agent_isolated(
     stop_event: threading.Event | None = None,
     compact: bool = False,
 ) -> tuple[AgentResult, WorkspaceManager | None]:
-    """Run a single evolution agent in an isolated workspace.
+    """Run an evolution agent in an existing workspace.
 
     Args:
-        source_workspace: Path to the source workspace to copy.
+        workspace: Pre-created workspace for the agent.
         evaluator_path: Path to the evaluator script.
         agent_type: Type of agent to run.
         agent_id: Unique ID for this agent.
@@ -444,6 +472,7 @@ def run_single_agent_isolated(
 
     # Check if we should stop before even starting
     if stop_event and stop_event.is_set():
+        workspace.cleanup()
         return AgentResult(
             agent_id=agent_id,
             agent_type=agent_type,
@@ -454,25 +483,8 @@ def run_single_agent_isolated(
             duration_seconds=time.time() - start_time,
         ), None
 
-    # Create isolated workspace
-    workspace = WorkspaceManager(workspace_id=agent_id[:8])
-    try:
-        workspace.setup(source_workspace)
-    except Exception as e:
-        return AgentResult(
-            agent_id=agent_id,
-            agent_type=agent_type,
-            success=False,
-            baseline_score=baseline_score,
-            final_score=baseline_score,
-            error=f"Workspace setup failed: {e}",
-            duration_seconds=time.time() - start_time,
-        ), None
-
-    # Set the workspace context for tools - both thread-local AND environment variable
-    # The env var is a fallback in case thread-local doesn't propagate through LangGraph
+    # Set the workspace context for tools (thread-local, safe for parallel execution)
     set_workspace(workspace)
-    os.environ["WORKSPACE_ROOT"] = str(workspace.workspace_root)
 
     # Configure evaluator for improver mode (timeouts are hard fails)
     set_benchmark_dev_mode(False)
@@ -647,6 +659,60 @@ Don't run `evaluate` until you've made changes - the baseline is already measure
             error=str(e),
             duration_seconds=time.time() - start_time,
         ), None
+
+
+def run_single_agent_isolated(
+    source_workspace: str,
+    evaluator_path: str,
+    agent_type: str,
+    agent_id: str,
+    baseline_score: float,
+    task: str,
+    max_iterations: int,
+    model_provider: str,
+    model_name: str,
+    verbosity: int = 1,
+    log_dir: str | None = None,
+    baseline_data: dict | None = None,
+    stop_event: threading.Event | None = None,
+    compact: bool = False,
+) -> tuple[AgentResult, WorkspaceManager | None]:
+    """Run a single evolution agent in an isolated workspace.
+    
+    Creates a workspace by copying from source_workspace, then runs the agent.
+    For sequential execution where workspace creation happens inline.
+    """
+    start_time = time.time()
+    
+    try:
+        workspace = create_agent_workspace(source_workspace, agent_id)
+    except Exception as e:
+        return AgentResult(
+            agent_id=agent_id,
+            agent_type=agent_type,
+            success=False,
+            baseline_score=baseline_score,
+            final_score=baseline_score,
+            error=f"Workspace setup failed: {e}",
+            duration_seconds=time.time() - start_time,
+        ), None
+    
+    return run_agent_in_workspace(
+        workspace=workspace,
+        evaluator_path=evaluator_path,
+        agent_type=agent_type,
+        agent_id=agent_id,
+        baseline_score=baseline_score,
+        task=task,
+        max_iterations=max_iterations,
+        model_provider=model_provider,
+        model_name=model_name,
+        verbosity=verbosity,
+        log_dir=log_dir,
+        baseline_data=baseline_data,
+        stop_event=stop_event,
+        compact=compact,
+    )
 
 
 def run_benchmark_builder_cli(
@@ -1108,12 +1174,27 @@ def main(
                 # Parallel execution with compact logging
                 console.print(f"[dim]Running {agents} agents in parallel ({parallel} at a time)...[/dim]")
                 
-                def run_agent_parallel(i: int) -> tuple[AgentResult, WorkspaceManager | None]:
+                # STEP 1: Create ALL workspaces upfront from stable working_path
+                # This prevents race conditions - no workspace setup happens during agent execution
+                agent_configs = []
+                for i in range(agents):
                     agent_type = agent_types[i % len(agent_types)]
-                    agent_id = f"gen{state.generation}-{agent_type}-{i+1}"
-                    
-                    return run_single_agent_isolated(
-                        source_workspace=str(working_path),
+                    agent_id = f"gen{state.generation}-{agent_type[:3]}{i+1}"
+                    try:
+                        workspace = create_agent_workspace(str(working_path), agent_id)
+                        agent_configs.append((agent_id, agent_type, workspace))
+                    except Exception as e:
+                        console.print(f"[red]Failed to create workspace for {agent_id}: {e}[/red]")
+                
+                if not agent_configs:
+                    console.print("[red]No workspaces created, skipping generation[/red]")
+                    continue
+                
+                # STEP 2: Run agents in their pre-created workspaces
+                def run_agent_with_workspace(config: tuple) -> tuple[AgentResult, WorkspaceManager | None]:
+                    agent_id, agent_type, workspace = config
+                    return run_agent_in_workspace(
+                        workspace=workspace,
                         evaluator_path=str(evaluator_path),
                         agent_type=agent_type,
                         agent_id=agent_id,
@@ -1122,16 +1203,16 @@ def main(
                         max_iterations=max_iterations,
                         model_provider=model_provider,
                         model_name=model_name,
-                        verbosity=verbosity,  # Use actual verbosity setting
+                        verbosity=verbosity,
                         log_dir=log_directory,
                         baseline_data=current_baseline_data,
                         stop_event=_stop_generation if early_stop else None,
-                        compact=True,  # Enable compact logging for parallel agents
+                        compact=True,
                     )
 
                 try:
                     with ThreadPoolExecutor(max_workers=parallel) as executor:
-                        futures = {executor.submit(run_agent_parallel, i): i for i in range(agents)}
+                        futures = {executor.submit(run_agent_with_workspace, cfg): cfg for cfg in agent_configs}
 
                         for future in as_completed(futures):
                             if early_stop and _stop_generation.is_set() and generation_improved:
@@ -1154,9 +1235,9 @@ def main(
                                 state.best_score, result.final_score, min_improvement
                             )
                             if result.success and is_significant and workspace:
+                                # Copy improved workspace back (safe - all workspaces already created)
                                 git_reset(str(working_path))
                                 
-                                # Preserve steps folder when copying
                                 for item in working_path.iterdir():
                                     if item.name != ".git" and item.name != "steps":
                                         if item.is_dir():
@@ -1209,6 +1290,13 @@ def main(
 
                 except Exception as e:
                     console.print(f"[red]Error in parallel execution: {e}[/red]")
+                finally:
+                    # Clean up any remaining workspaces (from cancelled/pending futures)
+                    for _, _, ws in agent_configs:
+                        try:
+                            ws.cleanup()
+                        except Exception:
+                            pass
 
         # Generation summary
         successful = [r for r in generation_results if r.success]
