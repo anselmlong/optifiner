@@ -403,6 +403,14 @@ def create_benchmark_builder_agent(
         if hasattr(last_message, "tool_calls") and last_message.tool_calls:
             return "tools"
         
+        # Don't allow ending without creating the benchmark file
+        # If agent stopped making tool calls but benchmark doesn't exist, force it to continue
+        ws = get_workspace()
+        if ws and not ws.benchmark_path.exists():
+            # Benchmark file not created yet - force agent to continue
+            # The agent_node will inject a reminder message
+            return "remind"
+        
         return "end"
     
     def should_continue_after_tools(state: AgentState) -> str:
@@ -432,15 +440,37 @@ def create_benchmark_builder_agent(
         
         return "agent"
     
+    def remind_node(state: AgentState) -> dict[str, Any]:
+        """Remind the agent to create the benchmark script."""
+        ws = get_workspace()
+        benchmark_path = ws.benchmark_path if ws else "optifiner_benchmark.py"
+        
+        reminder = HumanMessage(content=(
+            f"IMPORTANT: You have not created the benchmark script yet!\n\n"
+            f"You MUST create the benchmark script at: {benchmark_path}\n\n"
+            f"Use the write_file tool to create it NOW. The script must output JSON with:\n"
+            f"- score: numeric value (the metric you're measuring)\n"
+            f"- metric_name: string (e.g., 'FPS', 'throughput')\n"
+            f"- test_gate: boolean (true if tests pass)\n\n"
+            f"Do not stop until you have created and tested the benchmark script with the evaluate tool!"
+        ))
+        
+        if obs:
+            obs.on_user_message(reminder.content)
+        
+        return {"messages": [reminder]}
+    
     workflow = StateGraph(AgentState)
     workflow.add_node("agent", agent_node)
     workflow.add_node("tools", observed_tool_node)
+    workflow.add_node("remind", remind_node)
     workflow.set_entry_point("agent")
     workflow.add_conditional_edges(
         "agent",
         should_continue,
         {
             "tools": "tools",
+            "remind": "remind",
             "end": END,
         },
     )
@@ -452,6 +482,8 @@ def create_benchmark_builder_agent(
             "end": END,
         },
     )
+    # After remind, always go back to agent
+    workflow.add_edge("remind", "agent")
     
     return workflow.compile()
 
