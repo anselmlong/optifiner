@@ -19,19 +19,19 @@ import { Card, CardHeader, CardTitle } from '../components/ui/Card'
 import { Input } from '../components/ui/Input'
 
 const quickLinks = [
-  { icon: faRocket, title: 'Getting Started', description: 'Learn the basics of Optifiner', href: '#' },
-  { icon: faRobot, title: 'Agent Configuration', description: 'Configure and deploy agents', href: '#' },
-  { icon: faChartLine, title: 'Understanding Fitness', description: 'How fitness scores work', href: '#' },
-  { icon: faCog, title: 'Model Settings', description: 'Choose and configure LLM models', href: '#' },
-  { icon: faCode, title: 'Writing Benchmarks', description: 'Create effective benchmarks', href: '#' },
-  { icon: faLightbulb, title: 'Best Practices', description: 'Tips for better evolution', href: '#' }
+  { icon: faRocket, title: 'Getting Started', description: 'Learn the basics of Optifiner', href: '/docs/getting-started' },
+  { icon: faRobot, title: 'Agent Configuration', description: 'Configure and deploy agents', href: '/docs/agent-configuration' },
+  { icon: faChartLine, title: 'Understanding Fitness', description: 'How fitness scores work', href: '/docs/understanding-fitness' },
+  { icon: faCog, title: 'Model Settings', description: 'Choose and configure LLM models', href: '/docs/model-settings' },
+  { icon: faCode, title: 'Writing Benchmarks', description: 'Create effective benchmarks', href: '/docs/writing-benchmarks' },
+  { icon: faLightbulb, title: 'Best Practices', description: 'Tips for better evolution', href: '/docs/best-practices' }
 ]
 
 const tutorials = [
-  { icon: faPlayCircle, title: 'Your First Evolution Project', duration: '5 min', href: '#' },
-  { icon: faPlayCircle, title: 'Understanding the Phylogenetic Tree', duration: '8 min', href: '#' },
-  { icon: faPlayCircle, title: 'Optimizing Agent Performance', duration: '12 min', href: '#' },
-  { icon: faPlayCircle, title: 'Cost Management Strategies', duration: '6 min', href: '#' }
+  { icon: faPlayCircle, title: 'Your First Evolution Project', duration: '5 min', href: '/docs/first-evolution-project' },
+  { icon: faPlayCircle, title: 'Understanding the Phylogenetic Tree', duration: '8 min', href: '/docs/phylogenetic-tree' },
+  { icon: faPlayCircle, title: 'Optimizing Agent Performance', duration: '12 min', href: '/docs/optimizing-agents' },
+  { icon: faPlayCircle, title: 'Cost Management Strategies', duration: '6 min', href: '/docs/cost-management' }
 ]
 
 const faqs = [
@@ -137,11 +137,13 @@ export function Help() {
 
           {/* Resources */}
           <div className="grid grid-cols-3 gap-4">
-            <Card className="text-center py-6 hover:border-primary-300 dark:hover:border-primary-700 transition-colors cursor-pointer">
-              <FontAwesomeIcon icon={faFileAlt} className="text-3xl text-primary-500 mb-3" />
-              <h4 className="font-medium text-slate-900 dark:text-white mb-1">API Documentation</h4>
-              <p className="text-sm text-slate-500">Full API reference</p>
-            </Card>
+            <a href="/docs" className="block">
+              <Card className="text-center py-6 hover:border-primary-300 dark:hover:border-primary-700 transition-colors cursor-pointer">
+                <FontAwesomeIcon icon={faFileAlt} className="text-3xl text-primary-500 mb-3" />
+                <h4 className="font-medium text-slate-900 dark:text-white mb-1">Documentation</h4>
+                <p className="text-sm text-slate-500">Browse all documentation</p>
+              </Card>
+            </a>
             <a href="https://github.com" className="block">
               <Card className="text-center py-6 hover:border-primary-300 dark:hover:border-primary-700 transition-colors">
                 <FontAwesomeIcon icon={faGithub} className="text-3xl text-slate-700 dark:text-slate-300 mb-3" />

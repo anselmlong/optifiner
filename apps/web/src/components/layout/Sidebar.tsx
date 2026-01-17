@@ -9,7 +9,8 @@ import {
   faQuestionCircle,
   faChevronLeft,
   faChevronRight,
-  faDna
+  faDna,
+  faBook
 } from '@fortawesome/free-solid-svg-icons'
 import { useStore } from '../../store'
 
@@ -21,8 +22,9 @@ const mainNavItems = [
 ]
 
 const bottomNavItems = [
-  { to: '/settings', icon: faCog, label: 'Model Settings' },
-  { to: '/help', icon: faQuestionCircle, label: 'Help & Docs' },
+  { to: '/docs', icon: faBook, label: 'Documentation' },
+  { to: '/settings', icon: faCog, label: 'Settings' },
+  { to: '/help', icon: faQuestionCircle, label: 'Help' },
 ]
 
 export function Sidebar() {
