@@ -19,6 +19,15 @@ from typing import List, Tuple
 
 
 import pygame
+import time
+
+_frame_count = 0
+_fps_start_time = time.time()
+_current_fps = 0.0
+
+def get_current_fps():
+    return _current_fps
+
 
 
 # Configuration
@@ -682,9 +691,14 @@ class ParticleSimulation:
         
         pygame.display.flip()
     
-    def run(self) -> None:
+    def run(self, duration: float = None) -> None:
         """Run the simulation."""
+        start_time = time.time()
         while self.running:
+            if duration and (time.time() - start_time > duration):
+                self.running = False
+                break
+
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     self.running = False
@@ -697,6 +711,14 @@ class ParticleSimulation:
             
             self.update(dt)
             self.render()
+
+            global _frame_count, _fps_start_time, _current_fps
+            _frame_count += 1
+            elapsed = time.time() - _fps_start_time
+            if elapsed >= 1.0:
+                _current_fps = _frame_count / elapsed
+                _frame_count = 0
+                _fps_start_time = time.time()
     
     def cleanup(self) -> None:
         """Clean up pygame resources"""
