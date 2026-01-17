@@ -33,6 +33,7 @@ GRAVITY = 0.15
 BOUNCE_DAMPING = 0.7
 WORLD_BOUNDS = 200.0
 PARTICLE_INFLUENCE_RADIUS = PARTICLE_RADIUS * 3  # Pre-calculated
+PARTICLE_INFLUENCE_RADIUS_SQ = PARTICLE_INFLUENCE_RADIUS * PARTICLE_INFLUENCE_RADIUS
 
 
 @dataclass
@@ -198,11 +199,10 @@ class VolumetricRenderer:
                 dz = curr_z - particle.position.z
                 dist_sq = dx * dx + dy * dy + dz * dz
                 
-                influence_radius = particle.radius * 3
-                if dist_sq < influence_radius * influence_radius:
+                if dist_sq < PARTICLE_INFLUENCE_RADIUS_SQ:
                     dist = math.sqrt(dist_sq)
                     # Falloff based on distance
-                    falloff = 1.0 - (dist / influence_radius)
+                    falloff = 1.0 - (dist / PARTICLE_INFLUENCE_RADIUS)
                     falloff = falloff * falloff
                     
                     local_density += falloff * 0.5
