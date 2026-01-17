@@ -12,18 +12,28 @@ without breaking visual correctness or functionality.
 """
 
 import os
-import time
 import math
 import random
+import time # Added for FPS calculation
 from dataclasses import dataclass
 from typing import List, Tuple
-# Set SDL to use dummy video driver if no display available (for headless testing)
-if os.environ.get("SDL_VIDEODRIVER") is None and os.environ.get("DISPLAY") is None:
-    # Check if we're in a headless environment
-    try:
-        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
-    except:
-        pass
+
+# Global variables for FPS tracking
+_frame_count = 0
+_fps_start_time = time.time()
+_current_fps = 0.0
+_benchmark_mode = False
+_benchmark_frames_to_run = 0
+
+def get_fps():
+    return _current_fps
+
+def set_benchmark_mode(enabled: bool, frames: int = 0):
+    global _benchmark_mode, _benchmark_frames_to_run
+    _benchmark_mode = enabled
+    _benchmark_frames_to_run = frames
+
+
 
 import pygame
 
@@ -297,8 +307,7 @@ class ParticleSimulation:
     """Main simulation class"""
     
     def __init__(self):
-        if not pygame.get_init():
-            pygame.init()
+        pygame.init()
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
         pygame.display.set_caption("Volumetric Particle Simulation - Optimize Me!")
         self.clock = pygame.time.Clock()
@@ -311,12 +320,6 @@ class ParticleSimulation:
         self.camera_rotation = 0.0
         self.camera_position = Vector3(0, 50, -self.renderer.camera_distance)
         self.time = 0.0
-        self._frame_count = 0
-        self._fps_start_time = time.time()
-        self._current_fps = 0.0
-
-    def get_fps(self) -> float:
-        return self._current_fps
         
         self._init_particles()
         self._init_lights()
@@ -696,27 +699,36 @@ class ParticleSimulation:
         
         pygame.display.flip()
     
-    def run_frame(self) -> float:
-        """Run one frame of the simulation and return delta time."""
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                self.running = False
-            elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
-                    self.running = False
-        
-        dt = self.clock.tick(60) / 1000.0
-        dt = min(dt, 0.1)  # Cap delta time
-        
-        self.update(dt)
-        self.render()
-        self._current_fps = self.clock.get_fps()
-        return dt
-
     def run(self) -> None:
         """Run the simulation."""
         while self.running:
-            self.run_frame()
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    self.running = False
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        self.running = False
+            
+            dt = self.clock.tick(60) / 1000.0
+            dt = min(dt, 0.1)  # Cap delta time
+            
+            self.update(dt)
+            self.render()
+
+            # FPS calculation
+            global _frame_count, _fps_start_time, _current_fps, _benchmark_mode, _benchmark_frames_to_run
+            _frame_count += 1
+            elapsed = time.time() - _fps_start_time
+            if elapsed >= 1.0:
+                _current_fps = _frame_count / elapsed
+                _frame_count = 0
+                _fps_start_time = time.time()
+            
+            # Benchmark mode termination
+            if _benchmark_mode:
+                _benchmark_frames_to_run -= 1
+                if _benchmark_frames_to_run <= 0:
+                    self.running = False
     
     def cleanup(self) -> None:
         """Clean up pygame resources"""

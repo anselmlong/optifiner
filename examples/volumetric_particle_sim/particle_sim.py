@@ -16,13 +16,7 @@ import math
 import random
 from dataclasses import dataclass
 from typing import List, Tuple
-# Set SDL to use dummy video driver if no display available (for headless testing)
-if os.environ.get("SDL_VIDEODRIVER") is None and os.environ.get("DISPLAY") is None:
-    # Check if we're in a headless environment
-    try:
-        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
-    except:
-        pass
+
 
 import pygame
 
