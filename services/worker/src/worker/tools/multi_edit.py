@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from langchain_core.tools import tool
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 from worker.tools.path_utils import resolve_path, virtualize_path
 
@@ -28,7 +28,8 @@ class MultiEditInput(BaseModel):
     """Input schema for the multi_edit tool."""
 
     file_path: str = Field(
-        description="The path to the file to edit. Can be absolute or relative to workspace root."
+        description="The path to the file to edit. Can be absolute or relative to workspace root.",
+        validation_alias=AliasChoices("file_path", "path"),
     )
     edits: list[EditOperation] = Field(
         description="List of edit operations to perform in sequence."

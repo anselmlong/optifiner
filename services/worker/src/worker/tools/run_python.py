@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 from langchain_core.tools import tool
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 from worker.tools.path_utils import resolve_path, get_workspace_root
 
@@ -39,7 +39,8 @@ class RunPythonFileInput(BaseModel):
     """Input schema for running a Python file."""
 
     file_path: str = Field(
-        description="Path to the Python file to execute (relative to workspace root or absolute)."
+        description="Path to the Python file to execute (relative to workspace root or absolute).",
+        validation_alias=AliasChoices("file_path", "path"),
     )
     args: list[str] = Field(
         default_factory=list,
