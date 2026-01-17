@@ -35,8 +35,8 @@ evolution-cli REPOSITORY [OPTIONS]
 | `--generations` | `-g` | 1 | Evolution generations |
 | `--max-iterations` | `-i` | 15 | Max tool calls per agent |
 | `--task` | `-t` | "Improve..." | Task description |
-| `--model-provider` | | anthropic | LLM provider |
-| `--model-name` | | claude-sonnet-4-20250514 | Model name |
+| `--model-provider` | | google | LLM provider |
+| `--model-name` | | gemini-3-flash | Model name |
 | `--output` | `-o` | | JSON output file |
 
 ### Example
@@ -58,8 +58,8 @@ evolution-cli ./my-project \
 # Use different model
 evolution-cli ./project \
     --evaluator ./eval.py \
-    --model-provider google \
-    --model-name gemini-2.0-flash
+    --model-provider anthropic \
+    --model-name claude-sonnet-4-20250514
 ```
 
 ## Evaluator Script

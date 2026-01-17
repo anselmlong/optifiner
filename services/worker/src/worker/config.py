@@ -38,7 +38,7 @@ class ModelConfig(BaseModel):
         """Gemini 3 Flash configuration."""
         return cls(
             provider=ModelProvider.GOOGLE,
-            model_name="gemini-2.0-flash",
+            model_name="gemini-3-flash",
             temperature=0.0,
             max_tokens=8192,
         )
@@ -68,7 +68,7 @@ class WorkerConfig(BaseModel):
     """Configuration for the evolution worker."""
 
     # Model settings
-    model: ModelConfig = Field(default_factory=ModelConfig.sonnet)
+    model: ModelConfig = Field(default_factory=ModelConfig.gemini_flash)
 
     # Agent settings
     agent_type: AgentType = AgentType.GENERAL
@@ -84,8 +84,8 @@ class WorkerConfig(BaseModel):
     @classmethod
     def from_env(cls) -> "WorkerConfig":
         """Create configuration from environment variables."""
-        provider = os.getenv("MODEL_PROVIDER", "anthropic")
-        model_name = os.getenv("MODEL_NAME", "claude-sonnet-4-20250514")
+        provider = os.getenv("MODEL_PROVIDER", "google")
+        model_name = os.getenv("MODEL_NAME", "gemini-3-flash")
         temperature = float(os.getenv("MODEL_TEMPERATURE", "0.0"))
         max_tokens = int(os.getenv("MODEL_MAX_TOKENS", "8192"))
 

@@ -352,11 +352,11 @@ Remember: Only improvements that INCREASE the score are kept!"""
 @click.option("--max-iterations", "-i", default=15, help="Max iterations per agent (default: 15)")
 @click.option("--task", "-t", default="Improve the code to get a higher benchmark score.",
               help="Task description for agents")
-@click.option("--model-provider", default="anthropic",
+@click.option("--model-provider", default="google",
               type=click.Choice(["anthropic", "google", "openai"]),
-              help="LLM provider (default: anthropic)")
-@click.option("--model-name", default="claude-sonnet-4-20250514",
-              help="Model name (default: claude-sonnet-4-20250514)")
+              help="LLM provider (default: google)")
+@click.option("--model-name", default="gemini-3-flash",
+              help="Model name (default: gemini-3-flash)")
 @click.option("--output", "-o", type=click.Path(), help="Output file for results (JSON)")
 def main(
     repository: str,
