@@ -19,6 +19,7 @@ from typing import List, Tuple
 
 
 import pygame
+import numpy as np
 
 
 # Configuration
@@ -165,77 +166,64 @@ class VolumetricRenderer:
         return (int(screen_x), int(screen_y), rot_z)
     
     def calculate_volumetric_fog(self, ray_origin: Vector3, ray_dir: Vector3, 
-                                  particles: List[Particle], lights: List[Light],
+                                  p_pos: np.ndarray, p_radii: np.ndarray, 
+                                  p_colors: np.ndarray, p_emissions: np.ndarray,
+                                  lights: List[Light],
                                   max_distance: float) -> Tuple[float, float, float]:
         """
         Raymarch through the scene to calculate volumetric fog contribution.
-        This is INTENTIONALLY slow - per-pixel, no vectorization.
+        Optimized with NumPy.
         """
-        accumulated_color = [0.0, 0.0, 0.0]
+        accumulated_color = np.array([0.0, 0.0, 0.0])
         accumulated_density = 0.0
         step_size = max_distance / RAYMARCH_STEPS
         
-        # Pre-extract ray components for faster access
-        ray_ox, ray_oy, ray_oz = ray_origin.x, ray_origin.y, ray_origin.z
-        ray_dx, ray_dy, ray_dz = ray_dir.x, ray_dir.y, ray_dir.z
+        ray_o = np.array([ray_origin.x, ray_origin.y, ray_origin.z])
+        ray_d = np.array([ray_dir.x, ray_dir.y, ray_dir.z])
+        
+        influence_radii = p_radii * 3
+        influence_radii_sq = influence_radii * influence_radii
         
         for step in range(RAYMARCH_STEPS):
-            # Calculate current position along ray
             t = step * step_size
-            curr_x = ray_ox + ray_dx * t
-            curr_y = ray_oy + ray_dy * t
-            curr_z = ray_oz + ray_dz * t
+            curr_pos = ray_o + ray_d * t
             
-            # Calculate density at this point (influenced by nearby particles)
-            local_density = 0.0
-            local_color = [0.0, 0.0, 0.0]
+            # Calculate distance to all particles
+            dists_sq = np.sum((p_pos - curr_pos)**2, axis=1)
             
-            # Check contribution from each particle - O(n) per raymarch step!
-            for particle in particles:
-                # Quick squared distance check first (avoid sqrt)
-                dx = curr_x - particle.position.x
-                dy = curr_y - particle.position.y
-                dz = curr_z - particle.position.z
-                dist_sq = dx * dx + dy * dy + dz * dz
+            mask = dists_sq < influence_radii_sq
+            if np.any(mask):
+                dists = np.sqrt(dists_sq[mask])
+                falloff = 1.0 - (dists / influence_radii[mask])
+                falloff = falloff * falloff
                 
-                influence_radius = particle.radius * 3
-                if dist_sq < influence_radius * influence_radius:
-                    dist = math.sqrt(dist_sq)
-                    # Falloff based on distance
-                    falloff = 1.0 - (dist / influence_radius)
-                    falloff = falloff * falloff
-                    
-                    local_density += falloff * 0.5
-                    emission = particle.emission * falloff
-                    local_color[0] += particle.color[0] / 255.0 * emission
-                    local_color[1] += particle.color[1] / 255.0 * emission
-                    local_color[2] += particle.color[2] / 255.0 * emission
+                local_density = np.sum(falloff * 0.5)
+                
+                # Color contribution from particles
+                emissions = p_emissions[mask] * falloff
+                # emissions is (N_masked,)
+                # p_colors[mask] is (N_masked, 3)
+                local_color = np.sum(p_colors[mask] * emissions[:, np.newaxis], axis=0)
+            else:
+                local_density = 0.0
+                local_color = np.array([0.0, 0.0, 0.0])
             
-            # Add light contribution at this point
+            # Add light contribution
             for light in lights:
-                lx = curr_x - light.position.x
-                ly = curr_y - light.position.y
-                lz = curr_z - light.position.z
-                light_dist_sq = lx * lx + ly * ly + lz * lz
+                lp = np.array([light.position.x, light.position.y, light.position.z])
+                light_dist_sq = np.sum((curr_pos - lp)**2)
                 if light_dist_sq > 0:
-                    # Calculate light falloff
                     attenuation = light.intensity / (1.0 + light_dist_sq * 0.0001)
-                    local_color[0] += light.color[0] * attenuation * 0.1
-                    local_color[1] += light.color[1] * attenuation * 0.1
-                    local_color[2] += light.color[2] * attenuation * 0.1
+                    local_color += np.array(light.color) * (attenuation * 0.1)
             
-            # Accumulate fog using front-to-back compositing
+            # Accumulate fog
             if local_density > 0:
                 alpha = 1.0 - math.exp(-local_density * step_size * FOG_DENSITY)
-                alpha = min(1.0, alpha)
-                
                 remaining = 1.0 - accumulated_density
-                accumulated_color[0] += local_color[0] * alpha * remaining
-                accumulated_color[1] += local_color[1] * alpha * remaining
-                accumulated_color[2] += local_color[2] * alpha * remaining
+                accumulated_color += local_color * (alpha * remaining)
                 accumulated_density += alpha * remaining
                 
-                if accumulated_density > 0.95:  # Slightly earlier cutoff
+                if accumulated_density > 0.95:
                     break
         
         return (
@@ -308,6 +296,21 @@ class ParticleSimulation:
         
         self._init_particles()
         self._init_lights()
+
+        # Pre-render vignette
+        self.vignette = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        vignette_step = 8  # Finer vignette since we only do it once
+        for y in range(0, SCREEN_HEIGHT, vignette_step):
+            for x in range(0, SCREEN_WIDTH, vignette_step):
+                dx = (x - SCREEN_WIDTH / 2) / (SCREEN_WIDTH / 2)
+                dy = (y - SCREEN_HEIGHT / 2) / (SCREEN_HEIGHT / 2)
+                dist = math.sqrt(dx * dx + dy * dy)
+                alpha = int(min(80, dist * dist * 60))
+                pygame.draw.rect(self.vignette, (0, 0, 0, alpha), (x, y, vignette_step, vignette_step))
+        self.vignette = pygame.transform.scale(self.vignette, (SCREEN_WIDTH, SCREEN_HEIGHT))
+
+        # Temp surface for particle glow
+        self.glow_surf = pygame.Surface((256, 256), pygame.SRCALPHA)
 
         # Metrics
         self.frame_count = 0
@@ -518,7 +521,9 @@ class ParticleSimulation:
                 # Raymarch for volumetric fog
                 fog_color = self.renderer.calculate_volumetric_fog(
                     self.camera_position, rot_ray,
-                    self.particles, self.lights,
+                    self.particle_pos, self.particle_radii, 
+                    self.particle_colors, self.particle_emissions,
+                    self.lights,
                     WORLD_BOUNDS * 3
                 )
                 
@@ -660,6 +665,12 @@ class ParticleSimulation:
         for particle in self.particles:
             particle.update(dt)
         
+        # Prepare numpy arrays for faster rendering
+        self.particle_pos = np.array([[p.position.x, p.position.y, p.position.z] for p in self.particles], dtype=np.float32)
+        self.particle_radii = np.array([p.radius for p in self.particles], dtype=np.float32)
+        self.particle_colors = np.array([p.color for p in self.particles], dtype=np.float32) / 255.0
+        self.particle_emissions = np.array([p.emission for p in self.particles], dtype=np.float32)
+
         # Check collisions
         self.check_particle_collisions()
     
@@ -674,18 +685,8 @@ class ParticleSimulation:
         # Render particles on top
         self.render_particles(self.screen)
         
-        # Draw subtle vignette effect - INTENTIONALLY slow per-pixel
-        vignette = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-        vignette_step = 32  # Larger step (was 16)
-        for y in range(0, SCREEN_HEIGHT, vignette_step):
-            for x in range(0, SCREEN_WIDTH, vignette_step):
-                # Distance from center normalized
-                dx = (x - SCREEN_WIDTH / 2) / (SCREEN_WIDTH / 2)
-                dy = (y - SCREEN_HEIGHT / 2) / (SCREEN_HEIGHT / 2)
-                dist = math.sqrt(dx * dx + dy * dy)
-                alpha = int(min(80, dist * dist * 60))
-                pygame.draw.rect(vignette, (0, 0, 0, alpha), (x, y, vignette_step, vignette_step))
-        self.screen.blit(vignette, (0, 0))
+        # Draw pre-rendered vignette
+        self.screen.blit(self.vignette, (0, 0))
         
         pygame.display.flip()
     
