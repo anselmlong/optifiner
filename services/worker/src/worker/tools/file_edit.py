@@ -1,5 +1,6 @@
 """File edit tool for the evolution agent - performs exact string replacements."""
 
+from difflib import SequenceMatcher
 from pathlib import Path
 
 from langchain_core.tools import tool
@@ -28,6 +29,114 @@ class EditFileInput(BaseModel):
 def _resolve_path(file_path: str) -> Path:
     """Resolve the file path using workspace-aware resolution."""
     return resolve_path(file_path)
+
+
+def _find_similar_content(content: str, old_string: str, max_suggestions: int = 3) -> list[tuple[int, str, float]]:
+    """Find content in the file that's similar to old_string.
+    
+    Returns list of (line_number, line_content, similarity_score) tuples.
+    """
+    lines = content.split('\n')
+    old_lines = old_string.split('\n')
+    old_first_line = old_lines[0].strip()
+    
+    if not old_first_line:
+        return []
+    
+    suggestions = []
+    
+    for i, line in enumerate(lines):
+        line_stripped = line.strip()
+        if not line_stripped:
+            continue
+        
+        # Calculate similarity using SequenceMatcher
+        similarity = SequenceMatcher(None, old_first_line.lower(), line_stripped.lower()).ratio()
+        
+        # Also check for substring containment
+        if old_first_line[:30].lower() in line_stripped.lower():
+            similarity = max(similarity, 0.7)
+        if line_stripped[:30].lower() in old_first_line.lower():
+            similarity = max(similarity, 0.6)
+        
+        if similarity >= 0.5:  # At least 50% similar
+            suggestions.append((i + 1, line[:100], similarity))
+    
+    # Sort by similarity descending and return top matches
+    suggestions.sort(key=lambda x: -x[2])
+    return suggestions[:max_suggestions]
+
+
+def _find_edit_context(content: str, old_string: str) -> dict:
+    """Find context about where an edit string might match.
+    
+    Returns a dict with:
+    - found: bool - whether exact match was found
+    - line: int - line number if found
+    - count: int - number of occurrences if found
+    - similar: list - similar content suggestions if not found
+    - whitespace_issue: bool - if the content exists with different whitespace
+    """
+    result = {
+        "found": False,
+        "line": None,
+        "count": 0,
+        "similar": [],
+        "whitespace_issue": False,
+    }
+    
+    if old_string in content:
+        idx = content.index(old_string)
+        line_num = content[:idx].count('\n') + 1
+        result["found"] = True
+        result["line"] = line_num
+        result["count"] = content.count(old_string)
+        return result
+    
+    # Check if it's a whitespace issue
+    old_stripped = old_string.strip()
+    if old_stripped and old_stripped in content:
+        result["whitespace_issue"] = True
+    
+    # Find similar content
+    result["similar"] = _find_similar_content(content, old_string)
+    
+    return result
+
+
+def _format_edit_error(vpath: str, context: dict, old_string: str) -> str:
+    """Format a helpful error message when edit fails."""
+    if context["whitespace_issue"]:
+        return (
+            f"Error: old_string not found in {vpath}. "
+            f"The text exists with DIFFERENT WHITESPACE - check indentation and line endings.\n\n"
+            f"Tip: Use read_file to see the exact content, paying attention to spaces vs tabs and line breaks."
+        )
+    
+    if context["similar"]:
+        suggestions = "\n".join(
+            f"  Line {num}: {line}{'...' if len(line) >= 100 else ''} (similarity: {sim:.0%})"
+            for num, line, sim in context["similar"]
+        )
+        
+        # Show what the agent was looking for
+        old_preview = old_string[:100].replace('\n', '\\n')
+        if len(old_string) > 100:
+            old_preview += "..."
+        
+        return (
+            f"Error: old_string not found in {vpath}.\n\n"
+            f"You searched for:\n  \"{old_preview}\"\n\n"
+            f"Similar content found at:\n{suggestions}\n\n"
+            f"Tip: Use read_file to see the exact content around these lines, "
+            f"then use that exact text (including whitespace) in old_string."
+        )
+    
+    return (
+        f"Error: old_string not found in {vpath}. "
+        f"The content doesn't appear to exist in this file.\n\n"
+        f"Tip: Use read_file to verify the file contents before editing."
+    )
 
 
 @tool(args_schema=EditFileInput)
@@ -66,17 +175,36 @@ def edit_file(
         with open(path, "r", encoding="utf-8") as f:
             content = f.read()
 
-        # Count occurrences
-        count = content.count(old_string)
+        # Use pre-edit validation to find context
+        edit_context = _find_edit_context(content, old_string)
 
-        if count == 0:
-            # Provide helpful context for debugging
-            if old_string.strip() in content:
-                return f"Error: old_string not found in {vpath}. The text exists with different whitespace - check indentation and line endings."
-            return f"Error: old_string not found in {vpath}. Use read_file to verify the exact content."
+        if not edit_context["found"]:
+            # Provide helpful error with suggestions
+            return _format_edit_error(vpath, edit_context, old_string)
+
+        count = edit_context["count"]
 
         if count > 1 and not replace_all:
-            return f"Error: old_string found {count} times in {vpath}. Use replace_all=True to replace all occurrences, or provide more context to make the match unique."
+            # Show where the duplicates are
+            lines_with_match = []
+            search_pos = 0
+            for _ in range(min(count, 5)):  # Show up to 5 locations
+                idx = content.find(old_string, search_pos)
+                if idx == -1:
+                    break
+                line_num = content[:idx].count('\n') + 1
+                lines_with_match.append(str(line_num))
+                search_pos = idx + 1
+            
+            locations = ", ".join(lines_with_match)
+            if count > 5:
+                locations += f", ... ({count - 5} more)"
+            
+            return (
+                f"Error: old_string found {count} times in {vpath} (lines: {locations}). "
+                f"Use replace_all=True to replace all occurrences, or provide more surrounding "
+                f"context to make the match unique."
+            )
 
         # Perform replacement
         if replace_all:

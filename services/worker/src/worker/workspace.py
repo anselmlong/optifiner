@@ -22,6 +22,39 @@ WORKSPACE_BASE = Path("/tmp/optifiner_workspaces")
 # Standard benchmark script filename (always at workspace root)
 BENCHMARK_SCRIPT_NAME = "optifiner_benchmark.py"
 
+# Patterns to exclude when copying workspaces (build artifacts, caches, etc.)
+EXCLUDED_DIRS = {
+    "__pycache__",
+    ".git",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".tox",
+    ".nox",
+    ".eggs",
+    "*.egg-info",
+    "node_modules",
+    ".next",
+    "dist",
+    "build",
+    ".venv",
+    "venv",
+    "env",
+    ".env",
+}
+
+EXCLUDED_FILES = {
+    ".pyc",
+    ".pyo",
+    ".pyd",
+    ".so",
+    ".dylib",
+    ".dll",
+    ".DS_Store",
+    ".coverage",
+    "*.egg",
+}
+
 # Thread-local workspace context for tools
 # Using threading.local() ensures each thread (agent) has its own workspace context
 # This prevents race conditions when running multiple agents in parallel
@@ -88,8 +121,13 @@ class WorkspaceManager:
         if self._workspace_root.exists():
             shutil.rmtree(self._workspace_root)
         
-        # Copy source to workspace
-        shutil.copytree(source, self._workspace_root, symlinks=True)
+        # Copy source to workspace, excluding build artifacts
+        shutil.copytree(
+            source, 
+            self._workspace_root, 
+            symlinks=True,
+            ignore=_ignore_build_artifacts,
+        )
         
         return self._workspace_root
     
@@ -191,6 +229,48 @@ class WorkspaceManager:
                     modified_files.append(str(relative_root / file))
         
         return modified_files
+
+
+def _ignore_build_artifacts(directory: str, files: list[str]) -> list[str]:
+    """Return list of files/dirs to ignore when copying workspace.
+    
+    This function is passed to shutil.copytree's ignore parameter.
+    It filters out build artifacts, caches, and other non-source files
+    to keep workspace copies clean and fast.
+    """
+    ignored = []
+    for name in files:
+        # Check if it's an excluded directory
+        if name in EXCLUDED_DIRS:
+            ignored.append(name)
+            continue
+        
+        # Check directory patterns with wildcards
+        for pattern in EXCLUDED_DIRS:
+            if "*" in pattern:
+                # Simple wildcard matching (e.g., "*.egg-info")
+                if pattern.startswith("*") and name.endswith(pattern[1:]):
+                    ignored.append(name)
+                    break
+        
+        # Check file extensions
+        for ext in EXCLUDED_FILES:
+            if ext.startswith("*"):
+                # Pattern like "*.egg"
+                if name.endswith(ext[1:]):
+                    ignored.append(name)
+                    break
+            elif ext.startswith("."):
+                # Extension like ".pyc"
+                if name.endswith(ext):
+                    ignored.append(name)
+                    break
+            elif name == ext:
+                # Exact match like ".DS_Store"
+                ignored.append(name)
+                break
+    
+    return ignored
 
 
 def set_workspace(workspace: WorkspaceManager | None):
