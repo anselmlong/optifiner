@@ -16,18 +16,9 @@ import math
 import random
 from dataclasses import dataclass
 from typing import List, Tuple
-import sys
 
 
 import pygame
-import time
-
-_frame_count = 0
-_fps_start_time = time.time()
-_current_fps = 0.0
-
-def get_fps():
-    return _current_fps
 
 
 
@@ -299,13 +290,9 @@ class VolumetricRenderer:
 class ParticleSimulation:
     """Main simulation class"""
     
-    def __init__(self, benchmark_mode: bool = False):
-        self.benchmark_mode = benchmark_mode
-        if not self.benchmark_mode:
-            pygame.init()
-            self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-            pygame.display.set_caption("Volumetric Particle Simulation - Optimize Me!")
-        self.clock = pygame.time.Clock()
+    def __init__(self):
+        self.screen = None
+        self.clock = None
         self.running = True
         
         self.renderer = VolumetricRenderer(SCREEN_WIDTH, SCREEN_HEIGHT)
@@ -667,14 +654,6 @@ class ParticleSimulation:
         
         # Check collisions
         self.check_particle_collisions()
-
-        global _frame_count, _fps_start_time, _current_fps
-        _frame_count += 1
-        elapsed = time.time() - _fps_start_time
-        if elapsed >= 1.0:
-            _current_fps = _frame_count / elapsed
-            _frame_count = 0
-            _fps_start_time = time.time()
     
     def render(self) -> None:
         """Render the complete scene"""
@@ -700,63 +679,59 @@ class ParticleSimulation:
                 pygame.draw.rect(vignette, (0, 0, 0, alpha), (x, y, vignette_step, vignette_step))
         self.screen.blit(vignette, (0, 0))
         
-        pygame.display.flip()
+        if os.environ.get("OPTIFINER_HEADLESS_BENCHMARK") != "1":
+            pygame.display.flip()
     
-    def run_benchmark(self, duration: int) -> float:
-        """Run the simulation in benchmark mode for a given duration and return average FPS."""
-        self.benchmark_mode = True
-        start_time = time.time()
-        fps_values = []
-
-        while time.time() - start_time < duration:
-            dt = self.clock.tick(60) / 1000.0
-            dt = min(dt, 0.1)  # Cap delta time
-
-            self.update(dt)
-
-            global _current_fps
-            if _current_fps > 0:
-                fps_values.append(_current_fps)
-        
-        self.cleanup()
-
-        if not fps_values:
-            return 0.0
-        return sum(fps_values) / len(fps_values)
-
-    def run(self) -> None:
+    def run(self, benchmark_mode: bool = False, num_frames: int = 300) -> None:
         """Run the simulation."""
-        while self.running:
-            if not self.benchmark_mode:
+        
+        if self.screen is None:
+            pygame.init()
+            if os.environ.get("OPTIFINER_HEADLESS_BENCHMARK") == "1":
+                # Run in headless mode for benchmarking
+                self.screen = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
+                print("Running Pygame in headless mode.", file=sys.stderr)
+            else:
+                self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+                pygame.display.set_caption("Volumetric Particle Simulation - Optimize Me!")
+            self.clock = pygame.time.Clock()
+
+        if benchmark_mode:
+            # Run for a fixed number of frames for benchmarking
+            for frame_counter in range(num_frames):
+                dt = 1.0 / 60.0  # Assume a fixed delta time for uncapped benchmark
+                self.update(dt)
+                self.render()
+            self.running = False # Ensure it's set to False after benchmark
+        else:
+            # Normal interactive loop
+            while self.running:
                 for event in pygame.event.get():
                     if event.type == pygame.QUIT:
                         self.running = False
                     elif event.type == pygame.KEYDOWN:
                         if event.key == pygame.K_ESCAPE:
                             self.running = False
-            
-            dt = self.clock.tick(60) / 1000.0
-            dt = min(dt, 0.1)  # Cap delta time
-            
-            self.update(dt)
-            if not self.benchmark_mode:
+                
+                dt = self.clock.tick(60) / 1000.0
+                dt = min(dt, 0.1)  # Cap delta time
+                
+                self.update(dt)
                 self.render()
+
     
     def cleanup(self) -> None:
         """Clean up pygame resources"""
-        if not self.benchmark_mode:
-            pygame.quit()
+        pygame.quit()
 
 
-def main():
+def main(benchmark_mode: bool = False, num_frames: int = 300):
     """Main entry point"""
-    benchmark_mode = "--benchmark" in sys.argv
-    sim = ParticleSimulation(benchmark_mode=benchmark_mode)
+    sim = ParticleSimulation()
     try:
-        sim.run()
+        sim.run(benchmark_mode, num_frames)
     finally:
-        if not benchmark_mode:
-            sim.cleanup()
+        sim.cleanup()
 
 
 if __name__ == "__main__":
