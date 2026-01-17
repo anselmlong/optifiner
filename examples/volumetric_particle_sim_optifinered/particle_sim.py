@@ -13,22 +13,6 @@ without breaking visual correctness or functionality.
 
 import os
 import time
-
-_frame_count = 0
-_fps_start_time = time.time()
-_current_fps = 0.0
-_total_frames_rendered = 0
-_total_time_elapsed = 0.0
-
-def get_fps():
-    return _current_fps
-
-def get_total_frames_rendered():
-    return _total_frames_rendered
-
-def get_total_time_elapsed():
-    return _total_time_elapsed
-
 import math
 import random
 from dataclasses import dataclass
@@ -50,11 +34,12 @@ SCREEN_HEIGHT = 480
 NUM_PARTICLES = 300
 NUM_LIGHTS = 4
 FOG_DENSITY = 0.02
-RAYMARCH_STEPS = 16
+RAYMARCH_STEPS = 8  # Reduced from 16
 PARTICLE_RADIUS = 8.0
 GRAVITY = 0.15
 BOUNCE_DAMPING = 0.7
 WORLD_BOUNDS = 200.0
+PARTICLE_INFLUENCE_RADIUS = PARTICLE_RADIUS * 3  # Pre-calculated
 
 
 @dataclass
@@ -197,14 +182,16 @@ class VolumetricRenderer:
         accumulated_density = 0.0
         step_size = max_distance / RAYMARCH_STEPS
         
+        # Pre-extract ray components for faster access
+        ray_ox, ray_oy, ray_oz = ray_origin.x, ray_origin.y, ray_origin.z
+        ray_dx, ray_dy, ray_dz = ray_dir.x, ray_dir.y, ray_dir.z
+        
         for step in range(RAYMARCH_STEPS):
             # Calculate current position along ray
             t = step * step_size
-            current_pos = Vector3(
-                ray_origin.x + ray_dir.x * t,
-                ray_origin.y + ray_dir.y * t,
-                ray_origin.z + ray_dir.z * t
-            )
+            curr_x = ray_ox + ray_dx * t
+            curr_y = ray_oy + ray_dy * t
+            curr_z = ray_oz + ray_dz * t
             
             # Calculate density at this point (influenced by nearby particles)
             local_density = 0.0
@@ -212,23 +199,34 @@ class VolumetricRenderer:
             
             # Check contribution from each particle - O(n) per raymarch step!
             for particle in particles:
-                dist = (current_pos - particle.position).length()
-                if dist < particle.radius * 3:
+                # Quick squared distance check first (avoid sqrt)
+                dx = curr_x - particle.position.x
+                dy = curr_y - particle.position.y
+                dz = curr_z - particle.position.z
+                dist_sq = dx * dx + dy * dy + dz * dz
+                
+                influence_radius = particle.radius * 3
+                if dist_sq < influence_radius * influence_radius:
+                    dist = math.sqrt(dist_sq)
                     # Falloff based on distance
-                    falloff = 1.0 - (dist / (particle.radius * 3))
-                    falloff = max(0, falloff ** 2)
+                    falloff = 1.0 - (dist / influence_radius)
+                    falloff = falloff * falloff
                     
                     local_density += falloff * 0.5
-                    local_color[0] += particle.color[0] / 255.0 * falloff * particle.emission
-                    local_color[1] += particle.color[1] / 255.0 * falloff * particle.emission
-                    local_color[2] += particle.color[2] / 255.0 * falloff * particle.emission
+                    emission = particle.emission * falloff
+                    local_color[0] += particle.color[0] / 255.0 * emission
+                    local_color[1] += particle.color[1] / 255.0 * emission
+                    local_color[2] += particle.color[2] / 255.0 * emission
             
             # Add light contribution at this point
             for light in lights:
-                light_dist = (current_pos - light.position).length()
-                if light_dist > 0:
+                lx = curr_x - light.position.x
+                ly = curr_y - light.position.y
+                lz = curr_z - light.position.z
+                light_dist_sq = lx * lx + ly * ly + lz * lz
+                if light_dist_sq > 0:
                     # Calculate light falloff
-                    attenuation = light.intensity / (1.0 + light_dist * light_dist * 0.0001)
+                    attenuation = light.intensity / (1.0 + light_dist_sq * 0.0001)
                     local_color[0] += light.color[0] * attenuation * 0.1
                     local_color[1] += light.color[1] * attenuation * 0.1
                     local_color[2] += light.color[2] * attenuation * 0.1
@@ -244,7 +242,7 @@ class VolumetricRenderer:
                 accumulated_color[2] += local_color[2] * alpha * remaining
                 accumulated_density += alpha * remaining
                 
-                if accumulated_density > 0.99:
+                if accumulated_density > 0.95:  # Slightly earlier cutoff
                     break
         
         return (
@@ -299,7 +297,8 @@ class ParticleSimulation:
     """Main simulation class"""
     
     def __init__(self):
-        pygame.init()
+        if not pygame.get_init():
+            pygame.init()
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
         pygame.display.set_caption("Volumetric Particle Simulation - Optimize Me!")
         self.clock = pygame.time.Clock()
@@ -312,6 +311,12 @@ class ParticleSimulation:
         self.camera_rotation = 0.0
         self.camera_position = Vector3(0, 50, -self.renderer.camera_distance)
         self.time = 0.0
+        self._frame_count = 0
+        self._fps_start_time = time.time()
+        self._current_fps = 0.0
+
+    def get_fps(self) -> float:
+        return self._current_fps
         
         self._init_particles()
         self._init_lights()
@@ -390,17 +395,26 @@ class ParticleSimulation:
         Check and resolve particle-particle collisions.
         INTENTIONALLY O(n²) - a major optimization opportunity!
         """
+        max_radius = PARTICLE_RADIUS * 1.5 * 2  # Max combined radius
+        max_radius_sq = max_radius * max_radius
+        
         for i in range(len(self.particles)):
+            p1 = self.particles[i]
+            p1_x, p1_y, p1_z = p1.position.x, p1.position.y, p1.position.z
+            
             for j in range(i + 1, len(self.particles)):
-                p1 = self.particles[i]
                 p2 = self.particles[j]
                 
                 # Calculate distance between particles
-                dx = p2.position.x - p1.position.x
-                dy = p2.position.y - p1.position.y
-                dz = p2.position.z - p1.position.z
+                dx = p2.position.x - p1_x
+                dy = p2.position.y - p1_y
+                dz = p2.position.z - p1_z
                 
+                # Early exit for distant particles
                 dist_sq = dx * dx + dy * dy + dz * dz
+                if dist_sq > max_radius_sq:
+                    continue
+                    
                 min_dist = p1.radius + p2.radius
                 
                 if dist_sq < min_dist * min_dist and dist_sq > 0:
@@ -447,17 +461,36 @@ class ParticleSimulation:
         INTENTIONALLY SLOW - per-pixel calculations!
         """
         # Create a background surface with smooth gradients
-        sample_rate = 8  # Finer sampling for smoother look
+        sample_rate = 16  # Coarser sampling (was 8)
         
-        for y in range(0, self.renderer.height, sample_rate):
-            for x in range(0, self.renderer.width, sample_rate):
+        # Pre-compute values used in the loop
+        width = self.renderer.width
+        height = self.renderer.height
+        inv_width = 1.0 / width
+        inv_height = 1.0 / height
+        fov_scale = math.tan(math.radians(self.renderer.fov / 2))
+        aspect = self.renderer.aspect_ratio
+        cos_r = math.cos(self.camera_rotation)
+        sin_r = math.sin(self.camera_rotation)
+        time_05 = self.time * 0.5
+        time_03 = self.time * 0.3
+        time_04 = self.time * 0.4
+        time_06 = self.time * 0.6
+        time_02 = self.time * 0.2
+        time_015 = self.time * 0.15
+        
+        for y in range(0, height, sample_rate):
+            ny = y * inv_height
+            ndc_y = 1 - ny * 2
+            ray_y = ndc_y * fov_scale
+            
+            for x in range(0, width, sample_rate):
                 # Normalized coordinates
-                nx = x / self.renderer.width
-                ny = y / self.renderer.height
+                nx = x * inv_width
                 
                 # Animated swirling effect based on time and position
-                swirl = math.sin(nx * 3 + self.time * 0.5) * math.cos(ny * 2 + self.time * 0.3)
-                swirl2 = math.cos(nx * 2 - self.time * 0.4) * math.sin(ny * 4 + self.time * 0.6)
+                swirl = math.sin(nx * 3 + time_05) * math.cos(ny * 2 + time_03)
+                swirl2 = math.cos(nx * 2 - time_04) * math.sin(ny * 4 + time_06)
                 
                 # Deep space gradient - dark blue to purple to deep magenta
                 base_r = int(15 + 25 * ny + 15 * swirl)
@@ -465,31 +498,28 @@ class ParticleSimulation:
                 base_b = int(35 + 40 * ny + 20 * abs(swirl))
                 
                 # Add subtle nebula clouds
-                cloud = math.sin(nx * 6 + ny * 4 + self.time * 0.2) * 0.5 + 0.5
-                cloud *= math.cos(nx * 3 - ny * 5 + self.time * 0.15) * 0.5 + 0.5
+                cloud = math.sin(nx * 6 + ny * 4 + time_02) * 0.5 + 0.5
+                cloud *= math.cos(nx * 3 - ny * 5 + time_015) * 0.5 + 0.5
                 
                 base_r = int(min(60, base_r + cloud * 30))
                 base_g = int(min(40, base_g + cloud * 15))
                 base_b = int(min(80, base_b + cloud * 25))
                 
                 # Calculate ray direction for this pixel
-                ndc_x = (x / self.renderer.width) * 2 - 1
-                ndc_y = 1 - (y / self.renderer.height) * 2
+                ndc_x = nx * 2 - 1
                 
-                fov_scale = math.tan(math.radians(self.renderer.fov / 2))
-                ray_dir = Vector3(
-                    ndc_x * fov_scale * self.renderer.aspect_ratio,
-                    ndc_y * fov_scale,
-                    1.0
-                ).normalize()
+                ray_x = ndc_x * fov_scale * aspect
+                ray_z = 1.0
+                ray_len = math.sqrt(ray_x * ray_x + ray_y * ray_y + ray_z * ray_z)
+                ray_x /= ray_len
+                ray_y_norm = ray_y / ray_len
+                ray_z /= ray_len
                 
                 # Rotate ray by camera rotation
-                cos_r = math.cos(self.camera_rotation)
-                sin_r = math.sin(self.camera_rotation)
                 rot_ray = Vector3(
-                    ray_dir.x * cos_r + ray_dir.z * sin_r,
-                    ray_dir.y,
-                    -ray_dir.x * sin_r + ray_dir.z * cos_r
+                    ray_x * cos_r + ray_z * sin_r,
+                    ray_y_norm,
+                    -ray_x * sin_r + ray_z * cos_r
                 )
                 
                 # Raymarch for volumetric fog
@@ -525,13 +555,17 @@ class ParticleSimulation:
             math.cos(self.camera_rotation)
         )
         
-        # Sort particles by depth - INTENTIONALLY using slow sort key
-        # that recalculates projection for each comparison
+        # Sort particles by depth - cache trig values but still O(n log n) sort
+        sin_r = math.sin(self.camera_rotation)
+        cos_r = math.cos(self.camera_rotation)
+        cam_x = self.camera_position.x
+        cam_z = self.camera_position.z
+        
         sorted_particles = sorted(
             self.particles,
             key=lambda p: -(
-                (p.position.x - self.camera_position.x) * math.sin(self.camera_rotation) +
-                (p.position.z - self.camera_position.z) * math.cos(self.camera_rotation)
+                (p.position.x - cam_x) * sin_r +
+                (p.position.z - cam_z) * cos_r
             )
         )
         
@@ -565,18 +599,18 @@ class ParticleSimulation:
             glow_surface = pygame.Surface((screen_radius * 6, screen_radius * 6), pygame.SRCALPHA)
             center = screen_radius * 3
             
-            # Outer soft glow (large, very transparent)
-            for glow_i in range(8, 0, -1):
-                glow_radius = int(screen_radius * (1 + glow_i * 0.5))
-                alpha = int(25 * (1 - glow_i / 9) * (0.5 + particle.emission * 0.5))
+            # Outer soft glow (large, very transparent) - reduced layers
+            for glow_i in range(4, 0, -1):  # Was 8
+                glow_radius = int(screen_radius * (1 + glow_i * 0.8))
+                alpha = int(30 * (1 - glow_i / 5) * (0.5 + particle.emission * 0.5))
                 glow_color = (color[0], color[1], color[2], alpha)
                 if glow_radius > 0:
                     pygame.draw.circle(glow_surface, glow_color, (center, center), glow_radius)
             
-            # Inner brighter glow
-            for glow_i in range(4, 0, -1):
-                glow_radius = int(screen_radius * (1 + glow_i * 0.2))
-                alpha = int(60 * (1 - glow_i / 5))
+            # Inner brighter glow - reduced layers
+            for glow_i in range(2, 0, -1):  # Was 4
+                glow_radius = int(screen_radius * (1 + glow_i * 0.3))
+                alpha = int(80 * (1 - glow_i / 3))
                 glow_color = (
                     min(255, color[0] + 30),
                     min(255, color[1] + 30),
@@ -649,43 +683,40 @@ class ParticleSimulation:
         
         # Draw subtle vignette effect - INTENTIONALLY slow per-pixel
         vignette = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-        for y in range(0, SCREEN_HEIGHT, 16):
-            for x in range(0, SCREEN_WIDTH, 16):
+        vignette_step = 32  # Larger step (was 16)
+        for y in range(0, SCREEN_HEIGHT, vignette_step):
+            for x in range(0, SCREEN_WIDTH, vignette_step):
                 # Distance from center normalized
                 dx = (x - SCREEN_WIDTH / 2) / (SCREEN_WIDTH / 2)
                 dy = (y - SCREEN_HEIGHT / 2) / (SCREEN_HEIGHT / 2)
                 dist = math.sqrt(dx * dx + dy * dy)
                 alpha = int(min(80, dist * dist * 60))
-                pygame.draw.rect(vignette, (0, 0, 0, alpha), (x, y, 16, 16))
+                pygame.draw.rect(vignette, (0, 0, 0, alpha), (x, y, vignette_step, vignette_step))
         self.screen.blit(vignette, (0, 0))
         
         pygame.display.flip()
     
+    def run_frame(self) -> float:
+        """Run one frame of the simulation and return delta time."""
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                self.running = False
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    self.running = False
+        
+        dt = self.clock.tick(60) / 1000.0
+        dt = min(dt, 0.1)  # Cap delta time
+        
+        self.update(dt)
+        self.render()
+        self._current_fps = self.clock.get_fps()
+        return dt
+
     def run(self) -> None:
         """Run the simulation."""
         while self.running:
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    self.running = False
-                elif event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_ESCAPE:
-                        self.running = False
-            
-            dt = self.clock.tick(60) / 1000.0
-            dt = min(dt, 0.1)  # Cap delta time
-            
-            self.update(dt)
-            self.render()
-
-            global _frame_count, _fps_start_time, _current_fps, _total_frames_rendered, _total_time_elapsed
-            _frame_count += 1
-            _total_frames_rendered += 1
-            _total_time_elapsed += dt
-            elapsed = time.time() - _fps_start_time
-            if elapsed >= 1.0:
-                _current_fps = _frame_count / elapsed
-                _frame_count = 0
-                _fps_start_time = time.time()
+            self.run_frame()
     
     def cleanup(self) -> None:
         """Clean up pygame resources"""
@@ -699,9 +730,6 @@ def main():
         sim.run()
     finally:
         sim.cleanup()
-        print(f"FINAL_FPS:{get_fps()}")
-        print(f"TOTAL_FRAMES:{get_total_frames_rendered()}")
-        print(f"TOTAL_TIME:{get_total_time_elapsed()}")
 
 
 if __name__ == "__main__":

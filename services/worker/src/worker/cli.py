@@ -712,7 +712,7 @@ def main(
                 working_path,
                 model_provider,
                 model_name,
-                max_iterations=30,
+                max_iterations=50,
                 verbosity=verbosity,
             )
             
@@ -731,7 +731,7 @@ def main(
                 working_path,
                 model_provider,
                 model_name,
-                max_iterations=30,
+                max_iterations=50,
                 verbosity=verbosity,
             )
             

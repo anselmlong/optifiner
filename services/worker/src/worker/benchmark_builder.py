@@ -408,13 +408,19 @@ def create_benchmark_builder_agent(
         if hasattr(last_message, "tool_calls") and last_message.tool_calls:
             return "tools"
         
-        # Don't allow ending without creating the benchmark file
-        # If agent stopped making tool calls but benchmark doesn't exist, force it to continue
+        # Don't allow ending without a VALID benchmark
+        # Check if benchmark exists AND passes validation
         ws = get_workspace()
-        if ws and not ws.benchmark_path.exists():
-            # Benchmark file not created yet - force agent to continue
-            # The agent_node will inject a reminder message
-            return "remind"
+        if ws:
+            if not ws.benchmark_path.exists():
+                # Benchmark file not created yet - force agent to continue
+                return "remind"
+            
+            # Benchmark exists - check if it's valid
+            result = run_benchmark_for_validation(ws.workspace_root)
+            if not result.is_valid:
+                # Benchmark exists but doesn't pass - force agent to fix it
+                return "remind"
         
         return "end"
     
@@ -446,19 +452,62 @@ def create_benchmark_builder_agent(
         return "agent"
     
     def remind_node(state: AgentState) -> dict[str, Any]:
-        """Remind the agent to create the benchmark script."""
+        """Remind the agent to fix the benchmark script."""
         ws = get_workspace()
         benchmark_path = ws.benchmark_path if ws else "optifiner_benchmark.py"
         
-        reminder = HumanMessage(content=(
-            f"IMPORTANT: You have not created the benchmark script yet!\n\n"
-            f"You MUST create the benchmark script at: {benchmark_path}\n\n"
-            f"Use the write_file tool to create it NOW. The script must output JSON with:\n"
-            f"- score: numeric value (the metric you're measuring)\n"
-            f"- metric_name: string (e.g., 'FPS', 'throughput')\n"
-            f"- test_gate: boolean (true if tests pass)\n\n"
-            f"Do not stop until you have created and tested the benchmark script with the evaluate tool!"
-        ))
+        # Check what's wrong with the benchmark
+        if ws and ws.benchmark_path.exists():
+            result = run_benchmark_for_validation(ws.workspace_root)
+            if result.error:
+                reminder_text = (
+                    f"BENCHMARK ERROR - Please fix and retry!\n\n"
+                    f"The benchmark script at {benchmark_path} failed with error:\n"
+                    f"{result.error}\n\n"
+                    f"Please fix the benchmark script and use the `evaluate` tool to test it again."
+                )
+            elif result.score is None:
+                reminder_text = (
+                    f"BENCHMARK INVALID - Score is null!\n\n"
+                    f"The benchmark script at {benchmark_path} returned a null score.\n"
+                    f"Please fix the script to return a valid numeric score and use `evaluate` to test again."
+                )
+            elif result.score == 0:
+                reminder_text = (
+                    f"BENCHMARK INVALID - Score is 0!\n\n"
+                    f"The benchmark script at {benchmark_path} returned a score of 0.\n"
+                    f"A score of 0 indicates the benchmark is not measuring correctly.\n"
+                    f"Please fix the FPS/performance measurement logic and use `evaluate` to test again.\n\n"
+                    f"Common issues:\n"
+                    f"- FPS calculation dividing by zero or wrong time interval\n"
+                    f"- Frames not being counted correctly\n"
+                    f"- Measurement running for 0 seconds\n"
+                    f"- Game loop not actually running"
+                )
+            elif not result.test_gate:
+                reminder_text = (
+                    f"BENCHMARK FAILED - Tests did not pass!\n\n"
+                    f"The benchmark script at {benchmark_path} has test_gate=false.\n"
+                    f"Please fix the tests and use `evaluate` to test again."
+                )
+            else:
+                reminder_text = (
+                    f"BENCHMARK INCOMPLETE - Please fix and retry!\n\n"
+                    f"The benchmark at {benchmark_path} is not valid yet.\n"
+                    f"Please use the `evaluate` tool to check what's wrong and fix it."
+                )
+        else:
+            reminder_text = (
+                f"IMPORTANT: You have not created the benchmark script yet!\n\n"
+                f"You MUST create the benchmark script at: {benchmark_path}\n\n"
+                f"Use the write_file tool to create it NOW. The script must output JSON with:\n"
+                f"- score: numeric value (the metric you're measuring)\n"
+                f"- metric_name: string (e.g., 'FPS', 'throughput')\n"
+                f"- test_gate: boolean (true if tests pass)\n\n"
+                f"Do not stop until you have created and tested the benchmark script with the evaluate tool!"
+            )
+        
+        reminder = HumanMessage(content=reminder_text)
         
         if obs:
             obs.on_user_message(reminder.content)
@@ -585,6 +634,8 @@ IMPORTANT:
                 reasons.append("test_gate is false")
             if result.score is None:
                 reasons.append("score is null")
+            elif result.score == 0:
+                reasons.append("score is 0 (invalid benchmark)")
             
             if obs:
                 obs.on_agent_end(
