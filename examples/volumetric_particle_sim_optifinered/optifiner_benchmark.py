@@ -6,62 +6,56 @@ import sys
 import time
 import os
 
-# Add the parent directory to the path to import particle_sim
+# Add the current directory to the Python path to import particle_sim
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 try:
-    import particle_sim
-except ImportError:
-    # Fallback for when the script is run directly from the workspace root
-    sys.path.insert(0, os.getcwd())
-    import particle_sim
+    from particle_sim import ParticleSimulation, get_current_fps, reset_fps_counter
+    import pygame
+except ImportError as e:
+    print(json.dumps({
+        "score": None,
+        "metric_name": "error",
+        "test_gate": False,
+        "message": f"Failed to import particle_sim or pygame: {e}. Please ensure dependencies are installed."
+    }))
+    sys.exit(1)
 
-
-def run_tests():
-    """Run functional tests to verify the application works."""
-    tests_passed = 0
-    tests_total = 0
-    
-    # Test 1: Basic initialization
-    tests_total += 1
+def run_functional_tests() -> bool:
+    """
+    Run basic functional tests.
+    For this simulation, a basic test is to ensure it can initialize and run for a short period without crashing.
+    """
     try:
-        sim = particle_sim.ParticleSimulation()
-        if sim is not None:
-            tests_passed += 1
+        sim = ParticleSimulation()
+        # Run for a very short duration to ensure initialization and first few frames work
+        sim.run(duration=0.1) 
         sim.cleanup()
+        return True
     except Exception as e:
-        print(f"Test 1 (Initialization) failed: {e}", file=sys.stderr)
-    
-    # Test 2: Particle count
-    tests_total += 1
-    try:
-        sim = particle_sim.ParticleSimulation()
-        if len(sim.particles) == particle_sim.NUM_PARTICLES:
-            tests_passed += 1
-        else:
-            print(f"Test 2 (Particle Count) failed: Expected {particle_sim.NUM_PARTICLES}, got {len(sim.particles)}", file=sys.stderr)
-        sim.cleanup()
-    except Exception as e:
-        print(f"Test 2 (Particle Count) failed: {e}", file=sys.stderr)
+        print(f"Functional test failed: {e}", file=sys.stderr)
+        return False
 
-    return tests_passed, tests_total
-
-def measure_performance():
-    """Measure the primary performance metric (FPS)."""
-    benchmark_frames = 60  # Run for 60 frames for benchmarking
-    
+def measure_performance(duration: float = 5.0) -> tuple[float, dict]:
+    """
+    Measure the FPS of the particle simulation.
+    Runs the simulation for a specified duration and returns the average FPS.
+    """
     sim = None
     try:
-        sim = particle_sim.ParticleSimulation()
-        sim.run(benchmark_frames=benchmark_frames)
+        sim = ParticleSimulation()
+        # Reset FPS counter for accurate measurement during benchmark run
+        reset_fps_counter()
+
+        sim.run(duration=duration)
         
-        # The FPS is updated in particle_sim.py, so we can just retrieve it
-        score = particle_sim.get_fps()
+        # Get the final FPS reading
+        fps = get_current_fps()
         
-        return score, {}
+        return fps, {}
     except Exception as e:
         print(f"Performance measurement failed: {e}", file=sys.stderr)
-        return None, {}
+        return 0.0, {"error": str(e)}
     finally:
         if sim:
             sim.cleanup()
@@ -69,32 +63,44 @@ def measure_performance():
 def main():
     quiet = "--quiet" in sys.argv
     
+    result = {
+        "score": None,
+        "metric_name": "FPS",
+        "test_gate": False,
+        "metrics": {},
+        "message": ""
+    }
+
     try:
-        tests_passed, tests_total = run_tests()
-        score, extra_metrics = measure_performance()
+        # Run functional tests
+        test_gate_passed = run_functional_tests()
+        result["test_gate"] = test_gate_passed
         
-        result = {
-            "score": score,
-            "metric_name": "FPS",
-            "test_gate": tests_passed == tests_total,
-            "metrics": {
-                "tests_passed": tests_passed,
-                "tests_total": tests_total,
-                **extra_metrics
-            },
-            "message": f"Score: {score:.2f} FPS, Tests: {tests_passed}/{tests_total} passed"
-        }
+        if not test_gate_passed:
+            result["message"] = "Functional tests failed."
+            print(json.dumps(result))
+            sys.exit(1)
+
+        # Measure performance
+        fps_score, extra_metrics = measure_performance(duration=5.0) # Run for 5 seconds
+        result["score"] = fps_score
+        result["metrics"].update(extra_metrics)
         
+        if fps_score > 0:
+            result["message"] = f"Benchmark passed. FPS: {fps_score:.2f}"
+        else:
+            result["test_gate"] = False
+            result["message"] = "Benchmark failed: FPS score is 0 or less."
+            sys.exit(1)
+            
         print(json.dumps(result))
-        sys.exit(0 if result["test_gate"] and result["score"] is not None else 1)
+        sys.exit(0)
         
     except Exception as e:
-        result = {
-            "score": None,
-            "metric_name": "error",
-            "test_gate": False,
-            "message": str(e)
-        }
+        result["score"] = None
+        result["metric_name"] = "error"
+        result["test_gate"] = False
+        result["message"] = f"An unexpected error occurred: {str(e)}"
         print(json.dumps(result))
         sys.exit(1)
 

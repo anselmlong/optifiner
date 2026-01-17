@@ -5,6 +5,13 @@ Usage:
     python cli.py <repository> --evaluator <path_to_evaluator>
 """
 
+# CRITICAL: Set gRPC environment variables BEFORE any other imports
+# This fixes: "Other threads are currently calling into gRPC, skipping fork()"
+import os
+os.environ["GRPC_ENABLE_FORK_SUPPORT"] = "1"
+os.environ["GRPC_POLL_STRATEGY"] = "poll"  # More compatible with fork()
+os.environ["GRPC_VERBOSITY"] = "ERROR"  # Suppress INFO/WARNING messages
+
 import sys
 from pathlib import Path
 

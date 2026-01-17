@@ -17,15 +17,22 @@ import random
 from dataclasses import dataclass
 from typing import List, Tuple
 
+
 import pygame
 import time
-import numpy as np
 
 _frame_count = 0
 _fps_start_time = time.time()
 _current_fps = 0.0
 
-def get_fps():
+def reset_fps_counter():
+    global _frame_count, _fps_start_time, _current_fps
+    _frame_count = 0
+    _fps_start_time = time.time()
+    _current_fps = 0.0
+
+def get_current_fps():
+    global _current_fps
     return _current_fps
 
 
@@ -46,56 +53,35 @@ PARTICLE_INFLUENCE_RADIUS = PARTICLE_RADIUS * 3  # Pre-calculated
 
 @dataclass
 class Vector3:
-    """3D Vector class - now using numpy for performance"""
-    _v: np.ndarray
-
-    def __init__(self, x: float, y: float, z: float):
-        self._v = np.array([x, y, z], dtype=np.float32)
-
-    @property
-    def x(self) -> float:
-        return self._v[0]
-
-    @x.setter
-    def x(self, value: float):
-        self._v[0] = value
-
-    @property
-    def y(self) -> float:
-        return self._v[1]
-
-    @y.setter
-    def y(self, value: float):
-        self._v[1] = value
-
-    @property
-    def z(self) -> float:
-        return self._v[2]
-
-    @z.setter
-    def z(self, value: float):
-        self._v[2] = value
+    """3D Vector class - intentionally not using numpy for 'simplicity'"""
+    x: float
+    y: float
+    z: float
     
     def __add__(self, other: 'Vector3') -> 'Vector3':
-        return Vector3(0,0,0)._from_array(self._v + other._v)
+        return Vector3(self.x + other.x, self.y + other.y, self.z + other.z)
     
     def __sub__(self, other: 'Vector3') -> 'Vector3':
-        return Vector3(0,0,0)._from_array(self._v - other._v)
+        return Vector3(self.x - other.x, self.y - other.y, self.z - other.z)
     
     def __mul__(self, scalar: float) -> 'Vector3':
-        return Vector3(0,0,0)._from_array(self._v * scalar)
+        return Vector3(self.x * scalar, self.y * scalar, self.z * scalar)
     
     def __truediv__(self, scalar: float) -> 'Vector3':
-        return Vector3(0,0,0)._from_array(self._v / scalar)
+        return Vector3(self.x / scalar, self.y / scalar, self.z / scalar)
     
     def dot(self, other: 'Vector3') -> float:
-        return np.dot(self._v, other._v)
+        return self.x * other.x + self.y * other.y + self.z * other.z
     
     def cross(self, other: 'Vector3') -> 'Vector3':
-        return Vector3(0,0,0)._from_array(np.cross(self._v, other._v))
+        return Vector3(
+            self.y * other.z - self.z * other.y,
+            self.z * other.x - self.x * other.z,
+            self.x * other.y - self.y * other.x
+        )
     
     def length(self) -> float:
-        return np.linalg.norm(self._v)
+        return math.sqrt(self.x * self.x + self.y * self.y + self.z * self.z)
     
     def normalize(self) -> 'Vector3':
         l = self.length()
@@ -104,12 +90,7 @@ class Vector3:
         return Vector3(0, 0, 0)
     
     def copy(self) -> 'Vector3':
-        return Vector3(0,0,0)._from_array(self._v.copy())
-
-    def _from_array(self, arr: np.ndarray) -> 'Vector3':
-        self._v = arr
-        return self
-
+        return Vector3(self.x, self.y, self.z)
 
 
 @dataclass
@@ -123,41 +104,36 @@ class Particle:
     emission: float  # Light emission strength
     
     def update(self, dt: float) -> None:
-        """Update particle physics - now using vectorized operations"""
+        """Update particle physics - intentionally basic"""
         # Apply gravity
-        self.velocity._v[1] -= GRAVITY * dt * 60
+        self.velocity.y -= GRAVITY * dt * 60
         
         # Update position
-        self.position._v += self.velocity._v * dt * 60
+        self.position.x += self.velocity.x * dt * 60
+        self.position.y += self.velocity.y * dt * 60
+        self.position.z += self.velocity.z * dt * 60
         
         # Bounce off world bounds
-        # Using np.where for vectorized conditional updates
-        # X-axis
-        bounce_x_neg = self.position._v[0] < -WORLD_BOUNDS
-        self.position._v[0] = np.where(bounce_x_neg, -WORLD_BOUNDS, self.position._v[0])
-        self.velocity._v[0] = np.where(bounce_x_neg, self.velocity._v[0] * -BOUNCE_DAMPING, self.velocity._v[0])
-
-        bounce_x_pos = self.position._v[0] > WORLD_BOUNDS
-        self.position._v[0] = np.where(bounce_x_pos, WORLD_BOUNDS, self.position._v[0])
-        self.velocity._v[0] = np.where(bounce_x_pos, self.velocity._v[0] * -BOUNCE_DAMPING, self.velocity._v[0])
-
-        # Y-axis
-        bounce_y_neg = self.position._v[1] < -WORLD_BOUNDS
-        self.position._v[1] = np.where(bounce_y_neg, -WORLD_BOUNDS, self.position._v[1])
-        self.velocity._v[1] = np.where(bounce_y_neg, self.velocity._v[1] * -BOUNCE_DAMPING, self.velocity._v[1])
-
-        bounce_y_pos = self.position._v[1] > WORLD_BOUNDS
-        self.position._v[1] = np.where(bounce_y_pos, WORLD_BOUNDS, self.position._v[1])
-        self.velocity._v[1] = np.where(bounce_y_pos, self.velocity._v[1] * -BOUNCE_DAMPING, self.velocity._v[1])
-
-        # Z-axis
-        bounce_z_neg = self.position._v[2] < -WORLD_BOUNDS
-        self.position._v[2] = np.where(bounce_z_neg, -WORLD_BOUNDS, self.position._v[2])
-        self.velocity._v[2] = np.where(bounce_z_neg, self.velocity._v[2] * -BOUNCE_DAMPING, self.velocity._v[2])
-
-        bounce_z_pos = self.position._v[2] > WORLD_BOUNDS
-        self.position._v[2] = np.where(bounce_z_pos, WORLD_BOUNDS, self.position._v[2])
-        self.velocity._v[2] = np.where(bounce_z_pos, self.velocity._v[2] * -BOUNCE_DAMPING, self.velocity._v[2])
+        if self.position.x < -WORLD_BOUNDS:
+            self.position.x = -WORLD_BOUNDS
+            self.velocity.x *= -BOUNCE_DAMPING
+        if self.position.x > WORLD_BOUNDS:
+            self.position.x = WORLD_BOUNDS
+            self.velocity.x *= -BOUNCE_DAMPING
+            
+        if self.position.y < -WORLD_BOUNDS:
+            self.position.y = -WORLD_BOUNDS
+            self.velocity.y *= -BOUNCE_DAMPING
+        if self.position.y > WORLD_BOUNDS:
+            self.position.y = WORLD_BOUNDS
+            self.velocity.y *= -BOUNCE_DAMPING
+            
+        if self.position.z < -WORLD_BOUNDS:
+            self.position.z = -WORLD_BOUNDS
+            self.velocity.z *= -BOUNCE_DAMPING
+        if self.position.z > WORLD_BOUNDS:
+            self.position.z = WORLD_BOUNDS
+            self.velocity.z *= -BOUNCE_DAMPING
 
 
 @dataclass
@@ -205,70 +181,77 @@ class VolumetricRenderer:
         return (int(screen_x), int(screen_y), rot_z)
     
     def calculate_volumetric_fog(self, ray_origin: Vector3, ray_dir: Vector3, 
-                                  particle_positions: np.ndarray, particle_radii: np.ndarray, 
-                                  particle_colors: np.ndarray, particle_emissions: np.ndarray, 
-                                  light_positions: np.ndarray, light_colors: np.ndarray, 
-                                  light_intensities: np.ndarray, max_distance: float) -> Tuple[float, float, float]:
+                                  particles: List[Particle], lights: List[Light],
+                                  max_distance: float) -> Tuple[float, float, float]:
         """
         Raymarch through the scene to calculate volumetric fog contribution.
         This is INTENTIONALLY slow - per-pixel, no vectorization.
         """
-        accumulated_color = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+        accumulated_color = [0.0, 0.0, 0.0]
         accumulated_density = 0.0
         step_size = max_distance / RAYMARCH_STEPS
         
-        ray_origin_v = ray_origin._v
-        ray_dir_v = ray_dir._v
-        
-        # Pre-calculate influence radii squared for particles
-        particle_influence_radii_sq = (particle_radii * 3) ** 2
+        # Pre-extract ray components for faster access
+        ray_ox, ray_oy, ray_oz = ray_origin.x, ray_origin.y, ray_origin.z
+        ray_dx, ray_dy, ray_dz = ray_dir.x, ray_dir.y, ray_dir.z
         
         for step in range(RAYMARCH_STEPS):
-            t = (step + 0.5) * step_size  # Sample at midpoint of step
-            curr_pos = ray_origin_v + ray_dir_v * t
+            # Calculate current position along ray
+            t = step * step_size
+            curr_x = ray_ox + ray_dx * t
+            curr_y = ray_oy + ray_dy * t
+            curr_z = ray_oz + ray_dz * t
             
+            # Calculate density at this point (influenced by nearby particles)
             local_density = 0.0
-            local_color = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+            local_color = [0.0, 0.0, 0.0]
             
-            # Particle contribution
-            diff = curr_pos - particle_positions  # (N, 3) array
-            dist_sq = np.sum(diff * diff, axis=1) # (N,) array
-            
-            mask = dist_sq < particle_influence_radii_sq
-            
-            if np.any(mask):
-                active_dist = np.sqrt(dist_sq[mask])
-                active_radii = particle_radii[mask]
-                active_colors = particle_colors[mask]
-                active_emissions = particle_emissions[mask]
-
-                falloff = 1.0 - (active_dist / (active_radii * 3))
-                falloff = falloff * falloff
+            # Check contribution from each particle - O(n) per raymarch step!
+            for particle in particles:
+                # Quick squared distance check first (avoid sqrt)
+                dx = curr_x - particle.position.x
+                dy = curr_y - particle.position.y
+                dz = curr_z - particle.position.z
+                dist_sq = dx * dx + dy * dy + dz * dz
                 
-                local_density += np.sum(falloff * 0.5)
-                emission_contrib = active_emissions * falloff
-                local_color += np.sum(active_colors / 255.0 * emission_contrib[:, np.newaxis], axis=0)
+                influence_radius = particle.radius * 3
+                if dist_sq < influence_radius * influence_radius:
+                    dist = math.sqrt(dist_sq)
+                    # Falloff based on distance
+                    falloff = 1.0 - (dist / influence_radius)
+                    falloff = falloff * falloff
+                    
+                    local_density += falloff * 0.5
+                    emission = particle.emission * falloff
+                    local_color[0] += particle.color[0] / 255.0 * emission
+                    local_color[1] += particle.color[1] / 255.0 * emission
+                    local_color[2] += particle.color[2] / 255.0 * emission
             
-            # Light contribution
-            light_diff = curr_pos - light_positions # (M, 3) array
-            light_dist_sq = np.sum(light_diff * light_diff, axis=1) # (M,) array
+            # Add light contribution at this point
+            for light in lights:
+                lx = curr_x - light.position.x
+                ly = curr_y - light.position.y
+                lz = curr_z - light.position.z
+                light_dist_sq = lx * lx + ly * ly + lz * lz
+                if light_dist_sq > 0:
+                    # Calculate light falloff
+                    attenuation = light.intensity / (1.0 + light_dist_sq * 0.0001)
+                    local_color[0] += light.color[0] * attenuation * 0.1
+                    local_color[1] += light.color[1] * attenuation * 0.1
+                    local_color[2] += light.color[2] * attenuation * 0.1
             
-            # Avoid division by zero for lights exactly at curr_pos
-            light_dist_sq[light_dist_sq == 0] = 1e-6 
-
-            attenuation = light_intensities / (1.0 + light_dist_sq * 0.0001)
-            local_color += np.sum(light_colors * attenuation[:, np.newaxis] * 0.1, axis=0)
-            
-            # Accumulate fog
+            # Accumulate fog using front-to-back compositing
             if local_density > 0:
-                alpha = 1.0 - np.exp(-local_density * step_size * FOG_DENSITY)
+                alpha = 1.0 - math.exp(-local_density * step_size * FOG_DENSITY)
                 alpha = min(1.0, alpha)
                 
                 remaining = 1.0 - accumulated_density
-                accumulated_color += local_color * alpha * remaining
+                accumulated_color[0] += local_color[0] * alpha * remaining
+                accumulated_color[1] += local_color[1] * alpha * remaining
+                accumulated_color[2] += local_color[2] * alpha * remaining
                 accumulated_density += alpha * remaining
                 
-                if accumulated_density > 0.95:
+                if accumulated_density > 0.95:  # Slightly earlier cutoff
                     break
         
         return (
@@ -323,7 +306,6 @@ class ParticleSimulation:
     """Main simulation class"""
     
     def __init__(self):
-        os.environ["SDL_VIDEODRIVER"] = "dummy"
         pygame.init()
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
         pygame.display.set_caption("Volumetric Particle Simulation - Optimize Me!")
@@ -333,8 +315,6 @@ class ParticleSimulation:
         self.renderer = VolumetricRenderer(SCREEN_WIDTH, SCREEN_HEIGHT)
         self.particles: List[Particle] = []
         self.lights: List[Light] = []
-        self.cell_size = PARTICLE_RADIUS * 4
-        self.grid = {}
         
         self.camera_rotation = 0.0
         self.camera_position = Vector3(0, 50, -self.renderer.camera_distance)
@@ -417,66 +397,70 @@ class ParticleSimulation:
         Check and resolve particle-particle collisions.
         INTENTIONALLY O(n²) - a major optimization opportunity!
         """
-        # Optimized collision detection using spatial hashing
-        # Iterate through each particle
-        for i, p1 in enumerate(self.particles):
-            p1_coords = self._get_grid_coords(p1.position)
+        max_radius = PARTICLE_RADIUS * 1.5 * 2  # Max combined radius
+        max_radius_sq = max_radius * max_radius
+        
+        for i in range(len(self.particles)):
+            p1 = self.particles[i]
+            p1_x, p1_y, p1_z = p1.position.x, p1.position.y, p1.position.z
             
-            # Define the search area: current cell and its 26 neighbors
-            # This ensures all potential collisions are checked
-            for dz in [-1, 0, 1]:
-                for dy in [-1, 0, 1]:
-                    for dx in [-1, 0, 1]:
-                        neighbor_coords = (p1_coords[0] + dx, p1_coords[1] + dy, p1_coords[2] + dz)
+            for j in range(i + 1, len(self.particles)):
+                p2 = self.particles[j]
+                
+                # Calculate distance between particles
+                dx = p2.position.x - p1_x
+                dy = p2.position.y - p1_y
+                dz = p2.position.z - p1_z
+                
+                # Early exit for distant particles
+                dist_sq = dx * dx + dy * dy + dz * dz
+                if dist_sq > max_radius_sq:
+                    continue
+                    
+                min_dist = p1.radius + p2.radius
+                
+                if dist_sq < min_dist * min_dist and dist_sq > 0:
+                    dist = math.sqrt(dist_sq)
+                    
+                    # Normalize collision vector
+                    nx = dx / dist
+                    ny = dy / dist
+                    nz = dz / dist
+                    
+                    # Relative velocity
+                    dvx = p2.velocity.x - p1.velocity.x
+                    dvy = p2.velocity.y - p1.velocity.y
+                    dvz = p2.velocity.z - p1.velocity.z
+                    
+                    # Relative velocity along collision normal
+                    dvn = dvx * nx + dvy * ny + dvz * nz
+                    
+                    if dvn < 0:  # Particles moving toward each other
+                        # Mass-weighted impulse
+                        total_mass = p1.mass + p2.mass
+                        impulse = -2.0 * dvn / total_mass
                         
-                        if neighbor_coords in self.grid:
-                            for p2 in self.grid[neighbor_coords]:
-                                # Ensure we don't check a particle against itself
-                                # and avoid duplicate checks (p1 vs p2, then p2 vs p1)
-                                if p1 is p2:
-                                    continue
-                                
-                                # Calculate distance between particles
-                                diff = p2.position._v - p1.position._v
-                                dist_sq = np.sum(diff * diff)
-                                
-                                min_dist = p1.radius + p2.radius
-                                min_dist_sq = min_dist * min_dist
-                                
-                                if dist_sq < min_dist_sq and dist_sq > 1e-6: # Avoid division by zero
-                                    dist = math.sqrt(dist_sq)
-                                    
-                                    # Collision detected, resolve it
-                                    
-                                    # Normalize collision vector
-                                    normal = diff / dist
-                                    
-                                    # Relative velocity
-                                    relative_velocity = p2.velocity._v - p1.velocity._v
-                                    
-                                    # Relative velocity along collision normal
-                                    dvn = np.dot(relative_velocity, normal)
-                                    
-                                    if dvn < 0:  # Particles moving toward each other
-                                        # Mass-weighted impulse
-                                        total_mass = p1.mass + p2.mass
-                                        impulse = -2.0 * dvn / total_mass
-                                        
-                                        p1.velocity._v -= impulse * p2.mass * normal * BOUNCE_DAMPING
-                                        p1.velocity._v += impulse * p1.mass * normal * BOUNCE_DAMPING # This line was incorrect in the original, should be p2.velocity
-                                        
-                                        # Separate particles
-                                        overlap = min_dist - dist
-                                        p1.position._v -= normal * overlap * 0.5
-                                        p2.position._v += normal * overlap * 0.5
-                                        
-                                        # Corrected the p2.velocity update, it was missing in the original logic
-                                        p2.velocity._v += impulse * p1.mass * normal * BOUNCE_DAMPING
+                        p1.velocity.x -= impulse * p2.mass * nx * BOUNCE_DAMPING
+                        p1.velocity.y -= impulse * p2.mass * ny * BOUNCE_DAMPING
+                        p1.velocity.z -= impulse * p2.mass * nz * BOUNCE_DAMPING
+                        
+                        p2.velocity.x += impulse * p1.mass * nx * BOUNCE_DAMPING
+                        p2.velocity.y += impulse * p1.mass * ny * BOUNCE_DAMPING
+                        p2.velocity.z += impulse * p1.mass * nz * BOUNCE_DAMPING
+                        
+                        # Separate particles
+                        overlap = min_dist - dist
+                        p1.position.x -= nx * overlap * 0.5
+                        p1.position.y -= ny * overlap * 0.5
+                        p1.position.z -= nz * overlap * 0.5
+                        p2.position.x += nx * overlap * 0.5
+                        p2.position.y += ny * overlap * 0.5
+                        p2.position.z += nz * overlap * 0.5
     
     def render_volumetric_background(self, surface: pygame.Surface) -> None:
         """
         Render beautiful gradient background with nebula-like effects.
-        Now optimized with NumPy for per-pixel calculations!
+        INTENTIONALLY SLOW - per-pixel calculations!
         """
         # Create a background surface with smooth gradients
         sample_rate = 16  # Coarser sampling (was 8)
@@ -496,17 +480,6 @@ class ParticleSimulation:
         time_06 = self.time * 0.6
         time_02 = self.time * 0.2
         time_015 = self.time * 0.15
-
-        # Extract particle data into NumPy arrays
-        particle_positions_arr = np.array([p.position._v for p in self.particles], dtype=np.float32)
-        particle_radii_arr = np.array([p.radius for p in self.particles], dtype=np.float32)
-        particle_colors_arr = np.array([p.color for p in self.particles], dtype=np.float32)
-        particle_emissions_arr = np.array([p.emission for p in self.particles], dtype=np.float32)
-
-        # Extract light data into NumPy arrays
-        light_positions_arr = np.array([l.position._v for l in self.lights], dtype=np.float32)
-        light_colors_arr = np.array([l.color for l in self.lights], dtype=np.float32)
-        light_intensities_arr = np.array([l.intensity for l in self.lights], dtype=np.float32)
         
         for y in range(0, height, sample_rate):
             ny = y * inv_height
@@ -554,8 +527,7 @@ class ParticleSimulation:
                 # Raymarch for volumetric fog
                 fog_color = self.renderer.calculate_volumetric_fog(
                     self.camera_position, rot_ray,
-                    particle_positions_arr, particle_radii_arr, particle_colors_arr, particle_emissions_arr,
-                    light_positions_arr, light_colors_arr, light_intensities_arr,
+                    self.particles, self.lights,
                     WORLD_BOUNDS * 3
                 )
                 
@@ -698,23 +670,7 @@ class ParticleSimulation:
             particle.update(dt)
         
         # Check collisions
-        self._update_collision_grid()
         self.check_particle_collisions()
-
-    def _get_grid_coords(self, position: Vector3) -> Tuple[int, int, int]:
-        return (
-            int(position.x // self.cell_size),
-            int(position.y // self.cell_size),
-            int(position.z // self.cell_size)
-        )
-
-    def _update_collision_grid(self) -> None:
-        self.grid.clear()
-        for particle in self.particles:
-            coords = self._get_grid_coords(particle.position)
-            if coords not in self.grid:
-                self.grid[coords] = []
-            self.grid[coords].append(particle)
     
     def render(self) -> None:
         """Render the complete scene"""
@@ -742,15 +698,14 @@ class ParticleSimulation:
         
         pygame.display.flip()
     
-    def run(self, benchmark_frames: int = 0) -> None:
+    def run(self, duration: float = None) -> None:
         """Run the simulation."""
-        global _frame_count, _fps_start_time, _current_fps
-        
-        _frame_count = 0
-        _fps_start_time = time.time()
-        
-        frame_counter = 0
+        start_time = time.time()
         while self.running:
+            if duration and (time.time() - start_time > duration):
+                self.running = False
+                break
+
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     self.running = False
@@ -764,34 +719,26 @@ class ParticleSimulation:
             self.update(dt)
             self.render()
 
+            global _frame_count, _fps_start_time, _current_fps
             _frame_count += 1
-            frame_counter += 1
             elapsed = time.time() - _fps_start_time
             if elapsed >= 1.0:
                 _current_fps = _frame_count / elapsed
                 _frame_count = 0
                 _fps_start_time = time.time()
-            
-            if benchmark_frames > 0 and frame_counter >= benchmark_frames:
-                self.running = False
-
     
     def cleanup(self) -> None:
         """Clean up pygame resources"""
         pygame.quit()
 
 
-def run_simulation(benchmark_frames: int = 0):
-    sim = ParticleSimulation()
-    try:
-        sim.run(benchmark_frames=benchmark_frames)
-    finally:
-        sim.cleanup()
-
 def main():
     """Main entry point"""
-    run_simulation()
-
+    sim = ParticleSimulation()
+    try:
+        sim.run()
+    finally:
+        sim.cleanup()
 
 
 if __name__ == "__main__":
