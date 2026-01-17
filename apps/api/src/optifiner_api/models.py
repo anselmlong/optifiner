@@ -144,6 +144,8 @@ class OptimizationWorkflowRequest(BaseModel):
     evaluator_path: str | None = Field(None, description="Path to evaluator script (if not in repo)")
     max_iterations_per_agent: int = Field(20, description="Maximum iterations per agent")
     time_limit_seconds: int = Field(300, description="Time limit per generation in seconds (default: 5 minutes)")
+    min_improvement_pct: float = Field(6.0, description="Minimum improvement percentage to accept a change (default: 6.0%, filters noise)")
+    early_stop: bool = Field(True, description="Stop generation early when improvement found (default: enabled)")
 
 
 class GraphNode(BaseModel):

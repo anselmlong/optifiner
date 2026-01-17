@@ -1,5 +1,7 @@
 """Configuration settings."""
 
+from pathlib import Path
+
 from pydantic_settings import BaseSettings
 
 
@@ -26,8 +28,15 @@ class Settings(BaseSettings):
     class Config:
         """Pydantic config."""
 
-        env_file = ".env"
+        # Resolve .env file path relative to apps/api directory
+        # This file is at: apps/api/src/optifiner_api/config.py
+        # We want: apps/api/.env
+        # So go up 2 levels: src -> optifiner_api -> api
+        _config_file = Path(__file__)
+        _api_dir = _config_file.parent.parent.parent  # apps/api
+        env_file = str(_api_dir / ".env")
         case_sensitive = True
+        extra = "ignore"  # Allow extra fields in .env file (like GOOGLE_API_KEY) without validation errors
 
 
 settings = Settings()

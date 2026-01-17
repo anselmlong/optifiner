@@ -8,18 +8,31 @@ export default {
   theme: {
     extend: {
       colors: {
-        // Primary brand colors
+        // Primary brand colors - Green theme
         primary: {
-          50: '#EFF6FF',
-          100: '#DBEAFE',
-          200: '#BFDBFE',
-          300: '#93C5FD',
-          400: '#60A5FA',
-          500: '#3B82F6',
-          600: '#2563EB',
-          700: '#1D4ED8',
-          800: '#1E40AF',
-          900: '#1E3A8A',
+          50: '#F0FDF4',
+          100: '#DCFCE7',
+          200: '#BBEF63',
+          300: '#86EFAC',
+          400: '#4ADE80',
+          500: '#22C55E',
+          600: '#16A34A',
+          700: '#15803D',
+          800: '#166534',
+          900: '#14532D',
+        },
+        // Charcoal for dark mode
+        charcoal: {
+          50: '#F9FAFB',
+          100: '#F3F4F6',
+          200: '#E5E7EB',
+          300: '#D1D5DB',
+          400: '#9CA3AF',
+          500: '#6B7280',
+          600: '#4B5563',
+          700: '#374151',
+          800: '#1F2937',
+          900: '#111827',
         },
         // Semantic colors
         success: {
@@ -50,13 +63,13 @@ export default {
           'text-dark': '#FECACA',
         },
         info: {
-          bg: '#DBEAFE',
-          border: '#93C5FD',
-          text: '#1E40AF',
-          solid: '#3B82F6',
-          'bg-dark': '#1E3A8A',
-          'border-dark': '#1E40AF',
-          'text-dark': '#93C5FD',
+          bg: '#DCFCE7',
+          border: '#86EFAC',
+          text: '#166534',
+          solid: '#22C55E',
+          'bg-dark': '#14532D',
+          'border-dark': '#166534',
+          'text-dark': '#86EFAC',
         },
         // Status colors
         status: {
@@ -69,9 +82,9 @@ export default {
         },
         // Chart colors
         chart: {
-          1: '#3B82F6',
-          2: '#06B6D4',
-          3: '#22C55E',
+          1: '#22C55E',
+          2: '#16A34A',
+          3: '#86EFAC',
           4: '#F59E0B',
           5: '#EF4444',
           6: '#8B5CF6',
@@ -95,7 +108,7 @@ export default {
           primary: '#E2E8F0',
           secondary: '#CBD5E1',
           subtle: '#F1F5F9',
-          focus: '#3B82F6',
+          focus: '#22C55E',
         },
         // Syntax highlighting
         syntax: {
@@ -112,6 +125,7 @@ export default {
       fontFamily: {
         sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'Helvetica Neue', 'Arial', 'sans-serif'],
         mono: ['JetBrains Mono', 'Fira Code', 'SF Mono', 'Monaco', 'Cascadia Code', 'monospace'],
+        tech: ['JetBrains Mono', 'Courier New', 'monospace'],
       },
       fontSize: {
         'xs': ['0.75rem', { lineHeight: '1.5' }],
@@ -138,10 +152,10 @@ export default {
         'lg': '0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1)',
         'xl': '0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1)',
         '2xl': '0 25px 50px -12px rgb(0 0 0 / 0.25)',
-        'primary': '0 4px 14px 0 rgb(59 130 246 / 0.3)',
+        'primary': '0 4px 14px 0 rgb(34 197 94 / 0.3)',
         'success': '0 4px 14px 0 rgb(34 197 94 / 0.3)',
         'error': '0 4px 14px 0 rgb(239 68 68 / 0.3)',
-        'glow-primary': '0 0 20px rgb(59 130 246 / 0.4)',
+        'glow-primary': '0 0 20px rgb(34 197 94 / 0.4)',
         'glow-success': '0 0 20px rgb(34 197 94 / 0.4)',
       },
       animation: {

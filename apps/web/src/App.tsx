@@ -9,7 +9,8 @@ import {
   Analytics,
   History,
   Help,
-  NewProject
+  NewProject,
+  DocsPage
 } from './pages'
 
 function App() {
@@ -31,6 +32,8 @@ function App() {
         <Route path="/history" element={<History />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/help" element={<Help />} />
+        <Route path="/docs" element={<DocsPage />} />
+        <Route path="/docs/:docId" element={<DocsPage />} />
       </Routes>
     </MainLayout>
   )

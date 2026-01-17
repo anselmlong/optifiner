@@ -1,9 +1,13 @@
 """Optimization workflow API endpoints."""
 
+import logging
+
 from fastapi import APIRouter, HTTPException
 
 from optifiner_api.models import OptimizationWorkflowRequest, OptimizationWorkflowStatus
 from optifiner_api.services.optimization_service import OptimizationService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -45,34 +49,55 @@ async def start_optimization_workflow(
     Returns:
         Workflow initialization result with workflow_id and baseline score
     """
-    # Convert models to dict format
-    models = [
-        {
-            "provider": model.provider,
-            "model_name": model.model_name,
-            "api_key": model.api_key,
-            "instances": model.instances,
-        }
-        for model in request.models
-    ]
+    try:
+        logger.debug(f"[API] /optimization/start called with repo_url={request.repo_url}, branch={request.branch}, models={len(request.models)}")
+        
+        # Convert models to dict format
+        models = [
+            {
+                "provider": model.provider,
+                "model_name": model.model_name,
+                "api_key": model.api_key,
+                "instances": model.instances,
+            }
+            for model in request.models
+        ]
+        
+        logger.debug(f"[API] Converted {len(models)} models to dict format")
 
-    result = await optimization_service.start_optimization_workflow(
-        repo_url=request.repo_url,
-        branch=request.branch,
-        total_cost_limit=request.total_cost_limit,
-        models=models,
-        user_prompt=request.user_prompt,
-        evaluator_path=request.evaluator_path,
-        max_iterations_per_agent=request.max_iterations_per_agent,
-        time_limit_seconds=request.time_limit_seconds,
-    )
-
-    if not result.get("success"):
-        raise HTTPException(
-            status_code=400, detail=result.get("error", "Failed to start workflow")
+        logger.debug(f"[API] Calling optimization_service.start_optimization_workflow")
+        result = await optimization_service.start_optimization_workflow(
+            repo_url=request.repo_url,
+            branch=request.branch,
+            total_cost_limit=request.total_cost_limit,
+            models=models,
+            user_prompt=request.user_prompt,
+            evaluator_path=request.evaluator_path,
+            max_iterations_per_agent=request.max_iterations_per_agent,
+            time_limit_seconds=request.time_limit_seconds,
+            min_improvement_pct=request.min_improvement_pct,
+            early_stop=request.early_stop,
         )
+        
+        logger.debug(f"[API] start_optimization_workflow returned: success={result.get('success')}, workflow_id={result.get('workflow_id')}")
 
-    return result
+        if not result.get("success"):
+            error_msg = result.get("error", "Failed to start workflow")
+            logger.error(f"[API] Workflow start failed: {error_msg}")
+            raise HTTPException(
+                status_code=400, detail=error_msg
+            )
+
+        logger.info(f"[API] Workflow started successfully: workflow_id={result.get('workflow_id')}")
+        return result
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        logger.error(f"[API] Unexpected error in start_optimization_workflow: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500, detail=f"Internal server error: {str(e)}"
+        )
 
 
 @router.post("/optimization/{workflow_id}/pause")
