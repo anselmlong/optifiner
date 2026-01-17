@@ -98,6 +98,144 @@ class EvolutionState:
     total_improvements: int = 0
     total_attempts: int = 0
     history: list[dict] = field(default_factory=list)
+    step_count: int = 0  # Track total successful steps across all generations
+
+
+def save_step_snapshot(
+    source_path: Path,
+    output_dir: Path,
+    step_number: int,
+    agent_id: str,
+    baseline_score: float,
+    final_score: float,
+    improvement_pct: float,
+    generation: int,
+    console: Console,
+) -> Path:
+    """Save a snapshot of the codebase at a specific evolution step.
+    
+    Creates a folder like: output_dir/steps/step_001/
+    With the codebase and a metadata.json file.
+    
+    Args:
+        source_path: Path to the current codebase to snapshot.
+        output_dir: Base output directory (the _optifinered folder).
+        step_number: The step number (1-indexed).
+        agent_id: ID of the agent that made this improvement.
+        baseline_score: Score before this improvement.
+        final_score: Score after this improvement.
+        improvement_pct: Percentage improvement.
+        generation: Current generation number.
+        console: Rich console for output.
+        
+    Returns:
+        Path to the created step folder.
+    """
+    # Create steps directory structure
+    steps_dir = output_dir / "steps"
+    steps_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Create step folder with zero-padded number
+    step_folder = steps_dir / f"step_{step_number:03d}"
+    
+    # Copy codebase to step folder
+    if step_folder.exists():
+        shutil.rmtree(step_folder)
+    
+    # Copy source (excluding .git and steps folder to avoid recursion)
+    def ignore_patterns(directory, files):
+        ignored = []
+        if Path(directory) == source_path:
+            if ".git" in files:
+                ignored.append(".git")
+            if "steps" in files:
+                ignored.append("steps")
+        elif ".git" in files:
+            ignored.append(".git")
+        return ignored
+    
+    shutil.copytree(source_path, step_folder, ignore=ignore_patterns)
+    
+    # Create metadata file
+    metadata = {
+        "step": step_number,
+        "generation": generation,
+        "agent_id": agent_id,
+        "baseline_score": baseline_score,
+        "final_score": final_score,
+        "improvement": final_score - baseline_score,
+        "improvement_percent": improvement_pct,
+        "timestamp": datetime.now().isoformat(),
+    }
+    
+    metadata_path = step_folder / "step_metadata.json"
+    with open(metadata_path, "w") as f:
+        json.dump(metadata, f, indent=2)
+    
+    console.print(f"[dim]  Saved step {step_number} snapshot to: {step_folder.name}/[/dim]")
+    
+    return step_folder
+
+
+def save_initial_snapshot(
+    source_path: Path,
+    output_dir: Path,
+    baseline_score: float,
+    console: Console,
+) -> Path:
+    """Save the initial (step 0) snapshot before any evolution.
+    
+    Args:
+        source_path: Path to the initial codebase.
+        output_dir: Base output directory (the _optifinered folder).
+        baseline_score: Initial baseline score.
+        console: Rich console for output.
+        
+    Returns:
+        Path to the created step_000 folder.
+    """
+    steps_dir = output_dir / "steps"
+    steps_dir.mkdir(parents=True, exist_ok=True)
+    
+    step_folder = steps_dir / "step_000"
+    
+    if step_folder.exists():
+        shutil.rmtree(step_folder)
+    
+    # Copy source (excluding .git and steps folder)
+    def ignore_patterns(directory, files):
+        ignored = []
+        if Path(directory) == source_path:
+            if ".git" in files:
+                ignored.append(".git")
+            if "steps" in files:
+                ignored.append("steps")
+        elif ".git" in files:
+            ignored.append(".git")
+        return ignored
+    
+    shutil.copytree(source_path, step_folder, ignore=ignore_patterns)
+    
+    # Create metadata file
+    metadata = {
+        "step": 0,
+        "generation": 0,
+        "agent_id": "initial",
+        "baseline_score": baseline_score,
+        "final_score": baseline_score,
+        "improvement": 0.0,
+        "improvement_percent": 0.0,
+        "timestamp": datetime.now().isoformat(),
+        "is_initial": True,
+    }
+    
+    metadata_path = step_folder / "step_metadata.json"
+    with open(metadata_path, "w") as f:
+        json.dump(metadata, f, indent=2)
+    
+    console.print(f"[dim]Saved initial snapshot to: {steps_dir.name}/step_000/[/dim]")
+    
+    return step_folder
 
 
 def _get_python_executable() -> str:
@@ -275,6 +413,7 @@ def run_single_agent_isolated(
     baseline_data: dict | None = None,
     stop_event: threading.Event | None = None,
     compact: bool = False,
+    min_improvement_pct: float = 3.0,
 ) -> tuple[AgentResult, WorkspaceManager | None]:
     """Run a single evolution agent in an isolated workspace.
 
@@ -293,6 +432,7 @@ def run_single_agent_isolated(
         baseline_data: Optional dict with baseline evaluation data.
         stop_event: Optional threading.Event to check for early stopping.
         compact: Enable compact logging mode for parallel execution.
+        min_improvement_pct: Minimum improvement percentage to consider significant.
 
     Returns:
         Tuple of (AgentResult, workspace_manager). Workspace is kept if successful
@@ -331,10 +471,11 @@ def run_single_agent_isolated(
             duration_seconds=time.time() - start_time,
         ), None
 
-    # Set the workspace context for tools - both thread-local AND environment variable
-    # The env var is a fallback in case thread-local doesn't propagate through LangGraph
+    # Set the workspace context for tools using context var and thread-local
+    # NOTE: We do NOT set os.environ["WORKSPACE_ROOT"] here because that's shared
+    # across all threads and causes race conditions in parallel execution.
+    # The workspace module uses ContextVar and thread-local for isolation.
     set_workspace(workspace)
-    os.environ["WORKSPACE_ROOT"] = str(workspace.workspace_root)
 
     # Configure evaluator for improver mode (timeouts are hard fails)
     set_benchmark_dev_mode(False)
@@ -444,6 +585,7 @@ Don't run `evaluate` until you've made changes - the baseline is already measure
             generation=0,
             baseline_score=baseline_score,
             observer=observer,
+            min_improvement_pct=min_improvement_pct,
         )
 
         # Extract the final score
@@ -646,8 +788,8 @@ def run_benchmark_builder_cli(
 @click.option("--model-provider", default="google",
               type=click.Choice(["anthropic", "google", "openai"]),
               help="LLM provider (default: google)")
-@click.option("--model-name", default="gemini-2.5-flash",
-              help="Model name (default: gemini-2.5-flash)")
+@click.option("--model-name", default="gemini-3-flash-preview",
+              help="Model name (default: gemini-3-flash-preview)")
 @click.option("--output", "-o", type=click.Path(), help="Output file for results (JSON)")
 @click.option("--verbose", "-v", count=True, default=1,
               help="Increase verbosity (-v=normal, -vv=verbose, -vvv=debug, omit for quiet)")
@@ -822,6 +964,9 @@ def main(
         best_score=baseline_score,
     )
 
+    # Save initial snapshot (step 0)
+    save_initial_snapshot(working_path, working_path, baseline_score, console)
+
     # Create initial git commit in the working copy
     commit_hash = git_commit(str(working_path), f"Initial state - Score: {baseline_score}")
     if commit_hash:
@@ -881,6 +1026,7 @@ def main(
                         log_dir=log_directory,
                         baseline_data=current_baseline_data,
                         stop_event=_stop_generation if early_stop else None,
+                        min_improvement_pct=min_improvement,
                     )
 
                     generation_results.append(result)
@@ -894,9 +1040,9 @@ def main(
                         # Copy improved workspace back to working copy (not original!)
                         git_reset(str(working_path))
                         
-                        # Remove files and copy improved version
+                        # Remove files and copy improved version (preserve steps folder)
                         for item in working_path.iterdir():
-                            if item.name != ".git":
+                            if item.name != ".git" and item.name != "steps":
                                 if item.is_dir():
                                     shutil.rmtree(item)
                                 else:
@@ -909,8 +1055,10 @@ def main(
                                 else:
                                     shutil.copy2(item, working_path / item.name)
 
+                        previous_score = state.best_score
                         state.best_score = result.final_score
                         state.total_improvements += 1
+                        state.step_count += 1
                         generation_improved = True
 
                         commit_msg = (
@@ -924,6 +1072,19 @@ def main(
                                       f"(+{improvement_pct:.1f}%)[/green]")
                         if commit_hash:
                             console.print(f"[dim]  Committed: {commit_hash}[/dim]")
+                        
+                        # Save step snapshot
+                        save_step_snapshot(
+                            source_path=working_path,
+                            output_dir=working_path,
+                            step_number=state.step_count,
+                            agent_id=agent_id,
+                            baseline_score=previous_score,
+                            final_score=result.final_score,
+                            improvement_pct=improvement_pct,
+                            generation=state.generation,
+                            console=console,
+                        )
 
                         # Update baseline data
                         new_result = run_evaluator(str(evaluator_path), str(working_path), return_full_data=True)
@@ -966,11 +1127,12 @@ def main(
                         max_iterations=max_iterations,
                         model_provider=model_provider,
                         model_name=model_name,
-                        verbosity=0,  # Disable regular verbosity
+                        verbosity=verbosity,  # Use actual verbosity setting
                         log_dir=log_directory,
                         baseline_data=current_baseline_data,
                         stop_event=_stop_generation if early_stop else None,
                         compact=True,  # Enable compact logging for parallel agents
+                        min_improvement_pct=min_improvement,
                     )
 
                 try:
@@ -1000,8 +1162,9 @@ def main(
                             if result.success and is_significant and workspace:
                                 git_reset(str(working_path))
                                 
+                                # Preserve steps folder when copying
                                 for item in working_path.iterdir():
-                                    if item.name != ".git":
+                                    if item.name != ".git" and item.name != "steps":
                                         if item.is_dir():
                                             shutil.rmtree(item)
                                         else:
@@ -1014,14 +1177,29 @@ def main(
                                         else:
                                             shutil.copy2(item, working_path / item.name)
 
+                                previous_score = state.best_score
                                 state.best_score = result.final_score
                                 state.total_improvements += 1
+                                state.step_count += 1
                                 generation_improved = True
 
                                 commit_msg = f"Gen {state.generation} | Agent {result.agent_id}: +{improvement_pct:.1f}%"
                                 git_commit(str(working_path), commit_msg)
 
                                 console.print(f"\n[green]✓ {result.agent_id} improved! +{improvement_pct:.1f}%[/green]")
+                                
+                                # Save step snapshot
+                                save_step_snapshot(
+                                    source_path=working_path,
+                                    output_dir=working_path,
+                                    step_number=state.step_count,
+                                    agent_id=result.agent_id,
+                                    baseline_score=previous_score,
+                                    final_score=result.final_score,
+                                    improvement_pct=improvement_pct,
+                                    generation=state.generation,
+                                    console=console,
+                                )
 
                                 new_result = run_evaluator(str(evaluator_path), str(working_path), return_full_data=True)
                                 if new_result[0] is not None:
@@ -1068,6 +1246,7 @@ def main(
     # Final summary
     console.print("\n" + "═" * 50)
     improvement_pct = ((state.best_score - state.baseline_score) / state.baseline_score * 100) if state.baseline_score > 0 else 0
+    steps_info = f"\n[bold]Version history:[/bold] [green]{working_path / 'steps'}[/green] ({state.step_count + 1} snapshots)"
     console.print(Panel.fit(
         f"[bold]Evolution Complete![/bold]\n\n"
         f"Initial score: [yellow]{state.baseline_score}[/yellow]\n"
@@ -1075,24 +1254,38 @@ def main(
         f"Total improvement: [cyan]+{state.best_score - state.baseline_score:.2f}[/cyan] "
         f"([cyan]+{improvement_pct:.1f}%[/cyan])\n\n"
         f"Successful improvements: {state.total_improvements}/{state.total_attempts}\n\n"
-        f"[bold]Output location:[/bold] [green]{working_path}[/green]\n"
+        f"[bold]Output location:[/bold] [green]{working_path}[/green]"
+        f"{steps_info}\n"
         f"[dim]Original repository was not modified.[/dim]",
         title="Results"
     ))
 
     # Save results
     if output:
+        # Collect step metadata
+        steps_metadata = []
+        steps_dir = working_path / "steps"
+        if steps_dir.exists():
+            for step_folder in sorted(steps_dir.iterdir()):
+                metadata_file = step_folder / "step_metadata.json"
+                if metadata_file.exists():
+                    with open(metadata_file) as f:
+                        steps_metadata.append(json.load(f))
+        
         results_data = {
             "repository": str(repository_path),
             "output_directory": str(working_path),
+            "steps_directory": str(steps_dir),
             "evaluator": str(evaluator_path),
             "baseline_score": state.baseline_score,
             "final_score": state.best_score,
             "improvement": state.best_score - state.baseline_score,
             "improvement_percent": improvement_pct,
             "total_improvements": state.total_improvements,
+            "total_steps": state.step_count,
             "total_attempts": state.total_attempts,
             "generations": state.history,
+            "steps": steps_metadata,
             "timestamp": datetime.now().isoformat(),
             "early_stop": early_stop,
         }
