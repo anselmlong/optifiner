@@ -40,9 +40,11 @@ export function Dashboard() {
         {/* Quick Actions */}
         <div className="flex items-center justify-between">
           <div />
-          <Button icon={faPlus} variant="primary">
-            New Evolution Project
-          </Button>
+          <Link to="/projects/new">
+            <Button icon={faPlus} variant="primary">
+              New Project
+            </Button>
+          </Link>
         </div>
 
         {/* Metric Cards */}
