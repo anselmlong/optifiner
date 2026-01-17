@@ -358,6 +358,14 @@ Remember: Only improvements that INCREASE the score are kept!"""
 @click.option("--model-name", default="gemini-3-flash-preview",
               help="Model name (default: gemini-3-flash-preview)")
 @click.option("--output", "-o", type=click.Path(), help="Output file for results (JSON)")
+@click.option("--verbose", "-v", count=True, default=1,
+              help="Verbosity level: -v (normal), -vv (verbose), -vvv (debug)")
+@click.option("--quiet", "-q", is_flag=True, help="Quiet mode - minimal output")
+@click.option("--show-prompts", is_flag=True, help="Show full system prompts sent to agents")
+@click.option("--show-reasoning/--no-reasoning", default=True, 
+              help="Show agent reasoning (default: on)")
+@click.option("--show-tools/--no-tools", default=True,
+              help="Show tool calls (default: on)")
 def main(
     repository: str,
     evaluator: str,
@@ -369,6 +377,11 @@ def main(
     model_provider: str,
     model_name: str,
     output: str | None,
+    verbose: int,
+    quiet: bool,
+    show_prompts: bool,
+    show_reasoning: bool,
+    show_tools: bool,
 ):
     """Run evolution agents on a repository to improve its benchmark score.
 
@@ -382,16 +395,40 @@ def main(
     or just:
         60.5
     """
+    from worker.callbacks import create_observer
+    
+    # Set up observability
+    verbosity = 0 if quiet else verbose
+    observer = create_observer(
+        verbose=verbosity,
+        show_prompts=show_prompts,
+        show_reasoning=show_reasoning,
+        show_tool_calls=show_tools,
+        show_tool_results=show_tools and verbose >= 2,
+        console=console,
+    )
+    
     repository_path = Path(repository).resolve()
     evaluator_path = Path(evaluator).resolve()
 
+    # Build observability settings string
+    obs_settings = []
+    if show_reasoning:
+        obs_settings.append("reasoning")
+    if show_tools:
+        obs_settings.append("tools")
+    if show_prompts:
+        obs_settings.append("prompts")
+    obs_str = ", ".join(obs_settings) if obs_settings else "minimal"
+    
     console.print(Panel.fit(
         f"[bold cyan]Self-Evolving Code Framework[/bold cyan]\n\n"
         f"Repository: [green]{repository_path}[/green]\n"
         f"Evaluator: [green]{evaluator_path}[/green]\n"
         f"Agents: [yellow]{agents}[/yellow] (parallel: {parallel})\n"
         f"Generations: [yellow]{generations}[/yellow]\n"
-        f"Model: [blue]{model_provider}/{model_name}[/blue]",
+        f"Model: [blue]{model_provider}/{model_name}[/blue]\n"
+        f"Observability: [magenta]{obs_str}[/magenta] (verbosity: {verbosity})",
         title="Evolution Setup"
     ))
 

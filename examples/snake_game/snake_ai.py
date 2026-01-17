@@ -104,31 +104,76 @@ class SnakeAI:
     """
 
     def __init__(self):
-        self.random_factor = 0.9  # 90% random moves - very bad!
+        pass
 
     def get_move(self, game: SnakeGame) -> Move:
         """Decide the next move for the snake.
 
-        Current implementation: Mostly random with occasional food-seeking.
-        This is intentionally bad to give evolution room to improve.
+        Improved implementation: Uses BFS to find the shortest path to food,
+        falling back to a greedy safe move if no path exists.
         """
-        # INEFFICIENT: Random moves 90% of the time
-        if random.random() < self.random_factor:
-            return random.choice(["up", "down", "left", "right"])
+        head = game.get_head()
+        food = game.food
+        grid_size = game.grid_size
+        snake_set = set(game.snake)
 
-        # Sometimes try to move toward food (but still pretty bad)
-        head_x, head_y = game.get_head()
-        food_x, food_y = game.food
+        # BFS to find shortest path to food
+        queue = [(head, [])]
+        visited = {head}
+        
+        opposites = {"up": "down", "down": "up", "left": "right", "right": "left"}
+        
+        move_offsets = {
+            "up": (-1, 0),
+            "down": (1, 0),
+            "left": (0, -1),
+            "right": (0, 1)
+        }
 
-        # Simple (and often wrong) direction choice
-        if food_x < head_x:
-            return "up"
-        elif food_x > head_x:
-            return "down"
-        elif food_y < head_y:
-            return "left"
-        else:
-            return "right"
+        while queue:
+            (curr_x, curr_y), path = queue.pop(0)
+            
+            if (curr_x, curr_y) == food:
+                if path:
+                    return path[0]
+            
+            for move, (dx, dy) in move_offsets.items():
+                # Cannot reverse direction on the first move
+                if not path and move == opposites.get(game.direction):
+                    continue
+                
+                next_pos = (curr_x + dx, curr_y + dy)
+                
+                if (0 <= next_pos[0] < grid_size and
+                    0 <= next_pos[1] < grid_size and
+                    next_pos not in snake_set and
+                    next_pos not in visited):
+                    visited.add(next_pos)
+                    queue.append((next_pos, path + [move]))
+
+        # Fallback: Greedy safe move
+        head_x, head_y = head
+        safe_moves = []
+        for move, (dx, dy) in move_offsets.items():
+            if move == opposites.get(game.direction):
+                continue
+            next_pos = (head_x + dx, head_y + dy)
+            if (0 <= next_pos[0] < grid_size and
+                0 <= next_pos[1] < grid_size and
+                next_pos not in snake_set):
+                safe_moves.append((move, next_pos))
+
+        if not safe_moves:
+            return game.direction
+
+        best_move = safe_moves[0][0]
+        min_dist = float('inf')
+        for move, (nx, ny) in safe_moves:
+            dist = abs(nx - food[0]) + abs(ny - food[1])
+            if dist < min_dist:
+                min_dist = dist
+                best_move = move
+        return best_move
 
     def play_game(self, grid_size: int = GRID_SIZE) -> int:
         """Play a complete game and return the final score."""
