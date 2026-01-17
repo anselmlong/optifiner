@@ -1044,7 +1044,7 @@ def main(
                                     item.unlink()
                         
                         for item in workspace.actual_root.iterdir():
-                            if item.name != ".git":
+                            if item.name != ".git" and item.name != "steps":
                                 if item.is_dir():
                                     shutil.copytree(item, working_path / item.name)
                                 else:
@@ -1165,7 +1165,7 @@ def main(
                                             item.unlink()
                                 
                                 for item in workspace.actual_root.iterdir():
-                                    if item.name != ".git":
+                                    if item.name != ".git" and item.name != "steps":
                                         if item.is_dir():
                                             shutil.copytree(item, working_path / item.name)
                                         else:

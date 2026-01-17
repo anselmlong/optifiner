@@ -223,6 +223,32 @@ def create_evolution_agent(
         
         return False
 
+    def check_evaluate_improvement_in_last_tool_result(state: AgentState) -> bool:
+        """Check if the most recent tool result was an evaluate that showed improvement."""
+        if not state.messages or state.baseline_score is None:
+            return False
+        
+        # Look for the most recent ToolMessage
+        for msg in reversed(state.messages):
+            if isinstance(msg, ToolMessage):
+                content = msg.content if isinstance(msg.content, str) else str(msg.content)
+                
+                # Check if this is an evaluate result (contains Score: and BENCHMARK)
+                if "Score:" in content and "BENCHMARK" in content:
+                    # Extract score and compare to baseline
+                    match = re.search(r"Score:\s*([\d.]+)", content)
+                    if match:
+                        try:
+                            score = float(match.group(1))
+                            if score > state.baseline_score:
+                                return True
+                        except ValueError:
+                            pass
+                # Only check the most recent tool message
+                break
+        
+        return False
+
     # Define the routing function
     def should_continue(state: AgentState) -> Literal["tools", "retry", "end"]:
         """Determine whether to continue, retry, or end."""
@@ -241,7 +267,7 @@ def create_evolution_agent(
 
         last_message = messages[-1]
 
-        # Check for tool calls - continue normally
+        # Check for tool calls - but first check if we just got an improved score
         if hasattr(last_message, "tool_calls") and last_message.tool_calls:
             retry_count = 0  # Reset retry count when agent is working
             return "tools"
@@ -263,6 +289,19 @@ def create_evolution_agent(
         if obs:
             obs.on_error(f"Agent failed to improve after {max_retries} retry prompts")
         return "end"
+
+    def should_continue_after_tools(state: AgentState) -> Literal["agent", "end"]:
+        """Check if we should continue after tool execution, or end early due to improvement."""
+        # Check if evaluate just returned an improved score - if so, end immediately
+        if check_evaluate_improvement_in_last_tool_result(state):
+            if obs:
+                obs.on_agent_end(
+                    agent_id=state.agent_id or "anonymous",
+                    success=True,
+                    summary="Improved score achieved - stopping early",
+                )
+            return "end"
+        return "agent"
 
     def retry_node(state: AgentState) -> dict[str, Any]:
         """Inject a message telling the agent to keep trying."""
@@ -316,8 +355,15 @@ Pick a DIFFERENT target and technique. You have iterations remaining.""")
         },
     )
 
-    # Tools always return to agent
-    workflow.add_edge("tools", "agent")
+    # Tools check for improvement before returning to agent
+    workflow.add_conditional_edges(
+        "tools",
+        should_continue_after_tools,
+        {
+            "agent": "agent",
+            "end": END,
+        },
+    )
     
     # Retry goes back to agent
     workflow.add_edge("retry", "agent")

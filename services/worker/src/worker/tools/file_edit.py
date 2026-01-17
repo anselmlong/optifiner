@@ -30,6 +30,15 @@ def _resolve_path(file_path: str) -> Path:
     return resolve_path(file_path)
 
 
+def _normalize_whitespace(text: str) -> str:
+    """Normalize line endings and trailing whitespace."""
+    # Normalize line endings to \n
+    text = text.replace('\r\n', '\n').replace('\r', '\n')
+    # Strip trailing whitespace from each line
+    lines = text.split('\n')
+    return '\n'.join(line.rstrip() for line in lines)
+
+
 @tool(args_schema=EditFileInput)
 def edit_file(
     file_path: str, old_string: str, new_string: str, replace_all: bool = False
@@ -69,11 +78,25 @@ def edit_file(
         # Count occurrences
         count = content.count(old_string)
 
+        # If not found, try with normalized whitespace
+        normalized_match = False
         if count == 0:
-            # Provide helpful context for debugging
-            if old_string.strip() in content:
-                return f"Error: old_string not found in {vpath}. The text exists with different whitespace - check indentation and line endings."
-            return f"Error: old_string not found in {vpath}. Use read_file to verify the exact content."
+            norm_content = _normalize_whitespace(content)
+            norm_old = _normalize_whitespace(old_string)
+            norm_count = norm_content.count(norm_old)
+            
+            if norm_count > 0:
+                # Found with normalized whitespace - apply the edit using normalized versions
+                normalized_match = True
+                count = norm_count
+                content = norm_content
+                old_string = norm_old
+                new_string = _normalize_whitespace(new_string)
+            else:
+                # Provide helpful context for debugging
+                if old_string.strip() in content:
+                    return f"Error: old_string not found in {vpath}. The text exists with different whitespace - check indentation and line endings."
+                return f"Error: old_string not found in {vpath}. Use read_file to verify the exact content."
 
         if count > 1 and not replace_all:
             return f"Error: old_string found {count} times in {vpath}. Use replace_all=True to replace all occurrences, or provide more context to make the match unique."
@@ -101,9 +124,10 @@ def edit_file(
         elif line_diff < 0:
             diff_msg = f" ({line_diff} lines)"
 
+        norm_note = " (matched after whitespace normalization)" if normalized_match else ""
         if replace_all and replaced_count > 1:
-            return f"Successfully replaced {replaced_count} occurrences in {vpath}{diff_msg}"
-        return f"Successfully edited {vpath}{diff_msg}"
+            return f"Successfully replaced {replaced_count} occurrences in {vpath}{diff_msg}{norm_note}"
+        return f"Successfully edited {vpath}{diff_msg}{norm_note}"
 
     except PermissionError:
         return f"Error: Permission denied: {vpath}"
