@@ -1,100 +1,130 @@
 #!/usr/bin/env python3
+"""Benchmark script for Volumetric 3D Particle Simulation."""
+
 import json
 import sys
 import time
 import os
+import pygame # Import pygame at the top
 
-# Add the workspace directory to the Python path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Ensure pygame doesn't try to open a window if we're running headless
+os.environ["SDL_VIDEODRIVER"] = "dummy"
 
-# Import the simulation directly
-try:
-    from particle_sim import ParticleSimulation
-except ImportError as e:
-    print(f"Error importing particle_sim: {e}", file=sys.stderr)
-    sys.exit(1)
+# Import the simulation class
+from particle_sim import ParticleSimulation, SCREEN_WIDTH, SCREEN_HEIGHT
 
-def run_headless_benchmark_test(frames_to_run: int) -> float:
-    """Runs the simulation in headless mode and returns average FPS."""
-    sim = ParticleSimulation()
+def run_functional_tests() -> bool:
+    """Run functional tests to verify the application works."""
+    sim = None
     try:
-        avg_fps = sim.run_headless_benchmark(frames_to_run)
-        return avg_fps
+        # Test 1: Initialize and cleanup
+        sim = ParticleSimulation()
+        sim.cleanup()
+        
+        # Test 2: Run for a very short period without crashing
+        sim = ParticleSimulation()
+        sim.running = True
+        sim.update(0.01) # Update once
+        sim.render() # Render once
+        sim.cleanup()
+        
+        return True
     except Exception as e:
-        print(f"Error during headless benchmark run: {e}", file=sys.stderr)
-        return 0.0
+        print(f"Functional test failed: {e}", file=sys.stderr)
+        return False
 
-def run_functional_tests():
-    """
-    Runs a very short headless simulation to check if it starts and runs without immediate crashes.
-    This is a basic smoke test.
-    """
+def measure_performance(duration: int = 5) -> tuple[float, dict]:
+    """Measure the primary performance metric (FPS)."""
+    sim = None
     try:
-        # Run for a very small number of frames (e.g., 10 frames)
-        avg_fps = run_headless_benchmark_test(frames_to_run=10)
-        if avg_fps > 0:
-            return True, "Headless simulation started and produced FPS output."
-        else:
-            return False, "Headless simulation ran but produced no FPS or crashed."
+        sim = ParticleSimulation()
+        sim.running = True
+        
+        fps_values = []
+        frame_times = []
+        start_time = time.time()
+        
+        while time.time() - start_time < duration:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    sim.running = False
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        sim.running = False
+            
+            if not sim.running:
+                break
+
+            dt = sim.clock.tick(0) / 1000.0 # Use 0 to not cap FPS
+            dt = max(dt, 0.0001) # Prevent division by zero
+            frame_times.append(dt)
+            
+            sim.update(dt)
+            sim.render()
+        
+        if not frame_times:
+            return 0.0, {"message": "No frames rendered."}
+
+        avg_dt = sum(frame_times) / len(frame_times)
+        avg_fps = 1.0 / avg_dt
+        return avg_fps, {}
+        
     except Exception as e:
-        return False, f"Functional test failed: {str(e)}"
+        print(f"Performance measurement failed: {e}", file=sys.stderr)
+        return 0.0, {"error": str(e)}
+    finally:
+        if sim:
+            sim.cleanup()
 
 def main():
     quiet = "--quiet" in sys.argv
     
-    score = None
-    metric_name = "FPS"
-    test_gate = False
-    metrics = {}
-    message = "Benchmark failed."
+    # Initialize Pygame once for all tests and measurements
+    pygame.init()
+
+    result = {
+        "score": None,
+        "metric_name": "FPS",
+        "test_gate": False,
+        "metrics": {},
+        "message": ""
+    }
 
     try:
-        # Functional Test
-        test_gate, test_message = run_functional_tests()
-        metrics["functional_test_message"] = test_message
+        # Run functional tests
+        tests_passed = run_functional_tests()
+        result["test_gate"] = tests_passed
         
-        if not test_gate:
-            message = f"Functional test failed: {test_message}"
-            print(json.dumps({
-                "score": score,
-                "metric_name": metric_name,
-                "test_gate": test_gate,
-                "metrics": metrics,
-                "message": message
-            }))
+        if not tests_passed:
+            result["message"] = "Functional tests failed."
+            print(json.dumps(result))
             sys.exit(1)
 
-        # Performance Measurement
-        # Run for a reasonable number of frames for performance measurement
-        avg_fps = run_headless_benchmark_test(frames_to_run=300) # Run for 300 frames
-        score = avg_fps
-
-        if score > 0:
-            message = f"Benchmark passed. Average FPS: {score:.2f}"
-        else:
-            test_gate = False # If no FPS, consider it a failure
-            message = "Benchmark failed: No FPS captured during performance run."
-
-        result = {
-            "score": score,
-            "metric_name": metric_name,
-            "test_gate": test_gate,
-            "metrics": metrics,
-            "message": message
-        }
+        # Measure performance
+        score, extra_metrics = measure_performance(duration=5)
+        result["score"] = score
+        result["metrics"].update(extra_metrics)
         
+        if score > 0:
+            result["message"] = f"All tests passed. Average FPS: {score:.2f}"
+        else:
+            result["test_gate"] = False # If score is 0, something went wrong
+            result["message"] = "Performance measurement failed or returned 0 FPS."
+            print(json.dumps(result))
+            sys.exit(1)
+            
         print(json.dumps(result))
-        sys.exit(0 if test_gate and score is not None else 1)
+        sys.exit(0)
         
     except Exception as e:
-        result = {
-            "score": None,
-            "metric_name": metric_name,
-            "test_gate": False,
-            "message": f"An unexpected error occurred: {str(e)}"
-        }
+        result["score"] = None
+        result["metric_name"] = "error"
+        result["test_gate"] = False
+        result["message"] = str(e)
         print(json.dumps(result))
         sys.exit(1)
+    finally:
+        pygame.quit()
 
 if __name__ == "__main__":
     main()
