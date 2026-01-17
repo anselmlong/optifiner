@@ -60,6 +60,29 @@ class EvolutionResult(BaseModel):
     error: str | None = None
     iterations: int = 0
     messages_count: int = 0
+    evaluation_data: dict | None = None
+
+
+class EvaluationData(BaseModel):
+    """Evaluation data model."""
+
+    score: float
+    baseline_score: float | None = None
+    improvement: float | None = None
+    improvement_percent: float | None = None
+    fps: float | None = None
+    tests_passed: int | None = None
+    tests_total: int | None = None
+    test_results: dict | None = None
+    metrics: dict | None = None
+    raw_data: dict | None = None
+
+
+class EvaluationDataStoreRequest(BaseModel):
+    """Request model for storing evaluation data."""
+
+    task_id: str = Field(..., description="Task identifier")
+    evaluation_data: dict = Field(..., description="Full evaluation data dictionary")
 
 
 class TaskStatusResponse(BaseModel):
