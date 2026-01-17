@@ -63,8 +63,8 @@ def main():
         print(f"[Container] Agent {agent_id} starting (verbosity={verbosity})", file=sys.stderr, flush=True)
     
     # Build config
-    # Use shorter timeout for fast models like gemini flash
-    model_timeout = 50.0 if "gemini" in model_name.lower() and "flash" in model_name.lower() else 60.0
+    # Timeout for gemini flash model
+    model_timeout = 120.0 if "gemini" in model_name.lower() and "flash" in model_name.lower() else 60.0
     try:
         config = WorkerConfig(
             model=ModelConfig(

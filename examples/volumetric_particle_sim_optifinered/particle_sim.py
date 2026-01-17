@@ -87,6 +87,11 @@ class Particle:
     mass: float
     emission: float  # Light emission strength
     
+    def __post_init__(self):
+        self.influence_radius = self.radius * 3
+        self.influence_radius_sq = self.influence_radius ** 2
+        self.color_norm = (self.color[0] / 255.0, self.color[1] / 255.0, self.color[2] / 255.0)
+
     def update(self, dt: float) -> None:
         """Update particle physics - intentionally basic"""
         # Apply gravity
@@ -131,30 +136,6 @@ class Light:
     orbit_phase: float
 
 
-class SpatialGrid:
-    """Spatial partitioning for faster proximity queries"""
-    def __init__(self, cell_size: float):
-        self.cell_size = cell_size
-        self.cells = {}
-
-    def update(self, particles: List['Particle']):
-        self.cells = {}
-        for p in particles:
-            cx = int(p.position.x // self.cell_size)
-            cy = int(p.position.y // self.cell_size)
-            cz = int(p.position.z // self.cell_size)
-            cell = (cx, cy, cz)
-            if cell not in self.cells:
-                self.cells[cell] = []
-            ir = p.radius * 3
-            # Pre-calculate and store as tuple for speed
-            self.cells[cell].append((
-                p.position.x, p.position.y, p.position.z,
-                ir * ir, ir, p.emission,
-                p.color[0] / 255.0, p.color[1] / 255.0, p.color[2] / 255.0
-            ))
-
-
 class VolumetricRenderer:
     """Software-based volumetric renderer - intentionally unoptimized"""
     
@@ -189,93 +170,80 @@ class VolumetricRenderer:
         return (int(screen_x), int(screen_y), rot_z)
     
     def calculate_volumetric_fog(self, ray_origin: Vector3, ray_dir: Vector3, 
-                                  grid: SpatialGrid, lights: List[Light],
+                                  particles: List[Particle], lights: List[Light],
                                   max_distance: float) -> Tuple[float, float, float]:
         """
         Raymarch through the scene to calculate volumetric fog contribution.
-        Optimized with spatial grid.
+        Optimized with particle filtering.
         """
         accumulated_color = [0.0, 0.0, 0.0]
         accumulated_density = 0.0
         step_size = max_distance / RAYMARCH_STEPS
         
-        # Pre-extract ray components for faster access
         ray_ox, ray_oy, ray_oz = ray_origin.x, ray_origin.y, ray_origin.z
         ray_dx, ray_dy, ray_dz = ray_dir.x, ray_dir.y, ray_dir.z
         
-        cell_size = grid.cell_size
-        grid_cells = grid.cells
-
+        # Pre-filter particles for this ray
+        nearby = []
+        for p in particles:
+            px, py, pz = p.position.x, p.position.y, p.position.z
+            op_x, op_y, op_z = px - ray_ox, py - ray_oy, pz - ray_oz
+            t = op_x * ray_dx + op_y * ray_dy + op_z * ray_dz
+            ir = p.influence_radius
+            if -ir < t < max_distance + ir:
+                dist_sq = (op_x*op_x + op_y*op_y + op_z*op_z) - t*t
+                if dist_sq < p.influence_radius_sq:
+                    nearby.append((px, py, pz, ir, p.influence_radius_sq, p.color_norm, p.emission))
+        
+        if not nearby and not lights:
+            return (0.0, 0.0, 0.0)
+            
         for step in range(RAYMARCH_STEPS):
-            # Calculate current position along ray
             t = step * step_size
             curr_x = ray_ox + ray_dx * t
             curr_y = ray_oy + ray_dy * t
             curr_z = ray_oz + ray_dz * t
             
-            # Calculate density at this point (influenced by nearby particles)
             local_density = 0.0
             local_color = [0.0, 0.0, 0.0]
             
-            # Check contribution from nearby particles using spatial grid
-            cx = int(curr_x // cell_size)
-            cy = int(curr_y // cell_size)
-            cz = int(curr_z // cell_size)
+            for px, py, pz, ir, ir_sq, p_color_norm, p_emission in nearby:
+                dx = curr_x - px
+                dy = curr_y - py
+                dz = curr_z - pz
+                dist_sq = dx * dx + dy * dy + dz * dz
+                
+                if dist_sq < ir_sq:
+                    dist = math.sqrt(dist_sq)
+                    falloff = (1.0 - dist / ir) ** 2
+                    local_density += falloff * 0.5
+                    emission = p_emission * falloff
+                    local_color[0] += p_color_norm[0] * emission
+                    local_color[1] += p_color_norm[1] * emission
+                    local_color[2] += p_color_norm[2] * emission
             
-            for dx in range(-1, 2):
-                for dy in range(-1, 2):
-                    for dz in range(-1, 2):
-                        cell = (cx + dx, cy + dy, cz + dz)
-                        if cell in grid_cells:
-                            for px, py, pz, ir_sq, ir, pemission, pcol0, pcol1, pcol2 in grid_cells[cell]:
-                                dx_p = curr_x - px
-                                dy_p = curr_y - py
-                                dz_p = curr_z - pz
-                                dist_sq = dx_p * dx_p + dy_p * dy_p + dz_p * dz_p
-                                
-                                if dist_sq < ir_sq:
-                                    dist = math.sqrt(dist_sq)
-                                    falloff = 1.0 - (dist / ir)
-                                    falloff = falloff * falloff
-                                    
-                                    local_density += falloff * 0.5
-                                    emission = pemission * falloff
-                                    local_color[0] += pcol0 * emission
-                                    local_color[1] += pcol1 * emission
-                                    local_color[2] += pcol2 * emission
-            
-            # Add light contribution at this point
             for light in lights:
                 lx = curr_x - light.position.x
                 ly = curr_y - light.position.y
                 lz = curr_z - light.position.z
                 light_dist_sq = lx * lx + ly * ly + lz * lz
                 if light_dist_sq > 0:
-                    # Calculate light falloff
                     attenuation = light.intensity / (1.0 + light_dist_sq * 0.0001)
                     local_color[0] += light.color[0] * attenuation * 0.1
                     local_color[1] += light.color[1] * attenuation * 0.1
                     local_color[2] += light.color[2] * attenuation * 0.1
             
-            # Accumulate fog using front-to-back compositing
             if local_density > 0:
                 alpha = 1.0 - math.exp(-local_density * step_size * FOG_DENSITY)
-                alpha = min(1.0, alpha)
-                
                 remaining = 1.0 - accumulated_density
                 accumulated_color[0] += local_color[0] * alpha * remaining
                 accumulated_color[1] += local_color[1] * alpha * remaining
                 accumulated_color[2] += local_color[2] * alpha * remaining
                 accumulated_density += alpha * remaining
-                
-                if accumulated_density > 0.95:  # Slightly earlier cutoff
+                if accumulated_density > 0.95:
                     break
         
-        return (
-            min(1.0, accumulated_color[0]),
-            min(1.0, accumulated_color[1]),
-            min(1.0, accumulated_color[2])
-        )
+        return (min(1.0, accumulated_color[0]), min(1.0, accumulated_color[1]), min(1.0, accumulated_color[2]))
     
     def shade_particle(self, particle: Particle, lights: List[Light], 
                        view_dir: Vector3) -> Tuple[int, int, int]:
@@ -341,6 +309,20 @@ class ParticleSimulation:
         
         self._init_particles()
         self._init_lights()
+        
+        # Pre-calculate vignette surface
+        self.vignette_surface = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        vignette_step = 32
+        for y in range(0, SCREEN_HEIGHT, vignette_step):
+            for x in range(0, SCREEN_WIDTH, vignette_step):
+                dx = (x - SCREEN_WIDTH / 2) / (SCREEN_WIDTH / 2)
+                dy = (y - SCREEN_HEIGHT / 2) / (SCREEN_HEIGHT / 2)
+                dist = math.sqrt(dx * dx + dy * dy)
+                alpha = int(min(80, dist * dist * 60))
+                pygame.draw.rect(self.vignette_surface, (0, 0, 0, alpha), (x, y, vignette_step, vignette_step))
+
+        # Surface cache for particles
+        self.surface_cache = {}
 
         # Metrics
         self.frame_count = 0
@@ -484,7 +466,7 @@ class ParticleSimulation:
     def render_volumetric_background(self, surface: pygame.Surface) -> None:
         """
         Render beautiful gradient background with nebula-like effects.
-        Optimized with spatial grid and pre-calculated data.
+        INTENTIONALLY SLOW - per-pixel calculations!
         """
         # Create a background surface with smooth gradients
         sample_rate = 16  # Coarser sampling (was 8)
@@ -504,10 +486,6 @@ class ParticleSimulation:
         time_06 = self.time * 0.6
         time_02 = self.time * 0.2
         time_015 = self.time * 0.15
-
-        # Create and update spatial grid for fog
-        grid = SpatialGrid(cell_size=40.0)
-        grid.update(self.particles)
         
         for y in range(0, height, sample_rate):
             ny = y * inv_height
@@ -555,7 +533,7 @@ class ParticleSimulation:
                 # Raymarch for volumetric fog
                 fog_color = self.renderer.calculate_volumetric_fog(
                     self.camera_position, rot_ray,
-                    grid, self.lights,
+                    self.particles, self.lights,
                     WORLD_BOUNDS * 3
                 )
                 
@@ -625,60 +603,46 @@ class ParticleSimulation:
             )
             color = atmosphere_color
             
-            # Create soft glow surface with alpha blending - INTENTIONALLY per-particle
-            glow_surface = pygame.Surface((screen_radius * 6, screen_radius * 6), pygame.SRCALPHA)
-            center = screen_radius * 3
+            # Cache key for the glow surface
+            q_color = (color[0] // 4, color[1] // 4, color[2] // 4)
+            q_emission = int(particle.emission * 10)
+            cache_key = (q_color, screen_radius, q_emission)
             
-            # Outer soft glow (large, very transparent) - reduced layers
-            for glow_i in range(4, 0, -1):  # Was 8
-                glow_radius = int(screen_radius * (1 + glow_i * 0.8))
-                alpha = int(30 * (1 - glow_i / 5) * (0.5 + particle.emission * 0.5))
-                glow_color = (color[0], color[1], color[2], alpha)
-                if glow_radius > 0:
-                    pygame.draw.circle(glow_surface, glow_color, (center, center), glow_radius)
-            
-            # Inner brighter glow - reduced layers
-            for glow_i in range(2, 0, -1):  # Was 4
-                glow_radius = int(screen_radius * (1 + glow_i * 0.3))
-                alpha = int(80 * (1 - glow_i / 3))
-                glow_color = (
-                    min(255, color[0] + 30),
-                    min(255, color[1] + 30),
-                    min(255, color[2] + 30),
-                    alpha
-                )
-                if glow_radius > 0:
-                    pygame.draw.circle(glow_surface, glow_color, (center, center), glow_radius)
-            
-            # Core particle - solid with soft edge
-            if screen_radius > 2:
-                # Soft edge ring
-                edge_color = (color[0], color[1], color[2], 180)
-                pygame.draw.circle(glow_surface, edge_color, (center, center), screen_radius)
-                
-                # Bright core
-                core_radius = max(1, int(screen_radius * 0.7))
-                core_color = (
-                    min(255, color[0] + 50),
-                    min(255, color[1] + 50),
-                    min(255, color[2] + 50),
-                    220
-                )
-                pygame.draw.circle(glow_surface, core_color, (center, center), core_radius)
-                
-                # Hot center highlight
-                if screen_radius > 4:
-                    hot_radius = max(1, int(screen_radius * 0.3))
-                    hot_color = (
-                        min(255, color[0] + 100),
-                        min(255, color[1] + 100),
-                        min(255, color[2] + 80),
-                        255
-                    )
-                    pygame.draw.circle(glow_surface, hot_color, (center - screen_radius//4, center - screen_radius//4), hot_radius)
+            if cache_key in self.surface_cache:
+                glow_surface, center = self.surface_cache[cache_key]
             else:
-                # Small particles - just a bright dot
-                pygame.draw.circle(glow_surface, (*color, 255), (center, center), max(1, screen_radius))
+                # Create soft glow surface with alpha blending
+                glow_surface = pygame.Surface((screen_radius * 6, screen_radius * 6), pygame.SRCALPHA)
+                center = screen_radius * 3
+                
+                # Outer soft glow
+                for glow_i in range(4, 0, -1):
+                    glow_radius = int(screen_radius * (1 + glow_i * 0.8))
+                    alpha = int(30 * (1 - glow_i / 5) * (0.5 + particle.emission * 0.5))
+                    glow_color = (color[0], color[1], color[2], alpha)
+                    if glow_radius > 0:
+                        pygame.draw.circle(glow_surface, glow_color, (center, center), glow_radius)
+                
+                # Inner brighter glow
+                for glow_i in range(2, 0, -1):
+                    glow_radius = int(screen_radius * (1 + glow_i * 0.3))
+                    alpha = int(80 * (1 - glow_i / 3))
+                    glow_color = (min(255, color[0] + 30), min(255, color[1] + 30), min(255, color[2] + 30), alpha)
+                    if glow_radius > 0:
+                        pygame.draw.circle(glow_surface, glow_color, (center, center), glow_radius)
+                
+                # Core particle
+                if screen_radius > 2:
+                    pygame.draw.circle(glow_surface, (color[0], color[1], color[2], 180), (center, center), screen_radius)
+                    core_radius = max(1, int(screen_radius * 0.7))
+                    pygame.draw.circle(glow_surface, (min(255, color[0] + 50), min(255, color[1] + 50), min(255, color[2] + 50), 220), (center, center), core_radius)
+                    if screen_radius > 4:
+                        hot_radius = max(1, int(screen_radius * 0.3))
+                        pygame.draw.circle(glow_surface, (min(255, color[0] + 100), min(255, color[1] + 100), min(255, color[2] + 80), 255), (center - screen_radius//4, center - screen_radius//4), hot_radius)
+                else:
+                    pygame.draw.circle(glow_surface, (*color, 255), (center, center), max(1, screen_radius))
+                
+                self.surface_cache[cache_key] = (glow_surface, center)
             
             # Blit the glow surface onto main surface
             surface.blit(glow_surface, (screen_x - center, screen_y - center), special_flags=pygame.BLEND_ALPHA_SDL2)
@@ -711,18 +675,8 @@ class ParticleSimulation:
         # Render particles on top
         self.render_particles(self.screen)
         
-        # Draw subtle vignette effect - INTENTIONALLY slow per-pixel
-        vignette = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-        vignette_step = 32  # Larger step (was 16)
-        for y in range(0, SCREEN_HEIGHT, vignette_step):
-            for x in range(0, SCREEN_WIDTH, vignette_step):
-                # Distance from center normalized
-                dx = (x - SCREEN_WIDTH / 2) / (SCREEN_WIDTH / 2)
-                dy = (y - SCREEN_HEIGHT / 2) / (SCREEN_HEIGHT / 2)
-                dist = math.sqrt(dx * dx + dy * dy)
-                alpha = int(min(80, dist * dist * 60))
-                pygame.draw.rect(vignette, (0, 0, 0, alpha), (x, y, vignette_step, vignette_step))
-        self.screen.blit(vignette, (0, 0))
+        # Draw pre-calculated vignette effect
+        self.screen.blit(self.vignette_surface, (0, 0))
         
         pygame.display.flip()
     
