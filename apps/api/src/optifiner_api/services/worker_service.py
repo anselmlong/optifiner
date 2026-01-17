@@ -155,6 +155,12 @@ class WorkerService:
         if eval_data:
             task_info["evaluation_data"] = json.loads(eval_data)
 
+        # Check for workflow data separately
+        workflow_key = f"workflow:{task_id}"
+        workflow_data = await self.redis_client.get(workflow_key)
+        if workflow_data:
+            task_info["workflow_data"] = json.loads(workflow_data)
+
         return {
             "success": True,
             "task": task_info,
@@ -335,3 +341,129 @@ class WorkerService:
         evaluations.sort(key=lambda x: x.get("task_id", ""), reverse=True)
 
         return evaluations
+
+    async def store_workflow_data(self, task_id: str, workflow_data: dict[str, Any]) -> None:
+        """Store workflow data for a task.
+
+        Args:
+            task_id: Task identifier
+            workflow_data: Workflow data dictionary (iterations, events, tool calls, etc.)
+        """
+        await self.connect()
+
+        workflow_key = f"workflow:{task_id}"
+        await self.redis_client.setex(
+            workflow_key, 3600, json.dumps(workflow_data)
+        )  # 1 hour TTL
+
+    async def get_workflow_data(self, task_id: str) -> dict[str, Any]:
+        """Get workflow data for a task.
+
+        Args:
+            task_id: Task identifier
+
+        Returns:
+            Dictionary with workflow data
+        """
+        await self.connect()
+
+        workflow_key = f"workflow:{task_id}"
+        workflow_data = await self.redis_client.get(workflow_key)
+
+        if not workflow_data:
+            return {
+                "success": False,
+                "error": f"Workflow data not found for task: {task_id}",
+            }
+
+        return {
+            "success": True,
+            "task_id": task_id,
+            "workflow_data": json.loads(workflow_data),
+        }
+
+    async def get_workflow_events(self, task_id: str) -> dict[str, Any]:
+        """Get workflow events for a task.
+
+        Args:
+            task_id: Task identifier
+
+        Returns:
+            Dictionary with workflow events
+        """
+        workflow_result = await self.get_workflow_data(task_id)
+        
+        if not workflow_result.get("success"):
+            return workflow_result
+
+        workflow_data = workflow_result.get("workflow_data", {})
+        events = workflow_data.get("events", [])
+
+        return {
+            "success": True,
+            "task_id": task_id,
+            "events": events,
+            "event_count": len(events),
+        }
+
+    async def get_workflow_iterations(self, task_id: str) -> dict[str, Any]:
+        """Get workflow iteration information for a task.
+
+        Args:
+            task_id: Task identifier
+
+        Returns:
+            Dictionary with iteration information
+        """
+        workflow_result = await self.get_workflow_data(task_id)
+        
+        if not workflow_result.get("success"):
+            return workflow_result
+
+        workflow_data = workflow_result.get("workflow_data", {})
+        iterations = workflow_data.get("iterations", [])
+        total_iterations = workflow_data.get("total_iterations", 0)
+
+        return {
+            "success": True,
+            "task_id": task_id,
+            "iterations": iterations,
+            "total_iterations": total_iterations,
+        }
+
+    async def get_workflow_tools(self, task_id: str) -> dict[str, Any]:
+        """Get tool call history for a task.
+
+        Args:
+            task_id: Task identifier
+
+        Returns:
+            Dictionary with tool call information
+        """
+        workflow_result = await self.get_workflow_data(task_id)
+        
+        if not workflow_result.get("success"):
+            return workflow_result
+
+        workflow_data = workflow_result.get("workflow_data", {})
+        tool_calls = workflow_data.get("tool_calls", [])
+
+        # Group by tool name
+        tools_summary = {}
+        for call in tool_calls:
+            tool_name = call.get("tool_name", "unknown")
+            if tool_name not in tools_summary:
+                tools_summary[tool_name] = {
+                    "count": 0,
+                    "calls": [],
+                }
+            tools_summary[tool_name]["count"] += 1
+            tools_summary[tool_name]["calls"].append(call)
+
+        return {
+            "success": True,
+            "task_id": task_id,
+            "tool_calls": tool_calls,
+            "total_calls": len(tool_calls),
+            "tools_summary": tools_summary,
+        }
