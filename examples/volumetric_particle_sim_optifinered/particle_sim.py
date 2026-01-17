@@ -164,19 +164,17 @@ class VolumetricRenderer:
         
         return (int(screen_x), int(screen_y), rot_z)
     
-    def calculate_volumetric_fog(self, ray_origin: Vector3, ray_dir: Vector3, 
+    def calculate_volumetric_fog(self, ray_ox, ray_oy, ray_oz, ray_dx, ray_dy, ray_dz, 
                                   grid, grid_size, lights_data,
                                   max_distance: float) -> Tuple[float, float, float]:
         """
         Raymarch through the scene to calculate volumetric fog contribution.
         Optimized with spatial grid and pre-extracted data.
         """
-        accumulated_color = [0.0, 0.0, 0.0]
+        accum_r, accum_g, accum_b = 0.0, 0.0, 0.0
         accumulated_density = 0.0
         step_size = max_distance / RAYMARCH_STEPS
-        
-        ray_ox, ray_oy, ray_oz = ray_origin.x, ray_origin.y, ray_origin.z
-        ray_dx, ray_dy, ray_dz = ray_dir.x, ray_dir.y, ray_dir.z
+        fog_factor = step_size * FOG_DENSITY
         
         for step in range(RAYMARCH_STEPS):
             t = step * step_size
@@ -185,28 +183,28 @@ class VolumetricRenderer:
             curr_z = ray_oz + ray_dz * t
             
             local_density = 0.0
-            local_color = [0.0, 0.0, 0.0]
+            l_r, l_g, l_b = 0.0, 0.0, 0.0
             
             # Spatial grid lookup
             cell = (int(curr_x / grid_size), int(curr_y / grid_size), int(curr_z / grid_size))
-            nearby_particles = grid.get(cell, [])
+            nearby_particles = grid.get(cell)
             
-            for px, py, pz, p_infl, p_infl_sq, pr, pg, pb, pem in nearby_particles:
-                dx = curr_x - px
-                dy = curr_y - py
-                dz = curr_z - pz
-                dist_sq = dx * dx + dy * dy + dz * dz
-                
-                if dist_sq < p_infl_sq:
-                    dist = math.sqrt(dist_sq)
-                    falloff = 1.0 - (dist / p_infl)
-                    falloff = falloff * falloff
+            if nearby_particles:
+                for px, py, pz, p_infl, p_infl_sq, pr, pg, pb, pem in nearby_particles:
+                    dx = curr_x - px
+                    dy = curr_y - py
+                    dz = curr_z - pz
+                    dist_sq = dx * dx + dy * dy + dz * dz
                     
-                    local_density += falloff * 0.5
-                    emission = pem * falloff
-                    local_color[0] += pr * emission
-                    local_color[1] += pg * emission
-                    local_color[2] += pb * emission
+                    if dist_sq < p_infl_sq:
+                        dist = math.sqrt(dist_sq)
+                        falloff = (1.0 - (dist / p_infl)) ** 2
+                        
+                        local_density += falloff * 0.5
+                        emission = pem * falloff
+                        l_r += pr * emission
+                        l_g += pg * emission
+                        l_b += pb * emission
             
             # Add light contribution
             for lx_pos, ly_pos, lz_pos, l_col, l_int in lights_data:
@@ -216,28 +214,23 @@ class VolumetricRenderer:
                 light_dist_sq = lx * lx + ly * ly + lz * lz
                 if light_dist_sq > 0:
                     attenuation = l_int / (1.0 + light_dist_sq * 0.0001)
-                    local_color[0] += l_col[0] * attenuation * 0.1
-                    local_color[1] += l_col[1] * attenuation * 0.1
-                    local_color[2] += l_col[2] * attenuation * 0.1
+                    l_r += l_col[0] * attenuation * 0.1
+                    l_g += l_col[1] * attenuation * 0.1
+                    l_b += l_col[2] * attenuation * 0.1
             
             if local_density > 0:
-                alpha = 1.0 - math.exp(-local_density * step_size * FOG_DENSITY)
-                alpha = min(1.0, alpha)
-                
+                alpha = 1.0 - math.exp(-local_density * fog_factor)
                 remaining = 1.0 - accumulated_density
-                accumulated_color[0] += local_color[0] * alpha * remaining
-                accumulated_color[1] += local_color[1] * alpha * remaining
-                accumulated_color[2] += local_color[2] * alpha * remaining
-                accumulated_density += alpha * remaining
+                weight = alpha * remaining
+                accum_r += l_r * weight
+                accum_g += l_g * weight
+                accum_b += l_b * weight
+                accumulated_density += weight
                 
-                if accumulated_density > 0.95:  # Slightly earlier cutoff
+                if accumulated_density > 0.95:
                     break
         
-        return (
-            min(1.0, accumulated_color[0]),
-            min(1.0, accumulated_color[1]),
-            min(1.0, accumulated_color[2])
-        )
+        return (min(1.0, accum_r), min(1.0, accum_g), min(1.0, accum_b))
     
     def shade_particle(self, particle: Particle, lights: List[Light], 
                        view_dir: Vector3) -> Tuple[int, int, int]:
@@ -397,67 +390,54 @@ class ParticleSimulation:
     def check_particle_collisions(self) -> None:
         """
         Check and resolve particle-particle collisions.
-        INTENTIONALLY O(n²) - a major optimization opportunity!
+        Optimized with a spatial grid.
         """
-        max_radius = PARTICLE_RADIUS * 1.5 * 2  # Max combined radius
-        max_radius_sq = max_radius * max_radius
-        
-        for i in range(len(self.particles)):
-            p1 = self.particles[i]
-            p1_x, p1_y, p1_z = p1.position.x, p1.position.y, p1.position.z
+        grid = {}
+        grid_size = PARTICLE_RADIUS * 3
+        for p in self.particles:
+            key = (int(p.position.x / grid_size), int(p.position.y / grid_size), int(p.position.z / grid_size))
+            if key not in grid: grid[key] = []
+            grid[key].append(p)
             
-            for j in range(i + 1, len(self.particles)):
-                p2 = self.particles[j]
-                
-                # Calculate distance between particles
-                dx = p2.position.x - p1_x
-                dy = p2.position.y - p1_y
-                dz = p2.position.z - p1_z
-                
-                # Early exit for distant particles
-                dist_sq = dx * dx + dy * dy + dz * dz
-                if dist_sq > max_radius_sq:
-                    continue
-                    
-                min_dist = p1.radius + p2.radius
-                
-                if dist_sq < min_dist * min_dist and dist_sq > 0:
-                    dist = math.sqrt(dist_sq)
-                    
-                    # Normalize collision vector
-                    nx = dx / dist
-                    ny = dy / dist
-                    nz = dz / dist
-                    
-                    # Relative velocity
-                    dvx = p2.velocity.x - p1.velocity.x
-                    dvy = p2.velocity.y - p1.velocity.y
-                    dvz = p2.velocity.z - p1.velocity.z
-                    
-                    # Relative velocity along collision normal
-                    dvn = dvx * nx + dvy * ny + dvz * nz
-                    
-                    if dvn < 0:  # Particles moving toward each other
-                        # Mass-weighted impulse
-                        total_mass = p1.mass + p2.mass
-                        impulse = -2.0 * dvn / total_mass
-                        
-                        p1.velocity.x -= impulse * p2.mass * nx * BOUNCE_DAMPING
-                        p1.velocity.y -= impulse * p2.mass * ny * BOUNCE_DAMPING
-                        p1.velocity.z -= impulse * p2.mass * nz * BOUNCE_DAMPING
-                        
-                        p2.velocity.x += impulse * p1.mass * nx * BOUNCE_DAMPING
-                        p2.velocity.y += impulse * p1.mass * ny * BOUNCE_DAMPING
-                        p2.velocity.z += impulse * p1.mass * nz * BOUNCE_DAMPING
-                        
-                        # Separate particles
-                        overlap = min_dist - dist
-                        p1.position.x -= nx * overlap * 0.5
-                        p1.position.y -= ny * overlap * 0.5
-                        p1.position.z -= nz * overlap * 0.5
-                        p2.position.x += nx * overlap * 0.5
-                        p2.position.y += ny * overlap * 0.5
-                        p2.position.z += nz * overlap * 0.5
+        for key, cell_particles in grid.items():
+            gx, gy, gz = key
+            for dx in range(-1, 2):
+                for dy in range(-1, 2):
+                    for dz in range(-1, 2):
+                        neighbor_key = (gx + dx, gy + dy, gz + dz)
+                        if neighbor_key in grid:
+                            neighbor_particles = grid[neighbor_key]
+                            for p1 in cell_particles:
+                                p1_pos = p1.position
+                                p1_vel = p1.velocity
+                                for p2 in neighbor_particles:
+                                    if id(p1) >= id(p2): continue
+                                    p2_pos = p2.position
+                                    dx_val = p2_pos.x - p1_pos.x
+                                    dy_val = p2_pos.y - p1_pos.y
+                                    dz_val = p2_pos.z - p1_pos.z
+                                    dist_sq = dx_val * dx_val + dy_val * dy_val + dz_val * dz_val
+                                    min_dist = p1.radius + p2.radius
+                                    if dist_sq < min_dist * min_dist and dist_sq > 0:
+                                        dist = math.sqrt(dist_sq)
+                                        nx, ny, nz = dx_val / dist, dy_val / dist, dz_val / dist
+                                        p2_vel = p2.velocity
+                                        dvn = (p2_vel.x - p1_vel.x) * nx + (p2_vel.y - p1_vel.y) * ny + (p2_vel.z - p1_vel.z) * nz
+                                        if dvn < 0:
+                                            impulse = -2.0 * dvn / (p1.mass + p2.mass)
+                                            p1_vel.x -= impulse * p2.mass * nx * BOUNCE_DAMPING
+                                            p1_vel.y -= impulse * p2.mass * ny * BOUNCE_DAMPING
+                                            p1_vel.z -= impulse * p2.mass * nz * BOUNCE_DAMPING
+                                            p2_vel.x += impulse * p1.mass * nx * BOUNCE_DAMPING
+                                            p2_vel.y += impulse * p1.mass * ny * BOUNCE_DAMPING
+                                            p2_vel.z += impulse * p1.mass * nz * BOUNCE_DAMPING
+                                            overlap = (min_dist - dist) * 0.5
+                                            p1_pos.x -= nx * overlap
+                                            p1_pos.y -= ny * overlap
+                                            p1_pos.z -= nz * overlap
+                                            p2_pos.x += nx * overlap
+                                            p2_pos.y += ny * overlap
+                                            p2_pos.z += nz * overlap
     
     def render_volumetric_background(self, surface: pygame.Surface) -> None:
         """
@@ -503,11 +483,14 @@ class ParticleSimulation:
         cos_r = math.cos(self.camera_rotation)
         sin_r = math.sin(self.camera_rotation)
         
+        cam_ox, cam_oy, cam_oz = self.camera_position.x, self.camera_position.y, self.camera_position.z
+        max_dist = WORLD_BOUNDS * 3
+        
         for sy in range(small_h):
             y = sy * sample_rate
             ny = y * inv_height
             ndc_y = 1 - ny * 2
-            ray_y = ndc_y * fov_scale
+            ray_y_val = ndc_y * fov_scale
             
             for sx in range(small_w):
                 x = sx * sample_rate
@@ -520,31 +503,30 @@ class ParticleSimulation:
                 base_g = int(5 + 15 * (1 - ny) + 10 * swirl2)
                 base_b = int(35 + 40 * ny + 20 * abs(swirl))
                 
-                cloud = math.sin(nx * 6 + ny * 4 + self.time * 0.2) * 0.5 + 0.5
-                cloud *= math.cos(nx * 3 - ny * 5 + self.time * 0.15) * 0.5 + 0.5
+                cloud = (math.sin(nx * 6 + ny * 4 + self.time * 0.2) * 0.5 + 0.5) * \
+                        (math.cos(nx * 3 - ny * 5 + self.time * 0.15) * 0.5 + 0.5)
                 
                 base_r = int(min(60, base_r + cloud * 30))
                 base_g = int(min(40, base_g + cloud * 15))
                 base_b = int(min(80, base_b + cloud * 25))
                 
                 ndc_x = nx * 2 - 1
-                ray_x = ndc_x * fov_scale * aspect
-                ray_z = 1.0
-                ray_len = math.sqrt(ray_x * ray_x + ray_y * ray_y + ray_z * ray_z)
-                ray_x /= ray_len
-                ray_y_norm = ray_y / ray_len
-                ray_z /= ray_len
+                ray_x_val = ndc_x * fov_scale * aspect
+                ray_z_val = 1.0
+                ray_len = math.sqrt(ray_x_val * ray_x_val + ray_y_val * ray_y_val + ray_z_val * ray_z_val)
+                ray_x_norm = ray_x_val / ray_len
+                ray_y_norm = ray_y_val / ray_len
+                ray_z_norm = ray_z_val / ray_len
                 
-                rot_ray = Vector3(
-                    ray_x * cos_r + ray_z * sin_r,
-                    ray_y_norm,
-                    -ray_x * sin_r + ray_z * cos_r
-                )
+                rot_ray_x = ray_x_norm * cos_r + ray_z_norm * sin_r
+                rot_ray_y = ray_y_norm
+                rot_ray_z = -ray_x_norm * sin_r + ray_z_norm * cos_r
                 
                 fog_color = self.renderer.calculate_volumetric_fog(
-                    self.camera_position, rot_ray,
+                    cam_ox, cam_oy, cam_oz,
+                    rot_ray_x, rot_ray_y, rot_ray_z,
                     grid, grid_size, lights_data,
-                    WORLD_BOUNDS * 3
+                    max_dist
                 )
                 
                 fog_strength = (fog_color[0] + fog_color[1] + fog_color[2]) / 3
