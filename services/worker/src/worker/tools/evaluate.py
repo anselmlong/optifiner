@@ -1,10 +1,16 @@
-"""Evaluate tool for the evolution agent - runs benchmark evaluator and returns score."""
+"""Evaluate tool for the evolution agent - runs benchmark evaluator and returns score.
+
+When running in Docker, this tool calls the evaluation server on the host machine.
+The EVAL_SERVER_URL environment variable determines where to send requests.
+"""
 
 import json
 import os
 import shutil
 import subprocess
 import sys
+import urllib.request
+import urllib.error
 from pathlib import Path
 
 from langchain_core.tools import tool
@@ -13,7 +19,7 @@ from pydantic import BaseModel, Field
 WORKSPACE_ROOT = Path("/app")
 DEFAULT_TIMEOUT = 120
 
-# Global evaluator path - set by CLI
+# Global evaluator path - set by CLI (only used when running locally)
 _evaluator_path: str | None = None
 _evaluator_timeout: int = DEFAULT_TIMEOUT
 
