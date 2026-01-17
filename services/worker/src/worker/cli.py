@@ -511,8 +511,8 @@ def run_single_agent_isolated(
     set_observer(observer)
 
     # Build config
-    # Use shorter timeout for fast models like gemini flash
-    model_timeout = 50.0 if "gemini" in model_name.lower() and "flash" in model_name.lower() else 60.0
+    # Timeout for gemini flash model
+    model_timeout = 120.0 if "gemini" in model_name.lower() and "flash" in model_name.lower() else 60.0
     try:
         config = WorkerConfig(
             model=ModelConfig(
@@ -701,8 +701,8 @@ def run_benchmark_builder_cli(
     set_observer(observer)
     
     try:
-        # Use shorter timeout for fast models like gemini flash
-        model_timeout = 50.0 if "gemini" in model_name.lower() and "flash" in model_name.lower() else 60.0
+        # Timeout for gemini flash model
+        model_timeout = 120.0 if "gemini" in model_name.lower() and "flash" in model_name.lower() else 60.0
         model_config = ModelConfig(
             provider=ModelProvider(model_provider),
             model_name=model_name,
