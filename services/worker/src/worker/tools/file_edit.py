@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from langchain_core.tools import tool
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 from worker.tools.path_utils import resolve_path, virtualize_path
 
@@ -12,7 +12,8 @@ class EditFileInput(BaseModel):
     """Input schema for the edit_file tool."""
 
     file_path: str = Field(
-        description="The path to the file to edit. Can be absolute or relative to workspace root."
+        description="The path to the file to edit. Can be absolute or relative to workspace root.",
+        validation_alias=AliasChoices("file_path", "path"),
     )
     old_string: str = Field(
         description="The exact text to find and replace. Must match the file content exactly, including whitespace and indentation."

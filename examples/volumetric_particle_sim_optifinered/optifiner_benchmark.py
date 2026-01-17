@@ -1,144 +1,116 @@
 #!/usr/bin/env python3
-"""Benchmark script for OptiFiner - Particle Simulation Benchmark (FPS proxy)."""
+"""Benchmark script for OptiFiner Particle Simulation (FPS benchmark)."""
 
 import json
 import sys
 import time
-import math
-import tracemalloc
+import os
+from typing import Dict, Any
 
-"""
-This benchmark performs a lightweight, CPU-bound workload to estimate a
-synthetic FPS-like score. It also gathers a peak memory usage using
-Python's tracemalloc module. The score is returned along with a metric name
-and a basic pass/fail gate based on simple functional tests.
-"""
-
-# -------------- Functional Tests --------------
-
-def run_tests():
-    """Run small functional tests that verify basic behavior.
-
-    Returns:
-        (passed_count, total)
-    """
-    passed = 0
-    total = 0
-
-    # Test 1: Simple arithmetic sanity
-    total += 1
-    try:
-        assert (1 + 1) == 2
-        passed += 1
-    except Exception:
-        pass
-
-    # Test 2: Basic memory measurement sanity (non-negative peak will be checked later)
-    total += 1
-    try:
-        mem = _probe_memory_allocation()
-        if mem is not None:
-            passed += 1
-    except Exception:
-        pass
-
-    return passed, total
-
-# -------------- Performance Measurement --------------
-
-def _probe_memory_allocation():
-    # A tiny allocation to ensure tracemalloc has something to track.
-    lst = [i for i in range(10)]
-    s = sum(lst)
-    del lst
-    return s
-
-
-def measure_fps(duration_seconds: float = 0.5) -> (float, dict):
-    """Perform a busy-wait workload to estimate FPS-like score.
-
-    Args:
-        duration_seconds: How long to run the workload to estimate FPS.
-    Returns:
-        (fps, metrics_dict)
-    """
-    frames = 0
-    a = 0.0
-    t0 = time.perf_counter()
-    while (time.perf_counter() - t0) < duration_seconds:
-        # Simulate per-frame work with light math
-        a = (a * 1.000123) + 0.00000123
-        for _ in range(6):
-            a = math.sin(a) * 0.9999 + math.cos(a) * 0.0001
-        frames += 1
-    duration = time.perf_counter() - t0
-    fps = frames / duration if duration > 0 else 0.0
-
-    # Memory usage
-    peak_mb = None
-    try:
-        current, peak = tracemalloc.get_traced_memory()
-        peak_mb = peak / 1024.0 / 1024.0
-    except Exception:
-        peak_mb = None
-
-    metrics = {
-        "duration_s": duration,
-        "frames": frames,
-        "peak_memory_mb": peak_mb if peak_mb is not None else 0.0,
-    }
-    return fps, metrics
-
-# -------------- Main Entry --------------
-
-def main():
-    quiet = "--quiet" in sys.argv
-
-    result = {
-        "score": None,
-        "metric_name": "FPS",
-        "test_gate": False,
-        "metrics": {},
-        "message": "",
-    }
-
-    try:
-        tests_passed, tests_total = run_tests()
-
-        # Start memory tracing for a more realistic measurement
-        tracemalloc.start()
-        fps, fps_metrics = measure_fps(0.5)
-        tracemalloc.stop()
-
-        # Build final results
-        score = float(fps) if fps is not None else None
-        test_gate = (tests_passed == tests_total) and (score is not None)
-
-        result.update({
-            "score": score,
-            "test_gate": test_gate,
-            "metrics": {
-                **fps_metrics,
-                "tests_passed": tests_passed,
-                "tests_total": tests_total,
-            },
-            "message": f"Benchmark completed. FPS: {score:.2f}" if score is not None else "Benchmark failed to produce FPS",
-        })
-
-    except Exception as e:
-        # In case of unexpected errors, still emit a valid JSON with failure
-        result.update({
+# Import the modded codebase module to benchmark
+_start_load = time.time()
+try:
+    import particle_sim as PS  # type: ignore
+except Exception as e:
+    # If import fails, we still produce a JSON with error
+    def _to_json_error(msg: str) -> str:
+        return json.dumps({
             "score": None,
             "metric_name": "FPS",
             "test_gate": False,
             "metrics": {
-                "error": str(e)
+                "memory_mb": 0.0,
+                "load_time_ms": (time.time() - _start_load) * 1000.0
             },
-            "message": f"Benchmark error: {e}",
+            "message": msg
         })
+    if "--quiet" in sys.argv:
+        print(_to_json_error("import_error"))
+    else:
+        print(_to_json_error("import_error"))
+    sys.exit(1)
+_load_time_ms = (time.time() - _start_load) * 1000.0
 
-    # Output JSON (no extra stdout if quiet is requested, but we always output JSON)
-    print(json.dumps(result))
+# Optional: measure memory usage if psutil is available
+def _get_memory_mb() -> float:
+    try:
+        import psutil
+        process = psutil.Process(os.getpid())
+        return process.memory_info().rss / (1024.0 * 1024.0)
+    except Exception:
+        return 0.0
+
+# Functional tests: verify the simulate_frames API exists and can run a tiny frame batch
+def run_tests() -> (int, int):
+    tests_passed = 0
+    tests_total = 0
+
+    tests_total += 1
+    try:
+        # Run a very small, quick simulation to ensure API works
+        if not hasattr(PS, 'simulate_frames'):
+            raise AttributeError('simulate_frames API not found in particle_sim')
+        PS.simulate_frames(2, dt=1.0/60.0)
+        tests_passed += 1
+    except Exception as e:
+        # Print to stderr for debugging, but still return JSON later
+        print(f"Test 1 failed: {e}", file=sys.stderr)
+    return tests_passed, tests_total
+
+# Performance measurement: compute FPS by simulating a number of frames
+def measure_performance(frames: int = 60) -> (float, Dict[str, Any]):
+    start = time.time()
+    PS.simulate_frames(frames, dt=1.0/60.0)
+    end = time.time()
+    # Best-effort: use wall-clock based FPS estimate
+    actual_fps = frames / max(1e-9, (end - start))
+    mem = _get_memory_mb()
+    load_ms = _load_time_ms
+    return float(actual_fps), {
+        "actual_fps": actual_fps,
+        "frames": frames,
+        "memory_mb": mem,
+        "load_time_ms": load_ms
+    }
+
+def main():
+    quiet = "--quiet" in sys.argv
+
+    try:
+        tests_passed, tests_total = run_tests()
+        score, extra = measure_performance(60)
+
+        test_gate = (tests_passed == tests_total) and (score is not None)
+        result: Dict[str, Any] = {
+            "score": float(score) if score is not None else None,
+            "metric_name": "FPS",
+            "test_gate": bool(test_gate),
+            "metrics": {
+                "memory_mb": extra.get("memory_mb", 0.0),
+                "load_time_ms": extra.get("load_time_ms", _load_time_ms),
+                "frames_measured": extra.get("frames", 60)
+            },
+            "message": f"Tests {tests_passed}/{tests_total}; FPS={score:.2f}"
+        }
+
+        # Ensure a valid JSON output format even when quiet is required
+        print(json.dumps(result))
+        # Exit code 0 only if benchmark gate passes
+        sys.exit(0 if result["test_gate"] else 1)
+
+    except Exception as e:
+        result = {
+            "score": None,
+            "metric_name": "FPS",
+            "test_gate": False,
+            "metrics": {
+                "memory_mb": _get_memory_mb(),
+                "load_time_ms": _load_time_ms
+            },
+            "message": str(e)
+        }
+        print(json.dumps(result))
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
