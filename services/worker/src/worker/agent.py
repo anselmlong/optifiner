@@ -1,6 +1,7 @@
 """LangGraph-based evolution agent."""
 
 import re
+import time
 from typing import Any, Literal
 
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, ToolMessage
@@ -80,8 +81,14 @@ def create_evolution_agent(
         # Prepare messages
         messages = [SystemMessage(content=system_prompt)] + list(state.messages)
 
-        # Invoke the model
+        # Invoke the model with timing
+        start_time = time.time()
         response = llm_with_tools.invoke(messages)
+        duration = time.time() - start_time
+        
+        # Log model call timing
+        if obs:
+            obs.on_model_call_complete(duration)
 
         # Log agent response
         if obs:

@@ -46,7 +46,7 @@ class ModelConfig(BaseModel):
             model_name="gemini-3-flash-preview",
             temperature=0.0,
             max_tokens=8192,
-            timeout=20.0,  # Shorter timeout for faster model
+            timeout=50.0,  # Shorter timeout for faster model
             max_retries=3,
         )
 
@@ -103,7 +103,7 @@ class WorkerConfig(BaseModel):
         workspace_root = os.getenv("WORKSPACE_ROOT", "")
 
         # Default timeout based on model
-        default_timeout = 20.0 if "gemini" in model_name.lower() and "flash" in model_name.lower() else 60.0
+        default_timeout = 50.0 if "gemini" in model_name.lower() and "flash" in model_name.lower() else 60.0
         timeout = float(os.getenv("MODEL_TIMEOUT", str(default_timeout)))
         max_retries = int(os.getenv("MODEL_MAX_RETRIES", "3"))
 
