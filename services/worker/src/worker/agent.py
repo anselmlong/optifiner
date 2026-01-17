@@ -8,16 +8,17 @@ from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 
 from worker.config import AgentType, ModelConfig, WorkerConfig, get_llm
+from worker.observability import AgentObserver, get_observer
 from worker.prompts import get_system_prompt
 from worker.state import AgentState
 from worker.tools import get_all_tools
-from worker.callbacks import get_observer
 
 
 def create_evolution_agent(
     config: WorkerConfig | None = None,
     agent_type: AgentType | None = None,
     model_config: ModelConfig | None = None,
+    observer: AgentObserver | None = None,
 ):
     """Create a LangGraph evolution agent with all tools bound.
 
@@ -25,6 +26,7 @@ def create_evolution_agent(
         config: Worker configuration. If None, loads from environment.
         agent_type: Override agent type from config.
         model_config: Override model configuration.
+        observer: Optional observer for logging/tracing.
 
     Returns:
         Compiled LangGraph agent.
@@ -38,6 +40,9 @@ def create_evolution_agent(
     if model_config is not None:
         config.model = model_config
 
+    # Use provided observer or global one
+    obs = observer or get_observer()
+
     # Get tools
     tools = get_all_tools()
 
@@ -45,18 +50,14 @@ def create_evolution_agent(
     llm = get_llm(config.model)
     llm_with_tools = llm.bind_tools(tools)
 
+    # Track if we've logged the system prompt
+    system_prompt_logged = False
+
     # Define the agent node
     def agent_node(state: AgentState) -> dict[str, Any]:
         """The main agent reasoning node."""
-        observer = get_observer()
-        
-        # Log iteration start
-        observer.log_iteration_start(
-            state.agent_id, 
-            state.iteration + 1, 
-            state.max_iterations
-        )
-        
+        nonlocal system_prompt_logged
+
         # Build system message with context
         system_prompt = get_system_prompt(
             agent_type=config.agent_type,
@@ -66,22 +67,39 @@ def create_evolution_agent(
             baseline_score=state.baseline_score,
         )
 
+        # Log system prompt (only once per agent run)
+        if obs and not system_prompt_logged:
+            obs.on_system_prompt(system_prompt)
+            system_prompt_logged = True
+
+        # Log iteration start
+        if obs:
+            obs.on_iteration_start(state.iteration + 1)
+
         # Prepare messages
         messages = [SystemMessage(content=system_prompt)] + list(state.messages)
-        
-        # Log the prompt
-        observer.log_prompt(
-            state.agent_id,
-            state.iteration + 1,
-            system_prompt,
-            list(state.messages)[-5:],  # Last 5 messages for context
-        )
 
         # Invoke the model
         response = llm_with_tools.invoke(messages)
-        
-        # Log the reasoning response
-        observer.log_reasoning(state.agent_id, state.iteration + 1, response)
+
+        # Log agent response
+        if obs:
+            content = response.content if hasattr(response, "content") else ""
+            if isinstance(content, list):
+                # Handle multi-part content (some models return list)
+                content = " ".join(
+                    part.get("text", "") if isinstance(part, dict) else str(part)
+                    for part in content
+                )
+            
+            tool_calls = None
+            if hasattr(response, "tool_calls") and response.tool_calls:
+                tool_calls = [
+                    {"name": tc.get("name", ""), "args": tc.get("args", {}), "id": tc.get("id", "")}
+                    for tc in response.tool_calls
+                ]
+            
+            obs.on_agent_response(content, tool_calls)
 
         # Update iteration count
         return {
@@ -89,57 +107,62 @@ def create_evolution_agent(
             "iteration": state.iteration + 1,
         }
 
-    # Define the tool execution node with observability
+    # Create a wrapped tool node that logs tool calls and results
     base_tool_node = ToolNode(tools)
-    
-    def tool_node_with_logging(state: AgentState) -> dict[str, Any]:
-        """Tool node wrapper that logs tool execution."""
-        observer = get_observer()
+
+    def observed_tool_node(state: AgentState) -> dict[str, Any]:
+        """Tool node with observability."""
+        # Find the tool calls from the last AI message
+        last_message = state.messages[-1] if state.messages else None
+        tool_calls_info = []
         
-        # Get the last message to see what tools are being called
-        if state.messages:
-            last_msg = state.messages[-1]
-            if hasattr(last_msg, 'tool_calls') and last_msg.tool_calls:
-                for tc in last_msg.tool_calls:
-                    tool_name = tc.get('name', 'unknown') if isinstance(tc, dict) else getattr(tc, 'name', 'unknown')
-                    args = tc.get('args', {}) if isinstance(tc, dict) else getattr(tc, 'args', {})
-                    observer.log_tool_call(state.agent_id, state.iteration, tool_name, args)
-        
+        if last_message and hasattr(last_message, "tool_calls"):
+            for tc in last_message.tool_calls:
+                tool_name = tc.get("name", "unknown")
+                tool_args = tc.get("args", {})
+                call_id = tc.get("id", "")
+                
+                tool_calls_info.append({
+                    "name": tool_name,
+                    "args": tool_args,
+                    "id": call_id,
+                })
+                
+                if obs:
+                    obs.on_tool_call(tool_name, tool_args, call_id)
+
         # Execute tools
         result = base_tool_node.invoke(state)
-        
-        # Log tool results - handle various result structures
-        messages_to_log = []
-        if 'messages' in result:
-            messages_to_log = result['messages']
-        elif isinstance(result, dict) and result:
-            # Try to find messages in the result
-            for v in result.values():
-                if isinstance(v, list):
-                    messages_to_log = v
-                    break
-        
-        for msg in messages_to_log:
-            # Check if it's a ToolMessage by type or by having tool_call_id
-            is_tool_msg = (
-                isinstance(msg, ToolMessage) or 
-                (hasattr(msg, 'tool_call_id') and msg.tool_call_id) or
-                (hasattr(msg, 'type') and getattr(msg, 'type', '') == 'tool')
-            )
-            if is_tool_msg:
-                tool_name = getattr(msg, 'name', None) or getattr(msg, 'tool_call_id', 'unknown')[:20]
-                content = msg.content if hasattr(msg, 'content') else str(msg)
-                observer.log_tool_result(state.agent_id, state.iteration, tool_name, content)
-        
+
+        # Log tool results
+        if obs and "messages" in result:
+            for msg in result["messages"]:
+                if isinstance(msg, ToolMessage):
+                    # Find matching tool call
+                    tool_name = "unknown"
+                    call_id = msg.tool_call_id if hasattr(msg, "tool_call_id") else ""
+                    
+                    for tc_info in tool_calls_info:
+                        if tc_info["id"] == call_id:
+                            tool_name = tc_info["name"]
+                            break
+                    
+                    content = msg.content if hasattr(msg, "content") else str(msg)
+                    error = None
+                    if hasattr(msg, "status") and msg.status == "error":
+                        error = content
+                    
+                    obs.on_tool_result(tool_name, content, call_id, error)
+
         return result
-    
-    tool_node = tool_node_with_logging
 
     # Define the routing function
     def should_continue(state: AgentState) -> Literal["tools", "end"]:
         """Determine whether to continue or end."""
         # Check iteration limit
         if state.iteration >= state.max_iterations:
+            if obs:
+                obs.on_error(f"Max iterations ({state.max_iterations}) reached")
             return "end"
 
         # Check if the last message has tool calls
@@ -160,7 +183,7 @@ def create_evolution_agent(
 
     # Add nodes
     workflow.add_node("agent", agent_node)
-    workflow.add_node("tools", tool_node)
+    workflow.add_node("tools", observed_tool_node)
 
     # Set entry point
     workflow.set_entry_point("agent")
@@ -188,6 +211,7 @@ def run_evolution_agent(
     agent_id: str = "",
     generation: int = 0,
     baseline_score: float | None = None,
+    observer: AgentObserver | None = None,
 ) -> AgentState:
     """Run an evolution agent to completion.
 
@@ -197,27 +221,32 @@ def run_evolution_agent(
         agent_id: Unique identifier for this agent.
         generation: Current evolution generation.
         baseline_score: Baseline benchmark score.
+        observer: Optional observer for logging/tracing.
 
     Returns:
         Final agent state after completion.
     """
-    import time
-    
     if config is None:
         config = WorkerConfig.from_env()
 
-    observer = get_observer()
-    start_time = time.time()
-    
-    # Log agent start
-    observer.log_agent_start(
-        agent_id=agent_id,
-        agent_type=config.agent_type.value,
-        task_preview=task,
-    )
+    # Use provided observer or global one
+    obs = observer or get_observer()
 
-    # Create the agent
-    agent = create_evolution_agent(config)
+    # Create the agent with observer
+    agent = create_evolution_agent(config, observer=obs)
+
+    # Log agent start
+    if obs:
+        obs.on_agent_start(
+            agent_id=agent_id or "anonymous",
+            task=task,
+            config={
+                "agent_type": config.agent_type.value,
+                "model": f"{config.model.provider.value}/{config.model.model_name}",
+                "max_iterations": config.max_iterations,
+                "workspace": config.workspace_root,
+            },
+        )
 
     # Initialize state
     initial_state = AgentState(
@@ -231,32 +260,28 @@ def run_evolution_agent(
         max_iterations=config.max_iterations,
     )
 
+    # Log initial user message
+    if obs:
+        obs.on_user_message(task)
+
     # Run the agent
     try:
         final_state = agent.invoke(initial_state)
-        result_state = AgentState(**final_state)
+        result = AgentState(**final_state)
         
-        # Extract final score
-        final_score = extract_score_from_messages(result_state.messages)
+        # Log agent end
+        if obs:
+            obs.on_agent_end(
+                agent_id=agent_id or "anonymous",
+                success=result.success,
+                summary=result.summary,
+            )
         
-        # Log completion
-        observer.log_agent_complete(
-            agent_id=agent_id,
-            success=final_score is not None and (baseline_score is None or final_score > baseline_score),
-            score=final_score,
-            duration=time.time() - start_time,
-        )
-        
-        return result_state
-        
+        return result
     except Exception as e:
-        observer.log_error(agent_id, 0, str(e))
-        observer.log_agent_complete(
-            agent_id=agent_id,
-            success=False,
-            score=None,
-            duration=time.time() - start_time,
-        )
+        if obs:
+            obs.on_error(str(e))
+            obs.on_agent_end(agent_id=agent_id or "anonymous", success=False, summary=str(e))
         raise
 
 
