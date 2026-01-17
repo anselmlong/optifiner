@@ -31,7 +31,7 @@ def main():
     baseline_score = float(os.environ.get("BASELINE_SCORE", "0"))
     max_iterations = int(os.environ.get("MAX_ITERATIONS", "15"))
     model_provider = os.environ.get("MODEL_PROVIDER", "google")
-    model_name = os.environ.get("MODEL_NAME", "gemini-2.5-flash")
+    model_name = os.environ.get("MODEL_NAME", "gemini-3-flash-preview")
     task = os.environ.get("TASK", "Improve the code to get a higher benchmark score.")
     evaluator_path = os.environ.get("EVALUATOR_PATH", "")
     verbosity = int(os.environ.get("VERBOSITY", "0"))

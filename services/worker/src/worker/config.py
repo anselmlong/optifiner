@@ -41,7 +41,7 @@ class ModelConfig(BaseModel):
         """Gemini 2.5 Flash configuration (stable)."""
         return cls(
             provider=ModelProvider.GOOGLE,
-            model_name="gemini-2.5-flash",
+            model_name="gemini-3-flash-preview",
             temperature=0.0,
             timeout=50.0,  # Shorter timeout for faster model
             max_retries=3,
@@ -113,7 +113,7 @@ class WorkerConfig(BaseModel):
     def from_env(cls) -> "WorkerConfig":
         """Create configuration from environment variables."""
         provider = os.getenv("MODEL_PROVIDER", "google")
-        model_name = os.getenv("MODEL_NAME", "gemini-2.5-flash")
+        model_name = os.getenv("MODEL_NAME", "gemini-3-flash-preview")
         temperature = float(os.getenv("MODEL_TEMPERATURE", "0.0"))
 
         # Workspace root comes from WORKSPACE_ROOT env or will be set dynamically

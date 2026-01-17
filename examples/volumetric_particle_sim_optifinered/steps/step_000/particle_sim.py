@@ -19,15 +19,6 @@ from typing import List, Tuple
 
 
 import pygame
-import time
-
-_frame_count = 0
-_fps_start_time = time.time()
-_current_fps = 0.0
-
-def get_current_fps():
-    return _current_fps
-
 
 
 # Configuration
@@ -299,6 +290,8 @@ class ParticleSimulation:
     """Main simulation class"""
     
     def __init__(self):
+        if os.environ.get('SDL_VIDEODRIVER') is None and not os.environ.get('DISPLAY'):
+            os.environ['SDL_VIDEODRIVER'] = 'dummy'
         pygame.init()
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
         pygame.display.set_caption("Volumetric Particle Simulation - Optimize Me!")
@@ -315,6 +308,11 @@ class ParticleSimulation:
         
         self._init_particles()
         self._init_lights()
+
+        # Metrics
+        self.frame_count = 0
+        self.start_time = 0.0
+        self.fps = 0.0
     
     def _init_particles(self) -> None:
         """Initialize particles with random positions and properties"""
@@ -691,14 +689,11 @@ class ParticleSimulation:
         
         pygame.display.flip()
     
-    def run(self, duration: float = None) -> None:
+    def run(self, max_frames=None) -> None:
         """Run the simulation."""
-        start_time = time.time()
+        import time
+        self.start_time = time.time()
         while self.running:
-            if duration and (time.time() - start_time > duration):
-                self.running = False
-                break
-
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     self.running = False
@@ -706,19 +701,20 @@ class ParticleSimulation:
                     if event.key == pygame.K_ESCAPE:
                         self.running = False
             
-            dt = self.clock.tick(60) / 1000.0
+            dt = self.clock.tick() / 1000.0 # No cap for benchmarking
             dt = min(dt, 0.1)  # Cap delta time
             
             self.update(dt)
             self.render()
 
-            global _frame_count, _fps_start_time, _current_fps
-            _frame_count += 1
-            elapsed = time.time() - _fps_start_time
-            if elapsed >= 1.0:
-                _current_fps = _frame_count / elapsed
-                _frame_count = 0
-                _fps_start_time = time.time()
+            self.frame_count += 1
+            if max_frames and self.frame_count >= max_frames:
+                self.running = False
+        
+        end_time = time.time()
+        duration = end_time - self.start_time
+        if duration > 0:
+            self.fps = self.frame_count / duration
     
     def cleanup(self) -> None:
         """Clean up pygame resources"""

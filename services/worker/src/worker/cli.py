@@ -784,8 +784,8 @@ def run_benchmark_builder_cli(
 @click.option("--model-provider", default="google",
               type=click.Choice(["anthropic", "google", "openai"]),
               help="LLM provider (default: google)")
-@click.option("--model-name", default="gemini-2.5-flash",
-              help="Model name (default: gemini-2.5-flash)")
+@click.option("--model-name", default="gemini-3-flash-preview",
+              help="Model name (default: gemini-3-flash-preview)")
 @click.option("--output", "-o", type=click.Path(), help="Output file for results (JSON)")
 @click.option("--verbose", "-v", count=True, default=1,
               help="Increase verbosity (-v=normal, -vv=verbose, -vvv=debug, omit for quiet)")
