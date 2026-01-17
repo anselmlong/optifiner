@@ -69,7 +69,7 @@ export interface LogEntry {
 }
 
 export interface Settings {
-  model: 'claude-sonnet' | 'gpt-4o' | 'deepseek-coder';
+  model: 'claude-opus-4.5' | 'claude-sonnet-4.5' | 'claude-haiku-4.5' | 'gpt-5.2-codex' | 'gpt-5.2' | 'gemini-3-flash-preview' | 'gemini-3-pro-preview';
   agentCount: number;
   mutationRate: 'conservative' | 'balanced' | 'aggressive';
   benchmarkTimeout: number;

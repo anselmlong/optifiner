@@ -15,7 +15,8 @@ import {
   faSpinner,
   faColumns,
   faChevronRight,
-  faChevronLeft
+  faChevronLeft,
+  faStop
 } from '@fortawesome/free-solid-svg-icons'
 import { Header } from '../components/layout/Header'
 import { Card } from '../components/ui/Card'
@@ -25,6 +26,7 @@ import { StatusDot } from '../components/ui/StatusDot'
 import { RunConfigModal } from '../components/ui/RunConfigModal'
 import { useStore } from '../store'
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts'
+import * as api from '../api'
 
 interface TreeNodeData {
   id: string
@@ -226,7 +228,19 @@ function EvolutionTree({ data, onNodeClick }: { data: TreeNodeData, onNodeClick:
 export function EvolutionMonitor() {
   const { projectId } = useParams<{ projectId: string }>()
   const navigate = useNavigate()
-  const { agents, logs, projects, isPaused, togglePause } = useStore()
+  const { 
+    agents, 
+    logs, 
+    projects, 
+    isPaused, 
+    togglePause,
+    currentWorkflow,
+    workflowLoading,
+    fetchWorkflow,
+    connectWorkflowWs,
+    disconnectWorkflowWs,
+    clearLogs,
+  } = useStore()
 
   // Console resize state
   const [consoleHeight, setConsoleHeight] = useState(200)
@@ -241,6 +255,30 @@ export function EvolutionMonitor() {
   // Right sidebar state
   const [activeTab, setActiveTab] = useState<'fitness' | 'agents' | null>('fitness')
   const isSidebarOpen = activeTab !== null
+
+  // Check if projectId is a workflow ID (UUID format)
+  const isWorkflowId = projectId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(projectId)
+
+  // Fetch workflow data if we have a workflow ID
+  useEffect(() => {
+    if (isWorkflowId && projectId) {
+      setWorkflowId(projectId)
+      fetchWorkflow(projectId)
+      connectWorkflowWs(projectId)
+      setIsRunning(true)
+      
+      return () => {
+        disconnectWorkflowWs(projectId)
+      }
+    }
+  }, [projectId, isWorkflowId, fetchWorkflow, connectWorkflowWs, disconnectWorkflowWs])
+
+  // Update running state based on workflow status
+  useEffect(() => {
+    if (currentWorkflow) {
+      setIsRunning(['running', 'paused'].includes(currentWorkflow.status))
+    }
+  }, [currentWorkflow])
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
@@ -287,35 +325,35 @@ export function EvolutionMonitor() {
     userPrompt: string 
   }) => {
     setIsStarting(true)
+    clearLogs()
     
     try {
-      const response = await fetch('/api/v1/optimization/start', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          repo_url: project?.repository || '',
-          total_cost_limit: config.maxCost,
-          user_prompt: config.userPrompt,
-          models: config.models.map(m => ({
-            provider: m.provider,
-            model_name: m.modelName,
-            api_key: m.apiKey,
-            instances: m.instances,
-          })),
-        }),
+      const response = await api.startWorkflow({
+        repo_url: project?.repository || '',
+        total_cost_limit: config.maxCost,
+        user_prompt: config.userPrompt,
+        models: config.models.map(m => ({
+          provider: m.provider,
+          model_name: m.modelName,
+          api_key: m.apiKey,
+          instances: m.instances,
+        })),
       })
 
-      const data = await response.json()
-      
-      if (response.ok && data.success) {
-        setWorkflowId(data.workflow_id)
+      if (response.data?.success) {
+        const newWorkflowId = response.data.workflow_id
+        setWorkflowId(newWorkflowId)
         setIsRunning(true)
         setIsRunModalOpen(false)
+        
+        // Connect WebSocket for real-time updates
+        connectWorkflowWs(newWorkflowId)
+        
+        // Navigate to the workflow page
+        navigate(`/projects/${newWorkflowId}`)
       } else {
-        console.error('Failed to start optimization:', data.error || data.detail)
-        alert(`Failed to start: ${data.error || data.detail || 'Unknown error'}`)
+        console.error('Failed to start optimization:', response.error)
+        alert(`Failed to start: ${response.error || 'Unknown error'}`)
       }
     } catch (error) {
       console.error('Error starting optimization:', error)
@@ -330,28 +368,44 @@ export function EvolutionMonitor() {
     if (!workflowId) return
     
     try {
-      const action = isPaused ? 'resume' : 'pause'
-      const response = await fetch(`/api/v1/optimization/${workflowId}/${action}`, {
-        method: 'POST',
-      })
-      
-      if (response.ok) {
-        togglePause()
+      if (isPaused) {
+        const response = await api.resumeWorkflow(workflowId)
+        if (response.data?.success) {
+          togglePause()
+        }
+      } else {
+        const response = await api.pauseWorkflow(workflowId)
+        if (response.data?.success) {
+          togglePause()
+        }
       }
     } catch (error) {
       console.error('Error toggling pause:', error)
     }
   }
 
-  const fitnessData = [
-    { label: 'Gen 35', value: 0.65 },
-    { label: 'Gen 36', value: 0.68 },
-    { label: 'Gen 37', value: 0.72 },
-    { label: 'Gen 38', value: 0.71 },
-    { label: 'Gen 39', value: 0.78 },
-    { label: 'Gen 40', value: 0.82 },
-    { label: 'Gen 41', value: 0.85 },
-    { label: 'Gen 42', value: 0.89 },
+  // Handle stop
+  const handleStop = async () => {
+    if (!workflowId) return
+    
+    try {
+      const response = await api.stopWorkflow(workflowId)
+      if (response.data?.success) {
+        setIsRunning(false)
+        // Refresh workflow data
+        fetchWorkflow(workflowId)
+      }
+    } catch (error) {
+      console.error('Error stopping workflow:', error)
+    }
+  }
+
+  // Build fitness data from workflow steps
+  const fitnessData = currentWorkflow?.steps?.map(step => ({
+    label: `Gen ${step.generation}`,
+    value: step.final_score,
+  })) || [
+    { label: 'Gen 0', value: currentWorkflow?.baseline_score || 0 },
   ]
 
   return (
@@ -363,14 +417,29 @@ export function EvolutionMonitor() {
         </Button>
         <div className="flex-1">
           <h1 className="text-lg font-semibold text-slate-900 dark:text-white">
-            {project?.name || 'Evolution Monitor'}
+            {project?.name || currentWorkflow?.repo_url?.split('/').pop() || 'Evolution Monitor'}
           </h1>
           <p className="text-sm text-slate-500">
             {isRunning ? (
               <span className="flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-                {isPaused ? 'Paused' : 'Running'}
+                <span className={`w-2 h-2 rounded-full ${isPaused ? 'bg-yellow-500' : 'bg-green-500 animate-pulse'}`} />
+                {currentWorkflow?.status || (isPaused ? 'Paused' : 'Running')}
                 {workflowId && <span className="text-xs text-slate-400">• {workflowId.slice(0, 8)}</span>}
+                {currentWorkflow && (
+                  <span className="text-xs text-slate-400">
+                    • Gen {currentWorkflow.generation}/{currentWorkflow.max_generations}
+                    • Score: {currentWorkflow.current_best_score?.toFixed(2) || 'N/A'}
+                  </span>
+                )}
+              </span>
+            ) : currentWorkflow?.status === 'completed' ? (
+              <span className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-blue-500" />
+                Completed
+                <span className="text-xs text-slate-400">
+                  • Final: {currentWorkflow.current_best_score?.toFixed(2)}
+                  {currentWorkflow.improvement_percent && ` (+${currentWorkflow.improvement_percent.toFixed(1)}%)`}
+                </span>
               </span>
             ) : (
               'Not started'
@@ -378,15 +447,33 @@ export function EvolutionMonitor() {
           </p>
         </div>
 
-        {/* Run/Pause Button */}
+        {/* Run/Pause/Stop Buttons */}
         <div className="flex items-center gap-3">
           {isRunning ? (
+            <>
+              <Button 
+                variant={isPaused ? 'primary' : 'secondary'}
+                icon={isPaused ? faPlay : faPause}
+                onClick={handlePauseResume}
+              >
+                {isPaused ? 'Resume' : 'Pause'}
+              </Button>
+              <Button 
+                variant="ghost"
+                icon={faStop}
+                onClick={handleStop}
+                className="text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20"
+              >
+                Stop
+              </Button>
+            </>
+          ) : currentWorkflow?.status === 'completed' || currentWorkflow?.status === 'stopped' ? (
             <Button 
-              variant={isPaused ? 'primary' : 'secondary'}
-              icon={isPaused ? faPlay : faPause}
-              onClick={handlePauseResume}
+              variant="primary" 
+              icon={faPlay}
+              onClick={() => setIsRunModalOpen(true)}
             >
-              {isPaused ? 'Resume' : 'Pause'}
+              Run New Optimization
             </Button>
           ) : (
             <Button 

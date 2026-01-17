@@ -9,10 +9,10 @@ This service mirrors the functionality of worker/src/worker/cli.py, providing:
 - Git commits and pushes to user's repository
 
 All CLI options are supported for feature completeness.
+PostgreSQL is used for persistence, WebSockets for real-time updates.
 """
 
 import asyncio
-import json
 import logging
 import os
 import shutil
@@ -24,17 +24,18 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-
-import redis.asyncio as redis
+from uuid import UUID
 
 from optifiner_api.config import settings
+from optifiner_api.database import get_db_context
+from optifiner_api.db_models import WorkflowStatus, AgentStatus
+from optifiner_api import crud
+from optifiner_api.websocket import get_connection_manager
 from optifiner_api.services.github_service import GitHubService
 
 logger = logging.getLogger(__name__)
 
 # Import worker functions from services/worker
-# First try importing from installed package (if worker was installed via pip install -e)
-# Then fall back to adding worker source to path for development
 _worker_available = False
 try:
     from worker.cli import (
@@ -42,8 +43,6 @@ try:
         copy_workspace,
         run_single_agent_isolated,
         is_significant_improvement,
-        save_step_snapshot,
-        save_initial_snapshot,
         git_commit,
         git_reset,
     )
@@ -65,8 +64,6 @@ except ImportError:
             copy_workspace,
             run_single_agent_isolated,
             is_significant_improvement,
-            save_step_snapshot,
-            save_initial_snapshot,
             git_commit,
             git_reset,
         )
@@ -87,14 +84,13 @@ except ImportError:
         copy_workspace = None
         run_single_agent_isolated = None
         is_significant_improvement = None
-        save_step_snapshot = None
-        save_initial_snapshot = None
         git_commit = None
         git_reset = None
         BENCHMARK_SCRIPT_NAME = "optifiner_benchmark.py"
 
 # Thread pool for running worker instances (blocking operations)
-_executor = ThreadPoolExecutor(max_workers=10)
+# Use a larger pool to allow more parallel agents
+_executor = ThreadPoolExecutor(max_workers=20)
 
 # Global stop event for early stopping across threads
 _stop_generation = threading.Event()
@@ -105,6 +101,7 @@ class OptimizationService:
     
     This service provides an API that mirrors all CLI options from
     worker/src/worker/cli.py for feature completeness.
+    Uses PostgreSQL for persistence and WebSockets for real-time updates.
     
     CLI Option Mapping:
         --agents (-n)         -> agents_per_generation
@@ -124,8 +121,8 @@ class OptimizationService:
 
     def __init__(self):
         """Initialize optimization service."""
-        self.redis_client: redis.Redis | None = None
         self.github_service = GitHubService()
+        self.ws_manager = get_connection_manager()
         
         # Resolve workspace root path
         workspace_path = settings.WORKER_WORKSPACE_PATH
@@ -139,32 +136,10 @@ class OptimizationService:
         self.workspace_root.mkdir(parents=True, exist_ok=True)
         logger.debug(f"[OptimizationService] Workspace root: {self.workspace_root}")
 
-    async def connect(self):
-        """Connect to Redis."""
-        if not self.redis_client:
-            self.redis_client = await redis.from_url(
-                settings.REDIS_URL, decode_responses=True
-            )
-
-    async def disconnect(self):
-        """Disconnect from Redis."""
-        if self.redis_client:
-            await self.redis_client.close()
-            self.redis_client = None
-
     def _run_evaluator(
         self, evaluator_path: str | None, workspace: str, timeout: int = 120
     ) -> tuple[float | None, str | None, dict | None]:
-        """Run the evaluator script and return score, error, and full data.
-
-        Args:
-            evaluator_path: Path to the evaluator script
-            workspace: Path to the workspace to evaluate
-            timeout: Timeout in seconds
-
-        Returns:
-            Tuple of (score, error, data)
-        """
+        """Run the evaluator script and return score, error, and full data."""
         if not _worker_available or run_evaluator is None:
             return None, "Worker functions not available", None
         
@@ -172,7 +147,6 @@ class OptimizationService:
         if not workspace_path.exists():
             return None, f"Workspace not found: {workspace}", None
         
-        # If evaluator_path is None, check for benchmark in workspace
         if not evaluator_path:
             benchmark_path = workspace_path / BENCHMARK_SCRIPT_NAME
             if benchmark_path.exists():
@@ -180,7 +154,6 @@ class OptimizationService:
             else:
                 return None, f"No evaluator path and {BENCHMARK_SCRIPT_NAME} not found", None
         
-        # Resolve evaluator path
         eval_path = Path(evaluator_path)
         if not eval_path.is_absolute():
             eval_path = workspace_path / evaluator_path
@@ -200,20 +173,10 @@ class OptimizationService:
         model_config_dict: dict,
         verbosity: int = 1,
     ) -> tuple[bool, str, str | None]:
-        """Run the benchmark builder agent to create optifiner_benchmark.py.
-        
-        Args:
-            repo_path: Path to the repository
-            model_config_dict: Model configuration dict with provider, model_name, api_key
-            verbosity: Logging verbosity level
-            
-        Returns:
-            Tuple of (success, message, evaluator_path)
-        """
+        """Run the benchmark builder agent to create optifiner_benchmark.py."""
         if not _worker_available:
             return False, "Worker functions not available", None
         
-        # Set up API key in environment
         provider_key_map = {
             "anthropic": "ANTHROPIC_API_KEY",
             "google": "GOOGLE_API_KEY", 
@@ -225,17 +188,22 @@ class OptimizationService:
             original_key = os.environ.get(api_key_env)
             os.environ[api_key_env] = model_config_dict["api_key"]
         
+        # Save original WORKSPACE_ROOT (if any) to restore later
+        original_workspace_root = os.environ.get("WORKSPACE_ROOT")
+        
         try:
-            # Create workspace manager
             workspace_manager = WorkspaceManager(workspace_id="benchmark-builder")
             workspace_manager.setup(repo_path)
             set_workspace(workspace_manager)
             
-            # Set up observer
+            # Set WORKSPACE_ROOT env var as a fallback for LangGraph thread pools
+            # where context vars might not propagate. This is safe because
+            # benchmark builder runs sequentially (not in parallel with other agents).
+            os.environ["WORKSPACE_ROOT"] = str(workspace_manager.workspace_root)
+            
             observer = AgentObserver(verbosity=verbosity, console=None)
             set_observer(observer)
             
-            # Configure model
             model_name = model_config_dict.get("model_name", "gemini-2.0-flash-exp")
             model_timeout = 120.0 if "gemini" in model_name.lower() and "flash" in model_name.lower() else 60.0
             model_config = ModelConfig(
@@ -247,7 +215,6 @@ class OptimizationService:
                 max_retries=3,
             )
             
-            # Run benchmark builder
             set_benchmark_dev_mode(True)
             success, message = run_benchmark_builder(
                 workspace=workspace_manager,
@@ -256,25 +223,58 @@ class OptimizationService:
                 observer=observer,
             )
             
-            # Copy changes back to repo
             if success:
                 workspace_manager.copy_back_changes(repo_path)
+                workspace_benchmark = workspace_manager.workspace_root / BENCHMARK_SCRIPT_NAME
+                
+                if workspace_benchmark.exists():
+                    logger.info(f"[OptimizationService] Copying benchmark from workspace to repo: {workspace_benchmark} -> {repo_path / BENCHMARK_SCRIPT_NAME}")
+                    shutil.copy2(workspace_benchmark, repo_path / BENCHMARK_SCRIPT_NAME)
+                else:
+                    # Benchmark not found in workspace - check common alternative locations
+                    logger.error(
+                        f"[OptimizationService] Benchmark not found at expected location: {workspace_benchmark}. "
+                        f"Checking workspace contents..."
+                    )
+                    # List all .py files in workspace root to help diagnose
+                    py_files = list(workspace_manager.workspace_root.glob("*.py"))
+                    logger.error(f"[OptimizationService] Python files in workspace root: {[f.name for f in py_files]}")
+                    
+                    # Also check if it was written to cwd accidentally
+                    cwd_benchmark = Path.cwd() / BENCHMARK_SCRIPT_NAME
+                    if cwd_benchmark.exists():
+                        logger.warning(
+                            f"[OptimizationService] Found benchmark at cwd instead of workspace! "
+                            f"Copying from {cwd_benchmark} to {repo_path / BENCHMARK_SCRIPT_NAME}"
+                        )
+                        shutil.copy2(cwd_benchmark, repo_path / BENCHMARK_SCRIPT_NAME)
+                        # Clean up misplaced file
+                        cwd_benchmark.unlink()
             
-            # Cleanup
             workspace_manager.cleanup()
             set_workspace(None)
             observer.close()
             
             benchmark_path = repo_path / BENCHMARK_SCRIPT_NAME
             if success and benchmark_path.exists():
+                logger.info(f"[OptimizationService] Benchmark successfully created at: {benchmark_path}")
                 return True, message, str(benchmark_path)
             elif success:
-                return False, f"Benchmark builder succeeded but {BENCHMARK_SCRIPT_NAME} not found", None
+                logger.error(
+                    f"[OptimizationService] Benchmark builder reported success but file not found at {benchmark_path}. "
+                    f"This indicates the benchmark was written to the wrong location."
+                )
+                return False, f"Benchmark builder succeeded but {BENCHMARK_SCRIPT_NAME} not found at {benchmark_path}", None
             else:
                 return False, message, None
                 
         finally:
-            # Restore original API key
+            # Restore original WORKSPACE_ROOT
+            if original_workspace_root is not None:
+                os.environ["WORKSPACE_ROOT"] = original_workspace_root
+            elif "WORKSPACE_ROOT" in os.environ:
+                del os.environ["WORKSPACE_ROOT"]
+            
             if api_key_env:
                 if original_key is not None:
                     os.environ[api_key_env] = original_key
@@ -283,32 +283,24 @@ class OptimizationService:
 
     async def start_optimization_workflow(
         self,
-        # Repository configuration
         repo_url: str,
         branch: str | None,
-        # Cost limit
         total_cost_limit: float,
-        # Model configuration
         models: list[dict[str, Any]],
-        # Task configuration (CLI: --task)
         user_prompt: str,
-        # Agent configuration (CLI options)
-        agents_per_generation: int = 10,  # CLI: --agents
-        parallel: int = 1,  # CLI: --parallel
-        generations: int = 1,  # CLI: --generations
-        max_iterations_per_agent: int = 15,  # CLI: --max-iterations
-        agent_types: list[str] | None = None,  # CLI cycles through these
-        # Optimization settings (CLI options)
-        min_improvement_pct: float = 6.0,  # CLI: --min-improvement
-        early_stop: bool = True,  # CLI: --early-stop
-        # Benchmark configuration (CLI options)
+        agents_per_generation: int = 10,
+        parallel: int = 1,
+        generations: int = 1,
+        max_iterations_per_agent: int = 15,
+        agent_types: list[str] | None = None,
+        min_improvement_pct: float = 6.0,
+        early_stop: bool = True,
         evaluator_path: str | None = None,
-        build_benchmark: bool = False,  # CLI: --build-benchmark
-        # Logging configuration (CLI options)
-        verbosity: int = 1,  # CLI: -v count or -q
-        log_dir: str | None = None,  # CLI: --log-dir
-        # Time limits
+        build_benchmark: bool = False,
+        verbosity: int = 1,
+        log_dir: str | None = None,
         time_limit_seconds: int = 300,
+        project_id: UUID | None = None,
     ) -> dict[str, Any]:
         """Start an optimization workflow with full CLI feature parity.
 
@@ -317,34 +309,11 @@ class OptimizationService:
         2. Creates optimization branch (optifiner-{workflow_id[:8]})
         3. Commits improvements via GitHub API
         4. Pushes to the user's repository
-
-        Args:
-            repo_url: GitHub repository URL
-            branch: Branch to clone (default: repository default branch)
-            total_cost_limit: Total cost limit for the optimization
-            models: List of model configurations
-            user_prompt: Task description (CLI: --task)
-            agents_per_generation: Agents per generation (CLI: --agents, default 10)
-            parallel: Parallel execution count (CLI: --parallel, default 1)
-            generations: Max generations (CLI: --generations, default 1)
-            max_iterations_per_agent: Iterations per agent (CLI: --max-iterations, default 15)
-            agent_types: Agent types to cycle through
-            min_improvement_pct: Noise threshold (CLI: --min-improvement, default 6.0%)
-            early_stop: Stop on improvement (CLI: --early-stop, default True)
-            evaluator_path: Path to evaluator script
-            build_benchmark: Auto-create benchmark (CLI: --build-benchmark)
-            verbosity: Log level 0-3 (CLI: -q/-v/-vv/-vvv, default 1)
-            log_dir: Agent log directory (CLI: --log-dir)
-            time_limit_seconds: Time limit per generation
-
-        Returns:
-            Dictionary with workflow_id, baseline_score, branch, status
         """
         if not _worker_available:
             return {"success": False, "error": "Worker functions not available"}
         
-        await self.connect()
-        workflow_id = str(uuid.uuid4())
+        workflow_id = uuid.uuid4()
         
         if verbosity >= 1:
             logger.info(f"[OptimizationService] Starting workflow {workflow_id}")
@@ -366,7 +335,7 @@ class OptimizationService:
         cloned_branch = clone_result.get("branch")
 
         # Create optimization branch for all commits
-        optimization_branch = f"optifiner-{workflow_id[:8]}"
+        optimization_branch = f"optifiner-{str(workflow_id)[:8]}"
         branch_result = self.github_service.create_branch(
             repo_dir=repo_dir,
             branch_name=optimization_branch,
@@ -383,9 +352,9 @@ class OptimizationService:
         baseline_score = None
         baseline_error = None
         baseline_data = None
+        resolved_evaluator_path = evaluator_path
 
         if evaluator_path:
-            # Evaluator provided - verify and run baseline
             eval_path = Path(evaluator_path)
             if not eval_path.is_absolute():
                 eval_path = repo_path / evaluator_path
@@ -394,26 +363,24 @@ class OptimizationService:
                 baseline_score, baseline_error, baseline_data = self._run_evaluator(
                     str(eval_path), str(repo_path)
                 )
-                evaluator_path = str(eval_path)
+                resolved_evaluator_path = str(eval_path)
             else:
                 baseline_error = f"Evaluator not found: {eval_path}"
         else:
-            # Check for existing benchmark
             benchmark_path = repo_path / BENCHMARK_SCRIPT_NAME
             legacy_path = repo_path / "run_validator.py"
             
             if benchmark_path.exists():
-                evaluator_path = str(benchmark_path)
+                resolved_evaluator_path = str(benchmark_path)
                 baseline_score, baseline_error, baseline_data = self._run_evaluator(
-                    evaluator_path, str(repo_path)
+                    resolved_evaluator_path, str(repo_path)
                 )
             elif legacy_path.exists():
-                evaluator_path = str(legacy_path)
+                resolved_evaluator_path = str(legacy_path)
                 baseline_score, baseline_error, baseline_data = self._run_evaluator(
-                    evaluator_path, str(repo_path)
+                    resolved_evaluator_path, str(repo_path)
                 )
             elif build_benchmark or len(models) > 0:
-                # Run benchmark builder
                 if verbosity >= 1:
                     logger.info(f"[OptimizationService] No benchmark found, running benchmark builder...")
                 
@@ -428,9 +395,9 @@ class OptimizationService:
                 )
                 
                 if success and created_path:
-                    evaluator_path = created_path
+                    resolved_evaluator_path = created_path
                     baseline_score, baseline_error, baseline_data = self._run_evaluator(
-                        evaluator_path, str(repo_path)
+                        resolved_evaluator_path, str(repo_path)
                     )
                 else:
                     baseline_error = f"Benchmark builder failed: {message}"
@@ -445,26 +412,12 @@ class OptimizationService:
 
         # Log baseline (CLI style)
         if verbosity >= 1:
-            logger.info(f"[OptimizationService] ═══════════════════════════════════════════════════")
             logger.info(f"[OptimizationService] BASELINE EVALUATION COMPLETE")
             logger.info(f"[OptimizationService] Baseline Score: {baseline_score}")
             logger.info(f"[OptimizationService] Min Improvement Threshold: {min_improvement_pct}%")
-            if baseline_data:
-                if "fps" in baseline_data:
-                    logger.info(f"[OptimizationService]   FPS: {baseline_data['fps']:.2f}")
-                if baseline_data.get("metrics"):
-                    for k, v in baseline_data["metrics"].items():
-                        if k != "fps":
-                            logger.info(f"[OptimizationService]   {k}: {v}")
-            logger.info(f"[OptimizationService] ═══════════════════════════════════════════════════")
-
-        # Save initial snapshot (step 0)
-        save_initial_snapshot(repo_path, repo_path, baseline_score, console=None)
 
         # Create initial git commit
         commit_hash = git_commit(str(repo_path), f"Initial state - Score: {baseline_score}")
-        if commit_hash and verbosity >= 1:
-            logger.info(f"[OptimizationService] Created initial commit: {commit_hash}")
 
         # Set default agent types
         if agent_types is None:
@@ -479,145 +432,168 @@ class OptimizationService:
             log_path.mkdir(parents=True, exist_ok=True)
             resolved_log_dir = str(log_path)
 
-        # Store workflow state
-        workflow_key = f"optimization_workflow:{workflow_id}"
-        workflow_data = {
-            "workflow_id": workflow_id,
-            "status": "running",
-            "repo_url": repo_url,
-            "repo_dir": repo_dir,
-            "branch": optimization_branch,
-            "original_branch": branch,
-            "baseline_score": baseline_score,
-            "baseline_data": baseline_data or {},
-            "current_best_score": baseline_score,
-            # Agent configuration
-            "agents_per_generation": agents_per_generation,
-            "parallel": parallel,
-            "max_generations": generations,
-            "agent_types": agent_types,
-            "max_iterations_per_agent": max_iterations_per_agent,
-            # Progress tracking
-            "generation": 0,
-            "total_improvements": 0,
-            "total_attempts": 0,
-            "step_count": 0,
-            "steps": [{
-                "step": 0,
-                "generation": 0,
-                "agent_id": "initial",
-                "baseline_score": baseline_score,
-                "final_score": baseline_score,
-                "improvement": 0.0,
-                "improvement_percent": 0.0,
-                "timestamp": datetime.now().isoformat(),
-                "is_initial": True,
-            }],
-            # Configuration
-            "models": models,
-            "user_prompt": user_prompt,
-            "evaluator_path": evaluator_path,
-            "min_improvement_pct": min_improvement_pct,
-            "early_stop": early_stop,
-            "verbosity": verbosity,
-            "log_dir": resolved_log_dir,
-            "total_cost_limit": total_cost_limit,
-            "total_cost": 0.0,
-            "time_limit_seconds": time_limit_seconds,
-            # Worker instances
-            "worker_instances": [],
-            # Timing
-            "started_at": datetime.now().isoformat(),
-            # Graph structure
-            "graph_data": {
-                "nodes": [{
-                    "id": "baseline",
-                    "type": "baseline",
-                    "generation": 0,
-                    "score": baseline_score,
-                }],
-                "edges": [],
-            },
-        }
-
-        await self.redis_client.setex(workflow_key, 7200, json.dumps(workflow_data))
+        # Create workflow in database
+        async with get_db_context() as db:
+            workflow = await crud.create_workflow(
+                db,
+                repo_url=repo_url,
+                project_id=project_id,
+                status=WorkflowStatus.RUNNING,
+                repo_dir=repo_dir,
+                branch=optimization_branch,
+                original_branch=branch or cloned_branch,
+                baseline_score=baseline_score,
+                current_best_score=baseline_score,
+                baseline_data=baseline_data,
+                user_prompt=user_prompt,
+                models_config=models,
+                agents_per_generation=agents_per_generation,
+                parallel=parallel,
+                max_generations=generations,
+                max_iterations_per_agent=max_iterations_per_agent,
+                agent_types=agent_types,
+                min_improvement_pct=min_improvement_pct,
+                early_stop=early_stop,
+                evaluator_path=resolved_evaluator_path,
+                build_benchmark=build_benchmark,
+                verbosity=verbosity,
+                log_dir=resolved_log_dir,
+                total_cost_limit=total_cost_limit,
+                time_limit_seconds=time_limit_seconds,
+                started_at=datetime.utcnow(),
+                graph_data={
+                    "nodes": [{
+                        "id": "baseline",
+                        "type": "baseline",
+                        "generation": 0,
+                        "score": baseline_score,
+                    }],
+                    "edges": [],
+                },
+            )
+            workflow_id = workflow.id
+            
+            # Create initial step
+            await crud.create_workflow_step(
+                db,
+                workflow_id=workflow_id,
+                step_number=0,
+                generation=0,
+                agent_id="initial",
+                baseline_score=baseline_score,
+                final_score=baseline_score,
+                improvement=0.0,
+                improvement_percent=0.0,
+                is_initial=True,
+                commit_hash=commit_hash,
+            )
 
         # Start workflow execution in background
-        asyncio.create_task(self._execute_workflow(workflow_id, workflow_data))
+        asyncio.create_task(self._execute_workflow(workflow_id))
+
+        # Send initial WebSocket update
+        await self.ws_manager.send_status_update(
+            str(workflow_id),
+            "running",
+            {
+                "baseline_score": baseline_score,
+                "branch": optimization_branch,
+            },
+        )
 
         return {
             "success": True,
-            "workflow_id": workflow_id,
+            "workflow_id": str(workflow_id),
             "baseline_score": baseline_score,
             "repo_dir": repo_dir,
             "branch": optimization_branch,
             "status": "running",
         }
 
-    async def _execute_workflow(
-        self, workflow_id: str, workflow_data: dict[str, Any]
-    ) -> None:
-        """Execute the optimization workflow (main evolution loop).
-
-        This mirrors the main loop from worker/src/worker/cli.py.
-        """
+    async def _execute_workflow(self, workflow_id: UUID) -> None:
+        """Execute the optimization workflow (main evolution loop)."""
         global _stop_generation
         
         try:
-            generation = 0
-            current_best_score = workflow_data["baseline_score"]
-            max_generations = workflow_data["max_generations"]
-            agents_per_generation = workflow_data["agents_per_generation"]
-            parallel = workflow_data["parallel"]
-            min_improvement_pct = workflow_data["min_improvement_pct"]
-            early_stop = workflow_data["early_stop"]
-            verbosity = workflow_data.get("verbosity", 1)
-            step_count = 0
-            total_improvements = 0
-            total_attempts = 0
-            repo_path = self.workspace_root / workflow_data["repo_dir"]
+            # Load workflow from database
+            async with get_db_context() as db:
+                workflow = await crud.get_workflow(db, workflow_id)
+                if not workflow:
+                    logger.error(f"[OptimizationService] Workflow not found: {workflow_id}")
+                    return
+                
+                # Extract configuration
+                generation = workflow.generation
+                current_best_score = workflow.baseline_score
+                max_generations = workflow.max_generations
+                agents_per_generation = workflow.agents_per_generation
+                parallel = workflow.parallel
+                min_improvement_pct = workflow.min_improvement_pct
+                early_stop = workflow.early_stop
+                verbosity = workflow.verbosity
+                step_count = workflow.step_count
+                total_improvements = workflow.total_improvements
+                total_attempts = workflow.total_attempts
+                repo_path = self.workspace_root / workflow.repo_dir
+                models = workflow.models_config or []
+                agent_types = workflow.agent_types or ["optimizer", "refactoring", "feature", "analyzer", "general"]
+                
+                workflow_data = workflow.to_dict()
 
-            while generation < max_generations and workflow_data["total_cost"] < workflow_data["total_cost_limit"]:
+            while generation < max_generations:
                 # Check if workflow was paused/stopped
-                workflow_key = f"optimization_workflow:{workflow_id}"
-                current_data = await self.redis_client.get(workflow_key)
-                if current_data:
-                    status = json.loads(current_data).get("status")
-                    if status in ("paused", "stopped"):
+                async with get_db_context() as db:
+                    current_workflow = await crud.get_workflow(db, workflow_id)
+                    if current_workflow and current_workflow.status in (WorkflowStatus.PAUSED, WorkflowStatus.STOPPED):
                         return
 
                 generation += 1
                 _stop_generation.clear()
 
                 if verbosity >= 1:
-                    logger.info(f"[OptimizationService] ═══ Generation {generation}/{max_generations} ═══")
+                    logger.info(f"[OptimizationService] === Generation {generation}/{max_generations} ===")
+                    logger.info(f"[OptimizationService] Agents: {agents_per_generation}, Parallel: {parallel}")
                     logger.info(f"[OptimizationService] Current best score: {current_best_score}")
+
+                # Send generation start update
+                await self.ws_manager.send_workflow_update(
+                    str(workflow_id),
+                    "generation_start",
+                    {"generation": generation, "best_score": current_best_score},
+                )
 
                 # Spawn worker instances
                 instances = await self._spawn_worker_instances(
-                    workflow_id, generation, workflow_data, current_best_score
+                    workflow_id, generation, workflow_data, current_best_score, models, agent_types
                 )
 
                 total_attempts += len(instances)
-                workflow_data["total_attempts"] = total_attempts
-                workflow_data["generation"] = generation
-                await self._save_workflow_state(workflow_id, workflow_data)
+                
+                # Update workflow in database
+                async with get_db_context() as db:
+                    await crud.update_workflow(
+                        db, workflow_id,
+                        generation=generation,
+                        total_attempts=total_attempts,
+                    )
 
                 # Wait for workers to complete
                 completed = await self._wait_for_workers(
-                    workflow_id, instances, workflow_data["time_limit_seconds"],
+                    workflow_id, instances, workflow_data.get("time_limit_seconds", 300),
                     early_stop, min_improvement_pct, current_best_score, verbosity
                 )
 
-                # Evaluate results
-                evaluated = await self._evaluate_instances(workflow_id, completed, workflow_data)
-
                 # Select best instance
-                best = self._select_best_instance(evaluated, current_best_score, min_improvement_pct)
+                best = self._select_best_instance(completed, current_best_score, min_improvement_pct)
 
                 if not best:
                     if verbosity >= 1:
                         logger.info(f"[OptimizationService] No significant improvement in generation {generation}")
+                    
+                    await self.ws_manager.send_log(
+                        str(workflow_id), "info",
+                        f"Generation {generation}: No significant improvement found",
+                    )
                     continue
 
                 # Apply improvement
@@ -629,89 +605,160 @@ class OptimizationService:
                 _, improvement_pct = is_significant_improvement(old_score, current_best_score, min_improvement_pct)
 
                 if verbosity >= 1:
-                    logger.info(f"[OptimizationService] ✓ IMPROVED! {old_score:.2f} → {current_best_score:.2f} (+{improvement_pct:.1f}%)")
-
-                # Save step snapshot
-                save_step_snapshot(
-                    source_path=repo_path,
-                    output_dir=repo_path,
-                    step_number=step_count,
-                    agent_id=best["instance_id"],
-                    baseline_score=old_score,
-                    final_score=current_best_score,
-                    improvement_pct=improvement_pct,
-                    generation=generation,
-                    console=None,
-                )
+                    logger.info(f"[OptimizationService] IMPROVED! {old_score:.2f} -> {current_best_score:.2f} (+{improvement_pct:.1f}%)")
 
                 # Commit changes to user's repository
-                commit_msg = f"Gen {generation} | {best['instance_id']}: +{improvement_pct:.1f}% ({old_score:.2f} → {current_best_score:.2f})"
+                commit_msg = f"Gen {generation} | {best['instance_id']}: +{improvement_pct:.1f}% ({old_score:.2f} -> {current_best_score:.2f})"
                 commit_result = self.github_service.commit_changes(
                     repo_dir=workflow_data["repo_dir"],
                     commit_message=commit_msg,
                     branch=workflow_data["branch"],
                 )
 
+                commit_hash = None
                 if commit_result.get("success"):
+                    commit_hash = commit_result.get("commit_hash")
                     self.github_service.push_changes(
                         repo_dir=workflow_data["repo_dir"],
                         branch=workflow_data["branch"],
                     )
 
-                # Update state
-                workflow_data["current_best_score"] = current_best_score
-                workflow_data["step_count"] = step_count
-                workflow_data["total_improvements"] = total_improvements
-                workflow_data["steps"].append({
-                    "step": step_count,
-                    "generation": generation,
-                    "agent_id": best["instance_id"],
-                    "baseline_score": old_score,
-                    "final_score": current_best_score,
-                    "improvement": current_best_score - old_score,
-                    "improvement_percent": improvement_pct,
-                    "timestamp": datetime.now().isoformat(),
-                })
-                
-                await self._save_workflow_state(workflow_id, workflow_data)
+                # Create step in database
+                async with get_db_context() as db:
+                    await crud.create_workflow_step(
+                        db,
+                        workflow_id=workflow_id,
+                        step_number=step_count,
+                        generation=generation,
+                        agent_id=best["instance_id"],
+                        baseline_score=old_score,
+                        final_score=current_best_score,
+                        improvement=current_best_score - old_score,
+                        improvement_percent=improvement_pct,
+                        commit_hash=commit_hash,
+                    )
+                    
+                    await crud.update_workflow(
+                        db, workflow_id,
+                        current_best_score=current_best_score,
+                        step_count=step_count,
+                        total_improvements=total_improvements,
+                        generation=generation,
+                    )
+
+                # Send WebSocket update
+                await self.ws_manager.send_step_update(
+                    str(workflow_id),
+                    {
+                        "step": step_count,
+                        "generation": generation,
+                        "agent_id": best["instance_id"],
+                        "baseline_score": old_score,
+                        "final_score": current_best_score,
+                        "improvement_percent": improvement_pct,
+                    },
+                )
+
+                await self.ws_manager.send_log(
+                    str(workflow_id), "success",
+                    f"Improved! {old_score:.2f} -> {current_best_score:.2f} (+{improvement_pct:.1f}%)",
+                    agent_name=best["instance_id"],
+                )
 
             # Complete
-            workflow_data["status"] = "completed"
-            workflow_data["completed_at"] = datetime.now().isoformat()
-            
             final_improvement = current_best_score - workflow_data["baseline_score"]
             final_pct = (final_improvement / workflow_data["baseline_score"] * 100) if workflow_data["baseline_score"] > 0 else 0
-            workflow_data["improvement"] = final_improvement
-            workflow_data["improvement_percent"] = final_pct
+
+            async with get_db_context() as db:
+                await crud.update_workflow_status(
+                    db, workflow_id,
+                    WorkflowStatus.COMPLETED,
+                    improvement=final_improvement,
+                    improvement_percent=final_pct,
+                    current_best_score=current_best_score,
+                )
 
             if verbosity >= 1:
-                logger.info(f"[OptimizationService] ══════════════════════════════════════════════════════════")
                 logger.info(f"[OptimizationService] OPTIMIZATION COMPLETE!")
-                logger.info(f"[OptimizationService] Initial: {workflow_data['baseline_score']:.2f} → Final: {current_best_score:.2f}")
+                logger.info(f"[OptimizationService] Initial: {workflow_data['baseline_score']:.2f} -> Final: {current_best_score:.2f}")
                 logger.info(f"[OptimizationService] Improvement: +{final_improvement:.2f} (+{final_pct:.1f}%)")
-                logger.info(f"[OptimizationService] Successful: {total_improvements}/{total_attempts}")
-                logger.info(f"[OptimizationService] ══════════════════════════════════════════════════════════")
 
-            await self._save_workflow_state(workflow_id, workflow_data)
+            # Create PR if there were improvements
+            pr_url = None
+            if total_improvements > 0:
+                pr_title = f"[Optifiner] +{final_pct:.1f}% improvement ({workflow_data['baseline_score']:.2f} → {current_best_score:.2f})"
+                pr_body = f"""## Optifiner Optimization Results
+
+**Score Improvement:** {workflow_data['baseline_score']:.2f} → {current_best_score:.2f} (+{final_pct:.1f}%)
+
+### Summary
+- **Generations:** {generation}
+- **Total Attempts:** {total_attempts}
+- **Successful Improvements:** {total_improvements}
+
+### Changes
+This PR contains optimizations automatically generated by Optifiner.
+Please review the changes and run your tests before merging.
+
+---
+*Generated by [Optifiner](https://github.com/optifiner)*
+"""
+                pr_result = self.github_service.create_pull_request(
+                    repo_dir=workflow_data["repo_dir"],
+                    branch=workflow_data["branch"],
+                    title=pr_title,
+                    body=pr_body,
+                    base_branch=workflow_data.get("original_branch", "main"),
+                )
+                
+                if pr_result.get("success"):
+                    pr_url = pr_result["pull_request"]["url"]
+                    logger.info(f"[OptimizationService] PR created: {pr_url}")
+                    
+                    # Update workflow with PR URL
+                    async with get_db_context() as db:
+                        await crud.update_workflow(db, workflow_id, pr_url=pr_url)
+                else:
+                    logger.warning(f"[OptimizationService] Failed to create PR: {pr_result.get('error')}")
+
+            await self.ws_manager.send_status_update(
+                str(workflow_id), "completed",
+                {
+                    "baseline_score": workflow_data["baseline_score"],
+                    "final_score": current_best_score,
+                    "improvement": final_improvement,
+                    "improvement_percent": final_pct,
+                    "pr_url": pr_url,
+                },
+            )
 
         except Exception as e:
             logger.error(f"[OptimizationService] Workflow failed: {e}", exc_info=True)
-            workflow_data["status"] = "failed"
-            workflow_data["error"] = str(e)
-            await self._save_workflow_state(workflow_id, workflow_data)
+            async with get_db_context() as db:
+                await crud.update_workflow_status(
+                    db, workflow_id,
+                    WorkflowStatus.FAILED,
+                    error=str(e),
+                )
+            
+            await self.ws_manager.send_status_update(
+                str(workflow_id), "failed",
+                {"error": str(e)},
+            )
 
     async def _spawn_worker_instances(
         self,
-        workflow_id: str,
+        workflow_id: UUID,
         generation: int,
         workflow_data: dict[str, Any],
         baseline_score: float,
+        models: list[dict],
+        agent_types: list[str],
     ) -> list[dict[str, Any]]:
-        """Spawn worker instances for the generation."""
+        """Spawn worker instances for the generation and run them in parallel."""
         instances = []
-        agent_types = workflow_data.get("agent_types", ["optimizer"])
-        models = workflow_data["models"]
-        total_agents = workflow_data["agents_per_generation"]
+        total_agents = workflow_data.get("agents_per_generation", 10)
+        parallel = workflow_data.get("parallel", 1)
 
         # Distribute agents across models
         model_instances = []
@@ -728,33 +775,67 @@ class OptimizationService:
                 for _ in range(count):
                     model_instances.append(model)
 
-        for i, model in enumerate(model_instances):
-            agent_type = agent_types[i % len(agent_types)]
-            instance_id = f"{workflow_id[:8]}-gen{generation}-{agent_type}-{i+1}"
-            
-            instance = {
-                "instance_id": instance_id,
-                "generation": generation,
-                "model_provider": model["provider"],
-                "model_name": model["model_name"],
-                "api_key": model.get("api_key"),
-                "agent_type": agent_type,
-                "status": 1,  # in_progress
-                "started_at": datetime.now().isoformat(),
-            }
-            instances.append(instance)
+        # Create all agent instances in database first
+        async with get_db_context() as db:
+            for i, model in enumerate(model_instances):
+                agent_type = agent_types[i % len(agent_types)]
+                instance_id = f"{str(workflow_id)[:8]}-gen{generation}-{agent_type}-{i+1}"
+                
+                agent = await crud.create_agent_instance(
+                    db,
+                    workflow_id=workflow_id,
+                    instance_id=instance_id,
+                    generation=generation,
+                    agent_type=agent_type,
+                    model_provider=model["provider"],
+                    model_name=model["model_name"],
+                    baseline_score=baseline_score,
+                )
+                
+                instance = {
+                    "db_id": str(agent.id),
+                    "instance_id": instance_id,
+                    "generation": generation,
+                    "model_provider": model["provider"],
+                    "model_name": model["model_name"],
+                    "api_key": model.get("api_key"),
+                    "agent_type": agent_type,
+                    "status": "pending",
+                    "started_at": datetime.now().isoformat(),
+                }
+                instances.append(instance)
+                
+                await self.ws_manager.send_agent_update(
+                    str(workflow_id),
+                    {"instance_id": instance_id, "status": "pending", "agent_type": agent_type},
+                )
 
-        # Spawn workers
+        # Run workers in parallel with concurrency limit
         repo_path = self.workspace_root / workflow_data["repo_dir"]
-        for instance in instances:
-            asyncio.create_task(
-                self._run_worker_instance(instance, str(repo_path), workflow_data, baseline_score)
-            )
+        semaphore = asyncio.Semaphore(parallel)
+        
+        logger.info(f"[OptimizationService] Running {len(instances)} agents with parallelism={parallel}")
+        
+        async def run_with_semaphore(instance: dict) -> None:
+            """Run worker with semaphore to limit concurrency."""
+            async with semaphore:
+                await self._run_worker_instance(
+                    workflow_id, instance, str(repo_path), workflow_data, baseline_score
+                )
+        
+        # Create all tasks and run them in parallel (limited by semaphore)
+        tasks = [asyncio.create_task(run_with_semaphore(inst)) for inst in instances]
+        
+        # Don't await here - let _wait_for_workers handle waiting with early stop logic
+        # Store tasks in instances for tracking
+        for inst, task in zip(instances, tasks):
+            inst["_task"] = task
 
         return instances
 
     async def _run_worker_instance(
         self,
+        workflow_id: UUID,
         instance: dict[str, Any],
         source_workspace: str,
         workflow_data: dict[str, Any],
@@ -763,7 +844,18 @@ class OptimizationService:
         """Run a single worker instance."""
         global _stop_generation
         
+        db_id = UUID(instance["db_id"])
+        
         try:
+            # Update status to running
+            async with get_db_context() as db:
+                await crud.update_agent_status(db, db_id, AgentStatus.RUNNING)
+            
+            await self.ws_manager.send_agent_update(
+                str(workflow_id),
+                {"instance_id": instance["instance_id"], "status": "running"},
+            )
+            
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
                 _executor,
@@ -775,10 +867,42 @@ class OptimizationService:
             )
             instance["worker_result"] = result
             instance["completed_at"] = datetime.now().isoformat()
+            
+            # Update database
+            async with get_db_context() as db:
+                await crud.update_agent_status(
+                    db, db_id,
+                    AgentStatus.COMPLETED if result.get("success") else AgentStatus.FAILED,
+                    final_score=result.get("score"),
+                    improvement=result.get("improvement", 0),
+                    success=result.get("success", False),
+                    error=result.get("error"),
+                )
+            
+            await self.ws_manager.send_agent_update(
+                str(workflow_id),
+                {
+                    "instance_id": instance["instance_id"],
+                    "status": "completed" if result.get("success") else "failed",
+                    "score": result.get("score"),
+                    "success": result.get("success"),
+                },
+            )
+            
         except Exception as e:
             instance["error"] = str(e)
-            instance["status"] = 2  # rejected
             instance["completed_at"] = datetime.now().isoformat()
+            
+            async with get_db_context() as db:
+                await crud.update_agent_status(
+                    db, db_id, AgentStatus.FAILED,
+                    error=str(e),
+                )
+            
+            await self.ws_manager.send_agent_update(
+                str(workflow_id),
+                {"instance_id": instance["instance_id"], "status": "failed", "error": str(e)},
+            )
 
     def _run_worker_instance_sync(
         self,
@@ -792,6 +916,24 @@ class OptimizationService:
         
         if not _worker_available or run_single_agent_isolated is None:
             return {"success": False, "error": "Worker not available", "score": baseline_score}
+
+        # Verify benchmark exists in source workspace before running agent
+        evaluator_path = workflow_data.get("evaluator_path")
+        if evaluator_path:
+            eval_filename = os.path.basename(evaluator_path)
+            if eval_filename == BENCHMARK_SCRIPT_NAME:
+                # In-workspace benchmark - verify it exists in source
+                source_benchmark = Path(source_workspace) / BENCHMARK_SCRIPT_NAME
+                if not source_benchmark.exists():
+                    logger.error(
+                        f"[OptimizationService] Benchmark not found in source workspace: {source_benchmark}. "
+                        f"This indicates a problem with benchmark builder or copy-back process."
+                    )
+                    return {
+                        "success": False,
+                        "error": f"Benchmark script not found in source: {source_benchmark}",
+                        "score": baseline_score,
+                    }
 
         # Set API key
         provider_key_map = {
@@ -808,12 +950,12 @@ class OptimizationService:
         try:
             agent_result, workspace_manager = run_single_agent_isolated(
                 source_workspace=source_workspace,
-                evaluator_path=workflow_data["evaluator_path"],
+                evaluator_path=workflow_data.get("evaluator_path"),
                 agent_type=instance.get("agent_type", "optimizer"),
                 agent_id=instance["instance_id"],
                 baseline_score=baseline_score,
-                task=workflow_data["user_prompt"],
-                max_iterations=workflow_data["max_iterations_per_agent"],
+                task=workflow_data.get("user_prompt", "Improve the code to get a higher benchmark score."),
+                max_iterations=workflow_data.get("max_iterations_per_agent", 15),
                 model_provider=instance["model_provider"],
                 model_name=instance["model_name"],
                 verbosity=workflow_data.get("verbosity", 1),
@@ -834,9 +976,8 @@ class OptimizationService:
             # Copy back changes if successful
             if workspace_manager and agent_result.success:
                 try:
-                    # Copy changes to source workspace
                     for item in workspace_manager.actual_root.iterdir():
-                        if item.name not in (".git", "steps"):
+                        if item.name != ".git":
                             dest = Path(source_workspace) / item.name
                             if item.is_dir():
                                 if dest.exists():
@@ -859,7 +1000,7 @@ class OptimizationService:
 
     async def _wait_for_workers(
         self,
-        workflow_id: str,
+        workflow_id: UUID,
         instances: list[dict[str, Any]],
         time_limit: int,
         early_stop: bool,
@@ -871,15 +1012,21 @@ class OptimizationService:
         global _stop_generation
         
         start_time = time.time()
+        early_stop_triggered = False
 
         while time.time() - start_time < time_limit:
             completed = [i for i in instances if i.get("completed_at")]
+            pending = len(instances) - len(completed)
+            
+            if verbosity >= 2:
+                logger.debug(f"[OptimizationService] Waiting: {len(completed)}/{len(instances)} completed, {pending} pending")
             
             if len(completed) == len(instances):
+                logger.info(f"[OptimizationService] All {len(instances)} agents completed")
                 break
 
             # Check for early stop
-            if early_stop and not _stop_generation.is_set():
+            if early_stop and not early_stop_triggered:
                 for inst in completed:
                     result = inst.get("worker_result", {})
                     if result.get("success") and result.get("score"):
@@ -888,33 +1035,35 @@ class OptimizationService:
                         )
                         if is_sig:
                             if verbosity >= 1:
-                                logger.info(f"[OptimizationService] ⚡ Early stop: +{pct:.1f}%")
+                                logger.info(f"[OptimizationService] Early stop triggered: +{pct:.1f}% improvement found")
                             _stop_generation.set()
-                            await asyncio.sleep(2)
+                            early_stop_triggered = True
+                            
+                            await self.ws_manager.send_log(
+                                str(workflow_id), "info",
+                                f"Early stop: +{pct:.1f}% improvement found, signaling other agents to stop",
+                            )
                             break
 
-            if _stop_generation.is_set():
-                break
+            # If early stop triggered, wait a bit for running agents to notice and complete
+            if early_stop_triggered:
+                # Give agents up to 10 seconds to notice the stop event and complete
+                await asyncio.sleep(1)
+                # Check if all tasks completed
+                completed = [i for i in instances if i.get("completed_at")]
+                if len(completed) == len(instances):
+                    break
+                # After 10 seconds of early stop, just return what we have
+                if time.time() - start_time > 10:
+                    logger.info(f"[OptimizationService] Early stop timeout, returning {len(completed)} completed agents")
+                    break
 
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.5)
 
-        return [i for i in instances if i.get("completed_at")]
-
-    async def _evaluate_instances(
-        self,
-        workflow_id: str,
-        instances: list[dict[str, Any]],
-        workflow_data: dict[str, Any],
-    ) -> list[dict[str, Any]]:
-        """Evaluate completed instances."""
-        for instance in instances:
-            result = instance.get("worker_result", {})
-            if result.get("success"):
-                instance["evaluation_score"] = result.get("score")
-            else:
-                instance["evaluation_score"] = workflow_data["baseline_score"]
-                instance["error"] = result.get("error")
-        return instances
+        # Return all completed instances
+        completed = [i for i in instances if i.get("completed_at")]
+        logger.info(f"[OptimizationService] Generation complete: {len(completed)}/{len(instances)} agents finished")
+        return completed
 
     def _select_best_instance(
         self,
@@ -925,10 +1074,12 @@ class OptimizationService:
         """Select the best significantly improved instance."""
         improved = []
         for inst in instances:
-            score = inst.get("evaluation_score")
-            if score and not inst.get("error"):
+            result = inst.get("worker_result", {})
+            score = result.get("score")
+            if score and result.get("success"):
                 is_sig, pct = is_significant_improvement(baseline_score, score, min_improvement_pct)
                 if is_sig:
+                    inst["evaluation_score"] = score
                     inst["_improvement_pct"] = pct
                     improved.append(inst)
 
@@ -938,80 +1089,121 @@ class OptimizationService:
         improved.sort(key=lambda x: x["evaluation_score"], reverse=True)
         return improved[0]
 
-    async def _save_workflow_state(
-        self, workflow_id: str, workflow_data: dict[str, Any]
-    ) -> None:
-        """Save workflow state to Redis."""
-        await self.connect()
-        workflow_key = f"optimization_workflow:{workflow_id}"
-        await self.redis_client.setex(workflow_key, 7200, json.dumps(workflow_data))
-
     async def get_workflow_status(self, workflow_id: str) -> dict[str, Any] | None:
         """Get workflow status."""
-        await self.connect()
-        workflow_key = f"optimization_workflow:{workflow_id}"
-        data = await self.redis_client.get(workflow_key)
-        
-        if not data:
+        try:
+            wf_uuid = UUID(workflow_id)
+        except ValueError:
             return None
         
-        return json.loads(data)
+        async with get_db_context() as db:
+            workflow = await crud.get_workflow(db, wf_uuid)
+            if not workflow:
+                return None
+            return workflow.to_dict()
 
     async def pause_workflow(self, workflow_id: str) -> dict[str, Any]:
         """Pause an active workflow."""
-        await self.connect()
-        workflow_key = f"optimization_workflow:{workflow_id}"
-        data = await self.redis_client.get(workflow_key)
+        try:
+            wf_uuid = UUID(workflow_id)
+        except ValueError:
+            return {"success": False, "error": "Invalid workflow ID"}
         
-        if not data:
-            return {"success": False, "error": "Workflow not found"}
+        async with get_db_context() as db:
+            workflow = await crud.get_workflow(db, wf_uuid)
+            if not workflow:
+                return {"success": False, "error": "Workflow not found"}
+            
+            if workflow.status != WorkflowStatus.RUNNING:
+                return {"success": False, "error": f"Workflow not running: {workflow.status.value}"}
+            
+            await crud.update_workflow_status(db, wf_uuid, WorkflowStatus.PAUSED)
         
-        workflow = json.loads(data)
-        if workflow.get("status") != "running":
-            return {"success": False, "error": f"Workflow not running: {workflow.get('status')}"}
-        
-        workflow["status"] = "paused"
-        workflow["paused_at"] = datetime.now().isoformat()
-        await self.redis_client.setex(workflow_key, 7200, json.dumps(workflow))
-        
+        await self.ws_manager.send_status_update(workflow_id, "paused")
         return {"success": True, "status": "paused"}
 
     async def resume_workflow(self, workflow_id: str) -> dict[str, Any]:
         """Resume a paused workflow."""
-        await self.connect()
-        workflow_key = f"optimization_workflow:{workflow_id}"
-        data = await self.redis_client.get(workflow_key)
+        try:
+            wf_uuid = UUID(workflow_id)
+        except ValueError:
+            return {"success": False, "error": "Invalid workflow ID"}
         
-        if not data:
-            return {"success": False, "error": "Workflow not found"}
+        async with get_db_context() as db:
+            workflow = await crud.get_workflow(db, wf_uuid)
+            if not workflow:
+                return {"success": False, "error": "Workflow not found"}
+            
+            if workflow.status != WorkflowStatus.PAUSED:
+                return {"success": False, "error": f"Workflow not paused: {workflow.status.value}"}
+            
+            await crud.update_workflow_status(db, wf_uuid, WorkflowStatus.RUNNING)
         
-        workflow = json.loads(data)
-        if workflow.get("status") != "paused":
-            return {"success": False, "error": f"Workflow not paused: {workflow.get('status')}"}
+        # Resume execution
+        asyncio.create_task(self._execute_workflow(wf_uuid))
         
-        workflow["status"] = "running"
-        await self.redis_client.setex(workflow_key, 7200, json.dumps(workflow))
-        
-        asyncio.create_task(self._execute_workflow(workflow_id, workflow))
-        
+        await self.ws_manager.send_status_update(workflow_id, "running")
         return {"success": True, "status": "running"}
 
     async def stop_workflow(self, workflow_id: str) -> dict[str, Any]:
         """Stop a workflow completely."""
-        await self.connect()
-        workflow_key = f"optimization_workflow:{workflow_id}"
-        data = await self.redis_client.get(workflow_key)
+        try:
+            wf_uuid = UUID(workflow_id)
+        except ValueError:
+            return {"success": False, "error": "Invalid workflow ID"}
         
-        if not data:
-            return {"success": False, "error": "Workflow not found"}
+        async with get_db_context() as db:
+            workflow = await crud.get_workflow(db, wf_uuid)
+            if not workflow:
+                return {"success": False, "error": "Workflow not found"}
+            
+            await crud.update_workflow_status(db, wf_uuid, WorkflowStatus.STOPPED)
+            final_score = workflow.current_best_score
         
-        workflow = json.loads(data)
-        workflow["status"] = "stopped"
-        workflow["stopped_at"] = datetime.now().isoformat()
-        await self.redis_client.setex(workflow_key, 7200, json.dumps(workflow))
+        await self.ws_manager.send_status_update(
+            workflow_id, "stopped",
+            {"final_score": final_score},
+        )
         
         return {
             "success": True,
             "status": "stopped",
-            "final_score": workflow.get("current_best_score"),
+            "final_score": final_score,
         }
+
+    async def list_workflows(
+        self,
+        project_id: str | None = None,
+        status: str | None = None,
+        skip: int = 0,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """List workflows with optional filtering."""
+        async with get_db_context() as db:
+            proj_uuid = UUID(project_id) if project_id else None
+            wf_status = WorkflowStatus(status) if status else None
+            
+            workflows = await crud.get_workflows(
+                db,
+                project_id=proj_uuid,
+                status=wf_status,
+                skip=skip,
+                limit=limit,
+            )
+            
+            return [w.to_dict() for w in workflows]
+
+    async def get_workflow_logs(
+        self,
+        workflow_id: str,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Get logs for a workflow."""
+        try:
+            wf_uuid = UUID(workflow_id)
+        except ValueError:
+            return []
+        
+        async with get_db_context() as db:
+            logs = await crud.get_workflow_logs(db, wf_uuid, limit=limit)
+            return [log.to_dict() for log in logs]

@@ -75,14 +75,34 @@ from playwright.sync_api import sync_playwright
 port = ... # [host static files on random port]
 
 with sync_playwright() as p:
-    browser = p.chromium.launch()
+    browser = p.chromium.launch(headless=True)
     page = browser.new_page()
     page.goto(f"http://localhost:{{port}}")
-    # Start application (for games, press start, etc.)
+    # CRITICAL: Start application (for games, press start, etc.), IF YOU STAY ON MAIN MENU, IT WOULD NOT BE ABLE TO BE EVALUATED.
     # Measure performance, interact with UI, etc.
 ```
 CRITICAL: USING PYTHON AND NOT NODE/NPM WHATERVER. USE PYTHON FOR WEB STUFF, EVEN IF THE CODE IS IN JS
 If you run npm, or check for puppeteer instead of playwright, you will be fired.
+
+- **If compilation is needed**: The benchmark script must build the app and run it entirely within Python code itself, NOT by calling bash/shell commands. Use Python's `subprocess` module to invoke build tools if absolutely necessary, but prefer Python-native solutions:
+```python
+# CORRECT: Build within Python benchmark
+import subprocess
+import os
+
+# Build the app (if needed)
+build_result = subprocess.run(
+    ["npx", "vite", "build"],  # or whatever build command
+    cwd=project_path,
+    capture_output=True,
+    text=True
+)
+if build_result.returncode != 0:
+    raise RuntimeError(f"Build failed: {{build_result.stderr}}")
+
+# Then serve and test with Playwright...
+```
+NEVER use separate bash scripts or shell files to build - all build logic must be in the Python benchmark script.
 
 ### General Techniques:
 - **Algorithm improvements**: O(n²) → O(n log n) with same output

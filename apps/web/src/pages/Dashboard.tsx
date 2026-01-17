@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import {
@@ -10,7 +11,8 @@ import {
   faPlay,
   faPause,
   faEllipsisV,
-  faClock
+  faClock,
+  faSpinner
 } from '@fortawesome/free-solid-svg-icons'
 import { Header } from '../components/layout/Header'
 import { Card, CardHeader, CardTitle } from '../components/ui/Card'
@@ -23,9 +25,26 @@ import { useStore } from '../store'
 import { XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Area, AreaChart } from 'recharts'
 
 export function Dashboard() {
-  const { projects, metrics, agents } = useStore()
+  const { 
+    projects, 
+    metrics, 
+    agents,
+    dashboardStats,
+    projectsLoading,
+    fetchProjects,
+    fetchDashboardStats,
+    connectGlobalWs,
+  } = useStore()
+
+  // Fetch data on mount
+  useEffect(() => {
+    fetchProjects()
+    fetchDashboardStats()
+    connectGlobalWs()
+  }, [fetchProjects, fetchDashboardStats, connectGlobalWs])
 
   const totalAgentsActive = agents.filter(a => a.status !== 'idle' && a.status !== 'waiting').length
+  const stats = dashboardStats || { projects: { total: 0, active: 0, paused: 0, completed: 0 }, workflows: { running: 0 }, cost: { total_spent: 0 } }
 
   return (
     <div className="min-h-screen">
@@ -50,35 +69,31 @@ export function Dashboard() {
         {/* Metric Cards */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           <MetricCard
-            label="Total Agents Active"
-            value={124}
-            change={12}
-            changeLabel="vs last week"
+            label="Active Projects"
+            value={stats.projects.active}
+            change={stats.workflows.running}
+            changeLabel="workflows running"
             icon={faRobot}
             iconColor="text-primary-500"
           />
           <MetricCard
-            label="Improvements Found"
-            value="8,942"
-            change={8}
-            changeLabel="vs last week"
+            label="Total Projects"
+            value={stats.projects.total}
+            change={stats.projects.completed}
+            changeLabel="completed"
             icon={faDna}
             iconColor="text-success-solid"
           />
           <MetricCard
             label="Compute Cost (MTD)"
-            value="124.50"
+            value={stats.cost.total_spent.toFixed(2)}
             prefix="$"
-            change={-5}
-            changeLabel="vs last month"
             icon={faDollarSign}
             iconColor="text-warning-solid"
           />
           <MetricCard
-            label="Avg. Fitness Gain"
-            value="18.4"
-            suffix="%"
-            change={3}
+            label="Paused Projects"
+            value={stats.projects.paused}
             icon={faChartLine}
             iconColor="text-info-solid"
           />
@@ -100,7 +115,17 @@ export function Dashboard() {
               </CardHeader>
 
               <div className="p-5 space-y-4">
-                {projects.slice(0, 4).map((project) => (
+                {projectsLoading && (
+                  <div className="flex items-center justify-center py-8">
+                    <FontAwesomeIcon icon={faSpinner} className="text-2xl text-primary-500 animate-spin" />
+                  </div>
+                )}
+                {!projectsLoading && projects.length === 0 && (
+                  <div className="text-center py-8 text-slate-500">
+                    No projects yet. Create your first project to get started.
+                  </div>
+                )}
+                {!projectsLoading && projects.slice(0, 4).map((project) => (
                   <div
                     key={project.id}
                     className="p-4 rounded-xl border border-slate-200 dark:border-slate-700 hover:border-primary-300 dark:hover:border-primary-700 transition-colors"
