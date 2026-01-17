@@ -126,9 +126,20 @@ def evaluate(message: str = "") -> str:
         # Parse output
         output = result.stdout.strip()
 
-        # Try to parse as JSON
+        # Try to parse as JSON (may have prefix garbage like pygame welcome message)
+        data = None
         try:
             data = json.loads(output)
+        except json.JSONDecodeError:
+            # Try to find JSON object in output (skip any prefix garbage)
+            json_start = output.find("{")
+            if json_start >= 0:
+                try:
+                    data = json.loads(output[json_start:])
+                except json.JSONDecodeError:
+                    pass
+
+        if data is not None:
             score = data.get("score")
 
             if score is None:
@@ -136,6 +147,9 @@ def evaluate(message: str = "") -> str:
 
             # Build result message
             result_parts = [f"Score: {score}"]
+
+            if "fps" in data:
+                result_parts.append(f"FPS: {data['fps']}")
 
             if "metrics" in data:
                 metrics_str = ", ".join(f"{k}={v}" for k, v in data["metrics"].items())
@@ -149,16 +163,20 @@ def evaluate(message: str = "") -> str:
 
             return "\n".join(result_parts)
 
-        except json.JSONDecodeError:
-            # If not JSON, try to extract a number from the output
-            import re
+        # Fallback: try to extract score from "Score: X" pattern first
+        import re
+        score_match = re.search(r"(?:score|SCORE|Score)[:\s]+([+-]?\d+\.?\d*)", output)
+        if score_match:
+            score = float(score_match.group(1))
+            return f"Score: {score}\nRaw output: {output}"
 
-            numbers = re.findall(r"[-+]?\d*\.?\d+", output)
-            if numbers:
-                score = float(numbers[0])
-                return f"Score: {score}\nRaw output: {output}"
-            else:
-                return f"Error: Could not parse evaluator output as score:\n{output}"
+        # Last resort: try to extract any number (less reliable)
+        numbers = re.findall(r"[-+]?\d*\.?\d+", output)
+        if numbers:
+            score = float(numbers[0])
+            return f"Score: {score}\nRaw output: {output}"
+        else:
+            return f"Error: Could not parse evaluator output as score:\n{output}"
 
     except subprocess.TimeoutExpired:
         return f"Error: Evaluation timed out after {_evaluator_timeout} seconds."

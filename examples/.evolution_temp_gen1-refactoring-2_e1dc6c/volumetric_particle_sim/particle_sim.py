@@ -362,319 +362,144 @@ class ParticleSimulation:
     
     def check_particle_collisions(self) -> None:
         """
-        Check and resolve particle-particle collisions using a spatial grid.
+        Check and resolve particle-particle collisions.
+        INTENTIONALLY O(n²) - a major optimization opportunity!
         """
-        particles = self.particles
-        num_particles = len(particles)
-        if num_particles == 0:
-            return
-
-        # Grid size based on max particle radius (PARTICLE_RADIUS * 1.5)
-        # Max min_dist is 2 * 1.5 * PARTICLE_RADIUS = 3 * PARTICLE_RADIUS = 24.0
-        grid_size = 24.0
-        grid = {}
-        
-        for i in range(num_particles):
-            p = particles[i]
-            pos = p.position
-            gx = int(pos.x / grid_size)
-            gy = int(pos.y / grid_size)
-            gz = int(pos.z / grid_size)
-            key = (gx, gy, gz)
-            if key not in grid:
-                grid[key] = []
-            grid[key].append(i)
-            
-        for i in range(num_particles):
-            p1 = particles[i]
-            pos1 = p1.position
-            p1x, p1y, p1z = pos1.x, pos1.y, pos1.z
-            r1 = p1.radius
-            
-            gx = int(p1x / grid_size)
-            gy = int(p1y / grid_size)
-            gz = int(p1z / grid_size)
-            
-            for dx in range(-1, 2):
-                for dy in range(-1, 2):
-                    for dz in range(-1, 2):
-                        neighbor_key = (gx + dx, gy + dy, gz + dz)
-                        if neighbor_key in grid:
-                            for j in grid[neighbor_key]:
-                                if j <= i:
-                                    continue
-                                
-                                p2 = particles[j]
-                                pos2 = p2.position
-                                dx_val = pos2.x - p1x
-                                dy_val = pos2.y - p1y
-                                dz_val = pos2.z - p1z
-                                
-                                dist_sq = dx_val * dx_val + dy_val * dy_val + dz_val * dz_val
-                                min_dist = r1 + p2.radius
-                                
-                                if dist_sq < min_dist * min_dist and dist_sq > 0:
-                                    dist = math.sqrt(dist_sq)
-                                    
-                                    # Normalize collision vector
-                                    nx = dx_val / dist
-                                    ny = dy_val / dist
-                                    nz = dz_val / dist
-                                    
-                                    # Relative velocity
-                                    v1 = p1.velocity
-                                    v2 = p2.velocity
-                                    dvx = v2.x - v1.x
-                                    dvy = v2.y - v1.y
-                                    dvz = v2.z - v1.z
-                                    
-                                    # Relative velocity along collision normal
-                                    dvn = dvx * nx + dvy * ny + dvz * nz
-                                    
-                                    if dvn < 0:  # Particles moving toward each other
-                                        # Mass-weighted impulse
-                                        total_mass = p1.mass + p2.mass
-                                        impulse = -2.0 * dvn / total_mass
-                                        
-                                        factor1 = impulse * p2.mass * BOUNCE_DAMPING
-                                        v1.x -= factor1 * nx
-                                        v1.y -= factor1 * ny
-                                        v1.z -= factor1 * nz
-                                        
-                                        factor2 = impulse * p1.mass * BOUNCE_DAMPING
-                                        v2.x += factor2 * nx
-                                        v2.y += factor2 * ny
-                                        v2.z += factor2 * nz
-                                        
-                                        # Separate particles
-                                        overlap = min_dist - dist
-                                        sep_x = nx * overlap * 0.5
-                                        sep_y = ny * overlap * 0.5
-                                        sep_z = nz * overlap * 0.5
-                                        pos1.x -= sep_x
-                                        pos1.y -= sep_y
-                                        pos1.z -= sep_z
-                                        pos2.x += sep_x
-                                        pos2.y += sep_y
-                                        pos2.z += sep_z
+        for i in range(len(self.particles)):
+            for j in range(i + 1, len(self.particles)):
+                p1 = self.particles[i]
+                p2 = self.particles[j]
+                
+                # Calculate distance between particles
+                dx = p2.position.x - p1.position.x
+                dy = p2.position.y - p1.position.y
+                dz = p2.position.z - p1.position.z
+                
+                dist_sq = dx * dx + dy * dy + dz * dz
+                min_dist = p1.radius + p2.radius
+                
+                if dist_sq < min_dist * min_dist and dist_sq > 0:
+                    dist = math.sqrt(dist_sq)
+                    
+                    # Normalize collision vector
+                    nx = dx / dist
+                    ny = dy / dist
+                    nz = dz / dist
+                    
+                    # Relative velocity
+                    dvx = p2.velocity.x - p1.velocity.x
+                    dvy = p2.velocity.y - p1.velocity.y
+                    dvz = p2.velocity.z - p1.velocity.z
+                    
+                    # Relative velocity along collision normal
+                    dvn = dvx * nx + dvy * ny + dvz * nz
+                    
+                    if dvn < 0:  # Particles moving toward each other
+                        # Mass-weighted impulse
+                        total_mass = p1.mass + p2.mass
+                        impulse = -2.0 * dvn / total_mass
+                        
+                        p1.velocity.x -= impulse * p2.mass * nx * BOUNCE_DAMPING
+                        p1.velocity.y -= impulse * p2.mass * ny * BOUNCE_DAMPING
+                        p1.velocity.z -= impulse * p2.mass * nz * BOUNCE_DAMPING
+                        
+                        p2.velocity.x += impulse * p1.mass * nx * BOUNCE_DAMPING
+                        p2.velocity.y += impulse * p1.mass * ny * BOUNCE_DAMPING
+                        p2.velocity.z += impulse * p1.mass * nz * BOUNCE_DAMPING
+                        
+                        # Separate particles
+                        overlap = min_dist - dist
+                        p1.position.x -= nx * overlap * 0.5
+                        p1.position.y -= ny * overlap * 0.5
+                        p1.position.z -= nz * overlap * 0.5
+                        p2.position.x += nx * overlap * 0.5
+                        p2.position.y += ny * overlap * 0.5
+                        p2.position.z += nz * overlap * 0.5
     
     def render_volumetric_background(self, surface: pygame.Surface) -> None:
         """
-        Render volumetric fog background - Optimized version with ray-particle pre-filtering.
+        Render volumetric fog background - INTENTIONALLY SLOW!
+        Per-pixel raymarching without any optimization.
         """
-        sample_rate = 32
-        width = self.renderer.width
-        height = self.renderer.height
-        fov = self.renderer.fov
-        aspect_ratio = self.renderer.aspect_ratio
-        camera_pos = self.camera_position
-        camera_rot = self.camera_rotation
+        # Only render every Nth pixel for performance, then scale up
+        # But still intentionally slow
+        sample_rate = 32  # Sample every 32nd pixel - still very slow due to O(n) per step
         
-        # Pre-calculate camera-related values
-        fov_scale = math.tan(math.radians(fov / 2))
-        cos_r = math.cos(camera_rot)
-        sin_r = math.sin(camera_rot)
-        
-        # Pre-extract particle and light data
-        particles = self.particles
-        lights = self.lights
-        max_distance = WORLD_BOUNDS * 3
-        step_size = max_distance / RAYMARCH_STEPS
-        fog_density_step = step_size * FOG_DENSITY
-        
-        ox, oy, oz = camera_pos.x, camera_pos.y, camera_pos.z
-        
-        p_data = []
-        for p in particles:
-            pos = p.position
-            pdx, pdy, pdz = pos.x - ox, pos.y - oy, pos.z - oz
-            v_sq = pdx*pdx + pdy*pdy + pdz*pdz
-            r3 = p.radius * 3.0
-            r3_sq = r3 * r3
-            inv_r3 = 1.0 / r3 if r3 > 0 else 0.0
-            c = p.color
-            e = p.emission / 255.0
-            p_data.append((pos.x, pos.y, pos.z, pdx, pdy, pdz, v_sq, r3, r3_sq, inv_r3, c[0] * e, c[1] * e, c[2] * e))
-            
-        l_data = []
-        for l in lights:
-            pos = l.position
-            c = l.color
-            l_data.append((pos.x, pos.y, pos.z, l.intensity, c[0] * 0.1, c[1] * 0.1, c[2] * 0.1))
-
-        for y in range(0, height, sample_rate):
-            ndc_y = 1 - (y / height) * 2
-            ray_y = ndc_y * fov_scale
-            
-            for x in range(0, width, sample_rate):
-                ndc_x = (x / width) * 2 - 1
-                ray_x = ndc_x * fov_scale * aspect_ratio
+        for y in range(0, self.renderer.height, sample_rate):
+            for x in range(0, self.renderer.width, sample_rate):
+                # Calculate ray direction for this pixel
+                ndc_x = (x / self.renderer.width) * 2 - 1
+                ndc_y = 1 - (y / self.renderer.height) * 2
                 
-                # Combined rotation and normalization
-                mag = math.sqrt(ray_x*ray_x + ray_y*ray_y + 1.0)
-                rx, ry, rz = ray_x/mag, ray_y/mag, 1.0/mag
+                fov_scale = math.tan(math.radians(self.renderer.fov / 2))
+                ray_dir = Vector3(
+                    ndc_x * fov_scale * self.renderer.aspect_ratio,
+                    ndc_y * fov_scale,
+                    1.0
+                ).normalize()
                 
-                # Rotate ray
-                drx = rx * cos_r + rz * sin_r
-                dry = ry
-                drz = -rx * sin_r + rz * cos_r
+                # Rotate ray by camera rotation
+                cos_r = math.cos(self.camera_rotation)
+                sin_r = math.sin(self.camera_rotation)
+                rot_ray = Vector3(
+                    ray_dir.x * cos_r + ray_dir.z * sin_r,
+                    ray_dir.y,
+                    -ray_dir.x * sin_r + ray_dir.z * cos_r
+                )
                 
-                # Pre-filter particles for this ray
-                ray_particles = []
-                for p_x, p_y, p_z, pdx, pdy, pdz, v_sq, r3, r3_sq, inv_r3, er, eg, eb in p_data:
-                    v_dot_d = pdx * drx + pdy * dry + pdz * drz
-                    if -r3 < v_dot_d < max_distance + r3:
-                        dist_to_ray_sq = v_sq - v_dot_d*v_dot_d
-                        if dist_to_ray_sq < r3_sq:
-                            half_width = math.sqrt(r3_sq - dist_to_ray_sq)
-                            ray_particles.append((inv_r3, er, eg, eb, v_dot_d - half_width, v_dot_d + half_width, dist_to_ray_sq, v_dot_d))
-                
-                # Raymarch
-                accum_r, accum_g, accum_b = 0.0, 0.0, 0.0
-                accumulated_density = 0.0
-                
-                if ray_particles or l_data:
-                    for step in range(RAYMARCH_STEPS):
-                        t = step * step_size
-                        px, py, pz = ox + drx * t, oy + dry * t, oz + drz * t
-                        
-                        local_density = 0.0
-                        lr, lg, lb = 0.0, 0.0, 0.0
-                        
-                        for inv_r3, er, eg, eb, t_min, t_max, d2r_sq, vdd in ray_particles:
-                            if t_min <= t <= t_max:
-                                dist = math.sqrt(d2r_sq + (t - vdd)**2)
-                                falloff = 1.0 - (dist * inv_r3)
-                                falloff *= falloff
-                                
-                                local_density += falloff * 0.5
-                                lr += er * falloff
-                                lg += eg * falloff
-                                lb += eb * falloff
-                        
-                        for lx, ly, lz, l_int, l_r1, l_g1, l_b1 in l_data:
-                            ldx, ldy, ldz = px - lx, py - ly, pz - lz
-                            ldist_sq = ldx*ldx + ldy*ldy + ldz*ldz
-                            if ldist_sq > 0:
-                                attenuation = l_int / (1.0 + ldist_sq * 0.0001)
-                                lr += l_r1 * attenuation
-                                lg += l_g1 * attenuation
-                                lb += l_b1 * attenuation
-                        
-                        if local_density > 0:
-                            alpha = 1.0 - math.exp(-local_density * fog_density_step)
-                            remaining = 1.0 - accumulated_density
-                            weight = alpha * remaining
-                            accum_r += lr * weight
-                            accum_g += lg * weight
-                            accum_b += lb * weight
-                            accumulated_density += weight
-                            
-                            if accumulated_density > 0.99:
-                                break
+                # Raymarch for volumetric fog
+                fog_color = self.renderer.calculate_volumetric_fog(
+                    self.camera_position, rot_ray,
+                    self.particles, self.lights,
+                    WORLD_BOUNDS * 3
+                )
                 
                 color = (
-                    int(min(1.0, accum_r) * 255),
-                    int(min(1.0, accum_g) * 255),
-                    int(min(1.0, accum_b) * 255)
+                    int(fog_color[0] * 255),
+                    int(fog_color[1] * 255),
+                    int(fog_color[2] * 255)
                 )
+                
+                # Fill the sampled area
                 pygame.draw.rect(surface, color, (x, y, sample_rate, sample_rate))
     
     def render_particles(self, surface: pygame.Surface) -> None:
-        """Render particles with depth sorting and shading - Optimized"""
-        camera_rot = self.camera_rotation
-        camera_pos = self.camera_position
-        cos_r = math.cos(camera_rot)
-        sin_r = math.sin(camera_rot)
-        
-        cx, cy, cz = camera_pos.x, camera_pos.y, camera_pos.z
-        
-        # Pre-calculate view direction
-        view_dir_x = sin_r
-        view_dir_z = cos_r
-        
-        # Sort particles by depth
-        # Depth = (p.x - cx) * sin_r + (p.z - cz) * cos_r
-        sorted_particles = sorted(
-            self.particles,
-            key=lambda p: -((p.position.x - cx) * sin_r + (p.position.z - cz) * cos_r)
+        """Render particles with depth sorting and shading"""
+        # Calculate view direction
+        view_dir = Vector3(
+            math.sin(self.camera_rotation),
+            0,
+            math.cos(self.camera_rotation)
         )
         
-        width = self.renderer.width
-        height = self.renderer.height
-        aspect_ratio = self.renderer.aspect_ratio
-        fov_scale = math.tan(math.radians(self.renderer.fov / 2))
+        # Sort particles by depth - INTENTIONALLY using slow sort key
+        # that recalculates projection for each comparison
+        sorted_particles = sorted(
+            self.particles,
+            key=lambda p: -(
+                (p.position.x - self.camera_position.x) * math.sin(self.camera_rotation) +
+                (p.position.z - self.camera_position.z) * math.cos(self.camera_rotation)
+            )
+        )
         
-        lights = self.lights
-        l_data = []
-        for l in lights:
-            l_pos = l.position
-            l_color = l.color
-            l_data.append((l_pos.x, l_pos.y, l_pos.z, l.intensity, l_color[0], l_color[1], l_color[2]))
-
         for particle in sorted_particles:
-            pos = particle.position
-            px, py, pz = pos.x, pos.y, pos.z
+            # Project particle position
+            screen_x, screen_y, depth = self.renderer.project_point(
+                particle.position, self.camera_position, self.camera_rotation
+            )
             
-            rel_x = px - cx
-            rel_y = py - cy
-            rel_z = pz - cz
-            
-            rot_x = rel_x * cos_r - rel_z * sin_r
-            rot_z = rel_x * sin_r + rel_z * cos_r
-            
-            if rot_z <= 0.1:
+            if screen_x < 0 or depth <= 0:
                 continue
             
-            # Perspective projection
-            screen_x = int((rot_x / (rot_z * fov_scale * aspect_ratio)) * width / 2 + width / 2)
-            screen_y = int((-rel_y / (rot_z * fov_scale)) * height / 2 + height / 2)
-            
             # Calculate screen-space radius
-            screen_radius = int(particle.radius * 400 / rot_z)
+            screen_radius = int(particle.radius * 400 / depth)
             if screen_radius < 1:
                 continue
             
-            # Calculate shading (inlined shade_particle)
-            base_color = particle.color
-            final_r = base_color[0] * 0.1
-            final_g = base_color[1] * 0.1
-            final_b = base_color[2] * 0.1
+            # Calculate shading
+            color = self.renderer.shade_particle(particle, self.lights, view_dir)
             
-            for lx, ly, lz, l_int, l_cr, l_cg, l_cb in l_data:
-                ldx, ldy, ldz = lx - px, ly - py, lz - pz
-                l_dist_sq = ldx*ldx + ldy*ldy + ldz*ldz
-                
-                if l_dist_sq > 0:
-                    l_dist = math.sqrt(l_dist_sq)
-                    inv_l_dist = 1.0 / l_dist
-                    lnx, lny, lnz = ldx * inv_l_dist, ldy * inv_l_dist, ldz * inv_l_dist
-                    
-                    attenuation = l_int / (1.0 + l_dist_sq * 0.0001)
-                    
-                    # view_dir is (sin_r, 0, cos_r)
-                    # dot product: view_dir.dot(light_dir)
-                    dot = view_dir_x * lnx + view_dir_z * lnz
-                    fresnel = (1.0 - abs(dot)) ** 3
-                    
-                    factor = attenuation * (0.7 + fresnel * 0.3)
-                    final_r += base_color[0] * l_cr * factor
-                    final_g += base_color[1] * l_cg * factor
-                    final_b += base_color[2] * l_cb * factor
-            
-            # Add emission
-            em = particle.emission * 0.5
-            final_r += base_color[0] * em
-            final_g += base_color[1] * em
-            final_b += base_color[2] * em
-            
-            color = (
-                min(255, int(final_r)),
-                min(255, int(final_g)),
-                min(255, int(final_b))
-            )
-            
-            # Draw particle with glow effect
+            # Draw particle with glow effect - multiple circles for glow
             if particle.emission > 0:
                 for glow_i in range(3, 0, -1):
                     glow_radius = screen_radius + glow_i * 3
@@ -688,28 +513,27 @@ class ParticleSimulation:
                         pygame.draw.circle(surface, glow_color, (screen_x, screen_y), glow_radius)
             
             # Draw main particle
-            pygame.draw.circle(surface, color, (screen_x, screen_y), screen_radius)
-            
-            # Highlight
-            r_offset = particle.radius * 0.3
-            h_rel_x = rel_x - sin_r * r_offset
-            h_rel_y = rel_y + r_offset
-            h_rel_z = rel_z - cos_r * r_offset
-            
-            h_rot_x = h_rel_x * cos_r - h_rel_z * sin_r
-            h_rot_z = h_rel_x * sin_r + h_rel_z * cos_r
-            
-            if h_rot_z > 0.1:
-                hx = int((h_rot_x / (h_rot_z * fov_scale * aspect_ratio)) * width / 2 + width / 2)
-                hy = int((-h_rel_y / (h_rot_z * fov_scale)) * height / 2 + height / 2)
+            if screen_radius > 0:
+                pygame.draw.circle(surface, color, (screen_x, screen_y), screen_radius)
                 
-                highlight_radius = max(1, screen_radius // 4)
-                highlight_color = (
-                    min(255, color[0] + 100),
-                    min(255, color[1] + 100),
-                    min(255, color[2] + 100)
+                # Highlight - INTENTIONALLY calculating this per-particle
+                highlight_offset = Vector3(
+                    -math.sin(self.camera_rotation) * particle.radius * 0.3,
+                    particle.radius * 0.3,
+                    -math.cos(self.camera_rotation) * particle.radius * 0.3
                 )
-                pygame.draw.circle(surface, highlight_color, (hx, hy), highlight_radius)
+                highlight_pos = particle.position + highlight_offset
+                hx, hy, hd = self.renderer.project_point(
+                    highlight_pos, self.camera_position, self.camera_rotation
+                )
+                if hx > 0 and hd > 0:
+                    highlight_radius = max(1, screen_radius // 4)
+                    highlight_color = (
+                        min(255, color[0] + 100),
+                        min(255, color[1] + 100),
+                        min(255, color[2] + 100)
+                    )
+                    pygame.draw.circle(surface, highlight_color, (hx, hy), highlight_radius)
     
     def update(self, dt: float) -> None:
         """Update simulation state"""
