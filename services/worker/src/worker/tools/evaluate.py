@@ -158,7 +158,7 @@ def _parse_benchmark_output(output: str) -> BenchmarkResult:
     
     if data is None:
         return BenchmarkResult(
-            error=f"Could not parse benchmark output as JSON:\n{output[:500]}"
+            error=f"Could not parse benchmark output as JSON. The output was:\n{output[:500]}"
         )
     
     # 'score' is the only truly required field

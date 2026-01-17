@@ -190,9 +190,42 @@ def create_evolution_agent(
 
         return result
 
+    # Track retry attempts for when agent tries to give up without improvement
+    retry_count = 0
+    max_retries = 3  # Maximum times we'll prod the agent to keep trying
+
+    def check_for_improvement(state: AgentState) -> bool:
+        """Check if the agent has achieved an improvement by looking at messages."""
+        # Look for successful evaluate results in messages
+        for msg in reversed(state.messages):
+            content = ""
+            if hasattr(msg, "content"):
+                content = msg.content if isinstance(msg.content, str) else str(msg.content)
+            
+            # Check for improvement indicators in evaluate output
+            if "Score:" in content and state.baseline_score is not None:
+                # Try to extract score
+                import re
+                match = re.search(r"Score:\s*([\d.]+)", content)
+                if match:
+                    try:
+                        score = float(match.group(1))
+                        if score > state.baseline_score:
+                            return True
+                    except ValueError:
+                        pass
+            
+            # Also check for explicit improvement messages
+            if "improved" in content.lower() and "score" in content.lower():
+                return True
+        
+        return False
+
     # Define the routing function
-    def should_continue(state: AgentState) -> Literal["tools", "end"]:
-        """Determine whether to continue or end."""
+    def should_continue(state: AgentState) -> Literal["tools", "retry", "end"]:
+        """Determine whether to continue, retry, or end."""
+        nonlocal retry_count
+        
         # Check iteration limit
         if state.iteration >= state.max_iterations:
             if obs:
@@ -206,11 +239,53 @@ def create_evolution_agent(
 
         last_message = messages[-1]
 
-        # Check for tool calls
+        # Check for tool calls - continue normally
         if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+            retry_count = 0  # Reset retry count when agent is working
             return "tools"
 
+        # Agent is trying to stop (no tool calls)
+        # Check if we have achieved an improvement
+        if check_for_improvement(state):
+            # Great, agent improved and is done
+            return "end"
+        
+        # No improvement - should we retry?
+        if retry_count < max_retries:
+            retry_count += 1
+            if obs:
+                obs.on_error(f"No improvement yet - prompting agent to retry (attempt {retry_count}/{max_retries})")
+            return "retry"
+        
+        # Max retries reached, give up
+        if obs:
+            obs.on_error(f"Agent failed to improve after {max_retries} retry prompts")
         return "end"
+
+    def retry_node(state: AgentState) -> dict[str, Any]:
+        """Inject a message telling the agent to keep trying."""
+        retry_message = HumanMessage(content="""You stopped without achieving an improvement. This is NOT acceptable!
+
+Your score has NOT improved above the baseline. You MUST keep trying.
+
+INSTRUCTIONS:
+1. Your previous optimization attempt did not improve the score
+2. You MUST try a DIFFERENT optimization on a DIFFERENT function
+3. Do NOT repeat the same approach - try something new
+4. You still have iterations remaining - USE THEM
+
+Think about what else could be optimized:
+- Different algorithms?
+- Different data structures?
+- Caching opportunities?
+- Loop optimizations?
+- Memory allocation improvements?
+
+Pick a NEW target and try again. Do NOT give up!""")
+        
+        return {
+            "messages": [retry_message],
+        }
 
     # Build the graph
     workflow = StateGraph(AgentState)
@@ -218,6 +293,7 @@ def create_evolution_agent(
     # Add nodes
     workflow.add_node("agent", agent_node)
     workflow.add_node("tools", observed_tool_node)
+    workflow.add_node("retry", retry_node)
 
     # Set entry point
     workflow.set_entry_point("agent")
@@ -228,12 +304,16 @@ def create_evolution_agent(
         should_continue,
         {
             "tools": "tools",
+            "retry": "retry",
             "end": END,
         },
     )
 
     # Tools always return to agent
     workflow.add_edge("tools", "agent")
+    
+    # Retry goes back to agent
+    workflow.add_edge("retry", "agent")
 
     # Compile the graph
     return workflow.compile()
