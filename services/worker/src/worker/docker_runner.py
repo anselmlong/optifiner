@@ -1,5 +1,13 @@
 """Docker-based agent execution.
 
+NOTE: This module is DEPRECATED and kept for reference only.
+All execution now runs on the host machine with workspace isolation
+in /tmp/optifiner_workspaces/. See workspace.py for the new approach.
+
+This allows us to easily run complex setups like browser-based stuff,
+visualize everything as it runs, and avoid container overhead.
+
+Original description:
 Runs agents in isolated Docker containers with workspace mounted as volume.
 """
 
@@ -119,6 +127,8 @@ def run_agent_in_docker(
     timeout: int = 600,
     console: Console | None = None,
     baseline_data: dict[str, Any] | None = None,
+    verbosity: int = 0,
+    stream_output: bool = True,
 ) -> dict[str, Any]:
     """Run an agent inside a Docker container.
     
@@ -136,6 +146,8 @@ def run_agent_in_docker(
         timeout: Container timeout in seconds.
         console: Optional Rich console for output.
         baseline_data: Optional dict with baseline evaluation data (fps, tests, etc.)
+        verbosity: Verbosity level (0=quiet, 1=normal, 2=verbose, 3=debug).
+        stream_output: If True, stream container output in real-time.
     
     Returns:
         Dict with agent result including success, score, error, etc.
@@ -159,6 +171,7 @@ def run_agent_in_docker(
         "MODEL_NAME": model_name,
         "TASK": task,
         "EVALUATOR_PATH": f"/evaluator/{evaluator_name}",
+        "VERBOSITY": str(verbosity),
     }
     
     # Pass API keys from environment
@@ -196,22 +209,76 @@ def run_agent_in_docker(
     # Image and command
     cmd.extend([
         image_name,
-        "python", "-m", "worker.docker_entrypoint",
+        "python", "-u", "-m", "worker.docker_entrypoint",  # -u for unbuffered output
     ])
     
     if console:
         console.print(f"[dim]Running agent {agent_id} in Docker container...[/dim]")
     
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+        if stream_output and console:
+            # Use Popen to stream output in real-time
+            import threading
+            import time as time_module
+            
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,  # Line buffered
+            )
+            
+            output_lines: list[str] = []
+            
+            def read_output():
+                for line in iter(process.stdout.readline, ''):
+                    if line:
+                        output_lines.append(line)
+                        # Print non-JSON lines (logs) directly - they already have ANSI colors
+                        stripped = line.strip()
+                        if stripped and not stripped.startswith('{"'):
+                            # Use print() directly to preserve ANSI escape codes from container
+                            print(f"  {stripped}", flush=True)
+                process.stdout.close()
+            
+            # Start output reader thread
+            reader = threading.Thread(target=read_output, daemon=True)
+            reader.start()
+            
+            # Wait with timeout
+            start_time = time_module.time()
+            while process.poll() is None:
+                if time_module.time() - start_time > timeout:
+                    process.kill()
+                    subprocess.run(["docker", "kill", f"optifiner-{agent_id}"], capture_output=True)
+                    return {
+                        "agent_id": agent_id,
+                        "success": False,
+                        "score": baseline_score,
+                        "error": f"Container timed out after {timeout} seconds",
+                    }
+                time_module.sleep(0.1)
+            
+            reader.join(timeout=2)
+            stdout = ''.join(output_lines)
+            returncode = process.returncode
+        else:
+            # Non-streaming mode (for parallel execution or quiet mode)
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            stdout = result.stdout
+            stderr = result.stderr
+            returncode = result.returncode
+            # In non-streaming, combine stderr with stdout for error reporting
+            if stderr and returncode != 0:
+                stdout = stdout + "\n" + stderr if stdout else stderr
         
-        # Try to parse JSON output from container
-        stdout = result.stdout.strip()
+        stdout = stdout.strip()
         
         # Find the JSON result in output (may have other logs before it)
         json_start = stdout.rfind('{"')
@@ -222,7 +289,7 @@ def run_agent_in_docker(
                 pass
         
         # If no JSON, return based on exit code
-        if result.returncode == 0:
+        if returncode == 0:
             return {
                 "agent_id": agent_id,
                 "success": True,
@@ -235,7 +302,7 @@ def run_agent_in_docker(
                 "agent_id": agent_id,
                 "success": False,
                 "score": baseline_score,
-                "error": result.stderr or stdout or f"Container exited with code {result.returncode}",
+                "error": stdout or f"Container exited with code {returncode}",
             }
             
     except subprocess.TimeoutExpired:

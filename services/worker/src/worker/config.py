@@ -2,6 +2,7 @@
 
 import os
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -21,7 +22,8 @@ class ModelConfig(BaseModel):
     provider: ModelProvider
     model_name: str
     temperature: float = 0.0
-    max_tokens: int = 4096
+    timeout: float = 60.0  # seconds for model call timeout
+    max_retries: int = 3  # number of retries on timeout/transient errors
 
     @classmethod
     def sonnet(cls) -> "ModelConfig":
@@ -30,17 +32,30 @@ class ModelConfig(BaseModel):
             provider=ModelProvider.ANTHROPIC,
             model_name="claude-sonnet-4-20250514",
             temperature=0.0,
-            max_tokens=8192,
+            timeout=60.0,
+            max_retries=3,
         )
 
     @classmethod
     def gemini_flash(cls) -> "ModelConfig":
-        """Gemini 3 Flash configuration."""
+        """Gemini 2.5 Flash configuration (stable)."""
+        return cls(
+            provider=ModelProvider.GOOGLE,
+            model_name="gemini-2.5-flash",
+            temperature=0.0,
+            timeout=50.0,  # Shorter timeout for faster model
+            max_retries=3,
+        )
+
+    @classmethod
+    def gemini_3_flash(cls) -> "ModelConfig":
+        """Gemini 3 Flash configuration (preview - may have issues)."""
         return cls(
             provider=ModelProvider.GOOGLE,
             model_name="gemini-3-flash-preview",
             temperature=0.0,
-            max_tokens=8192,
+            timeout=50.0,
+            max_retries=3,
         )
 
     @classmethod
@@ -50,7 +65,19 @@ class ModelConfig(BaseModel):
             provider=ModelProvider.OPENAI,
             model_name="gpt-4o",
             temperature=0.0,
-            max_tokens=4096,
+            timeout=60.0,
+            max_retries=3,
+        )
+
+    @classmethod
+    def gpt5_nano(cls) -> "ModelConfig":
+        """GPT-5 Nano configuration (fast, lightweight model)."""
+        return cls(
+            provider=ModelProvider.OPENAI,
+            model_name="gpt-5-nano",
+            temperature=0.0,
+            timeout=50.0,  # Shorter timeout for faster model
+            max_retries=3,
         )
 
 
@@ -74,8 +101,9 @@ class WorkerConfig(BaseModel):
     agent_type: AgentType = AgentType.GENERAL
     max_iterations: int = 10
 
-    # Workspace settings
-    workspace_root: str = "/app"
+    # Workspace settings - real path, no emulation
+    # This will be set dynamically when a workspace is created
+    workspace_root: str = ""
 
     # Execution settings
     execution_timeout: int = 60
@@ -85,27 +113,39 @@ class WorkerConfig(BaseModel):
     def from_env(cls) -> "WorkerConfig":
         """Create configuration from environment variables."""
         provider = os.getenv("MODEL_PROVIDER", "google")
-        model_name = os.getenv("MODEL_NAME", "gemini-3-flash-preview")
+        model_name = os.getenv("MODEL_NAME", "gemini-2.5-flash")
         temperature = float(os.getenv("MODEL_TEMPERATURE", "0.0"))
-        max_tokens = int(os.getenv("MODEL_MAX_TOKENS", "8192"))
+
+        # Workspace root comes from WORKSPACE_ROOT env or will be set dynamically
+        workspace_root = os.getenv("WORKSPACE_ROOT", "")
+
+        # Default timeout based on model
+        default_timeout = 50.0 if "gemini" in model_name.lower() and "flash" in model_name.lower() else 60.0
+        timeout = float(os.getenv("MODEL_TIMEOUT", str(default_timeout)))
+        max_retries = int(os.getenv("MODEL_MAX_RETRIES", "3"))
 
         return cls(
             model=ModelConfig(
                 provider=ModelProvider(provider),
                 model_name=model_name,
                 temperature=temperature,
-                max_tokens=max_tokens,
+                timeout=timeout,
+                max_retries=max_retries,
             ),
             agent_type=AgentType(os.getenv("AGENT_TYPE", "general")),
             max_iterations=int(os.getenv("MAX_ITERATIONS", "10")),
-            workspace_root=os.getenv("WORKSPACE_ROOT", "/app"),
+            workspace_root=workspace_root,
             execution_timeout=int(os.getenv("EXECUTION_TIMEOUT", "60")),
             benchmark_timeout=int(os.getenv("BENCHMARK_TIMEOUT", "30")),
         )
 
 
 def get_llm(config: ModelConfig):
-    """Create an LLM instance based on configuration."""
+    """Create an LLM instance based on configuration.
+    
+    Timeout and retries are configured per-model. The timeout applies to
+    the model API call only (not tool execution).
+    """
     if config.provider == ModelProvider.ANTHROPIC:
         from langchain_anthropic import ChatAnthropic
 
@@ -120,7 +160,8 @@ def get_llm(config: ModelConfig):
             model=config.model_name,
             api_key=api_key,
             temperature=config.temperature,
-            max_tokens=config.max_tokens,
+            timeout=config.timeout,
+            max_retries=config.max_retries,
         )
     elif config.provider == ModelProvider.GOOGLE:
         from langchain_google_genai import ChatGoogleGenerativeAI
@@ -136,7 +177,8 @@ def get_llm(config: ModelConfig):
             model=config.model_name,
             google_api_key=api_key,
             temperature=config.temperature,
-            max_output_tokens=config.max_tokens,
+            timeout=config.timeout,
+            max_retries=config.max_retries,
         )
     elif config.provider == ModelProvider.OPENAI:
         from langchain_openai import ChatOpenAI
@@ -152,7 +194,8 @@ def get_llm(config: ModelConfig):
             model=config.model_name,
             api_key=api_key,
             temperature=config.temperature,
-            max_tokens=config.max_tokens,
+            timeout=config.timeout,
+            max_retries=config.max_retries,
         )
     else:
         raise ValueError(f"Unsupported provider: {config.provider}")

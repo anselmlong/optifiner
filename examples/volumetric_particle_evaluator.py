@@ -613,12 +613,21 @@ def main():
         "--quiet", "-q", action="store_true",
         help="Suppress output, only print final score as JSON"
     )
+    parser.add_argument(
+        "--verbose", "-v", action="store_true",
+        help="Force verbose output even when running programmatically"
+    )
     
     args = parser.parse_args()
     
-    result = evaluate(num_frames=args.frames, verbose=not args.quiet)
+    # Auto-detect programmatic usage: if stdout is not a tty and --verbose not set,
+    # default to quiet mode for JSON output (compatible with optifiner CLI/agent)
+    is_programmatic = not sys.stdout.isatty()
+    use_quiet = args.quiet or (is_programmatic and not args.verbose)
     
-    if args.quiet:
+    result = evaluate(num_frames=args.frames, verbose=not use_quiet)
+    
+    if use_quiet:
         # Output JSON for CLI parsing
         output = {
             "score": result.score,

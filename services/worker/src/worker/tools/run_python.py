@@ -1,33 +1,33 @@
-"""Python execution tool for the evolution agent."""
+"""Python execution tool for the evolution agent.
+
+This tool is for executing Python code provided as a string argument.
+The code is written to a temporary file in the workspace and executed
+from the workspace root as the working directory.
+"""
 
 import os
 import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 from langchain_core.tools import tool
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
+
+from worker.tools.path_utils import resolve_path, get_workspace_root
 
 DEFAULT_TIMEOUT = 60
 MAX_OUTPUT_LENGTH = 50000
 
-
-def _get_workspace_root() -> Path:
-    """Get the workspace root from environment or default."""
-    return Path(os.environ.get("WORKSPACE_ROOT", "/app"))
+# Temp scripts are stored in a dedicated folder within workspace
+TEMP_SCRIPTS_DIR = ".optifiner_temp"
 
 
 class RunPythonInput(BaseModel):
     """Input schema for the run_python tool."""
 
     code: str = Field(
-        description="Python code to execute."
-    )
-    working_dir: str | None = Field(
-        default=None,
-        description="Working directory for execution. Defaults to workspace root.",
+        description="Python code to execute. The code is written to a temporary script and run."
     )
     timeout: int = Field(
         default=DEFAULT_TIMEOUT,
@@ -39,31 +39,17 @@ class RunPythonFileInput(BaseModel):
     """Input schema for running a Python file."""
 
     file_path: str = Field(
-        description="Path to the Python file to execute."
+        description="Path to the Python file to execute (relative to workspace root or absolute).",
+        validation_alias=AliasChoices("file_path", "path"),
     )
     args: list[str] = Field(
         default_factory=list,
         description="Command line arguments to pass to the script.",
     )
-    working_dir: str | None = Field(
-        default=None,
-        description="Working directory for execution. Defaults to workspace root.",
-    )
     timeout: int = Field(
         default=DEFAULT_TIMEOUT,
         description=f"Timeout in seconds. Defaults to {DEFAULT_TIMEOUT}.",
     )
-
-
-def _resolve_path(file_path: str | None) -> Path:
-    """Resolve the file path, defaulting to workspace root."""
-    workspace = _get_workspace_root()
-    if file_path is None:
-        return workspace
-    path = Path(file_path)
-    if not path.is_absolute():
-        path = workspace / path
-    return path
 
 
 def _truncate_output(output: str, max_length: int = MAX_OUTPUT_LENGTH) -> str:
@@ -95,6 +81,14 @@ def _get_python_executable() -> str:
     return "python3"
 
 
+def _get_temp_scripts_dir() -> Path:
+    """Get (and create) the temp scripts directory within workspace."""
+    workspace_root = get_workspace_root()
+    temp_dir = workspace_root / TEMP_SCRIPTS_DIR
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    return temp_dir
+
+
 def _execute_python(
     cmd: list[str],
     cwd: Path,
@@ -102,13 +96,16 @@ def _execute_python(
 ) -> str:
     """Execute a Python command and return formatted output."""
     try:
+        # Set up environment with workspace root
+        env = {**os.environ, "WORKSPACE_ROOT": str(cwd)}
+        
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
             timeout=timeout,
             cwd=str(cwd),
-            env={**os.environ, "WORKSPACE_ROOT": str(_get_workspace_root())},
+            env=env,
         )
 
         # Combine stdout and stderr
@@ -143,47 +140,49 @@ def _execute_python(
 @tool(args_schema=RunPythonInput)
 def run_python(
     code: str,
-    working_dir: str | None = None,
     timeout: int = DEFAULT_TIMEOUT,
 ) -> str:
     """Execute Python code.
 
-    Runs Python code in the workspace and returns its output.
-    The code is written to a temporary file and executed.
+    Runs Python code by writing it to a temporary script file in the workspace
+    and executing it. The working directory is always the workspace root
+    (the codebase location).
+
+    This tool is for running code snippets, not for running existing files.
+    Use run_python_file to run existing Python files.
 
     Args:
         code: Python code to execute.
-        working_dir: Working directory. Defaults to workspace root.
         timeout: Timeout in seconds.
 
     Returns:
         Execution output (stdout + stderr) and exit code.
     """
-    cwd = _resolve_path(working_dir)
+    workspace_root = get_workspace_root()
+    
+    if not workspace_root.exists():
+        return f"Error: Workspace root not found: {workspace_root}"
 
-    if not cwd.exists():
-        return f"Error: Working directory not found: {cwd}"
-
-    # Write code to a temporary file
+    # Write code to a temporary file in the workspace's temp dir
+    temp_dir = _get_temp_scripts_dir()
+    
+    import uuid
+    script_name = f"temp_script_{uuid.uuid4().hex[:8]}.py"
+    script_path = temp_dir / script_name
+    
     try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            suffix=".py",
-            delete=False,
-            dir=str(cwd),
-        ) as f:
-            f.write(code)
-            temp_path = f.name
+        script_path.write_text(code, encoding="utf-8")
     except Exception as e:
-        return f"Error creating temporary file: {e}"
+        return f"Error creating temporary script: {e}"
 
     try:
-        cmd = [_get_python_executable(), temp_path]
-        return _execute_python(cmd, cwd, timeout)
+        cmd = [_get_python_executable(), str(script_path)]
+        # Always run from workspace root (codebase location)
+        return _execute_python(cmd, workspace_root, timeout)
     finally:
         # Clean up temp file
         try:
-            Path(temp_path).unlink()
+            script_path.unlink()
         except Exception:
             pass
 
@@ -192,23 +191,23 @@ def run_python(
 def run_python_file(
     file_path: str,
     args: list[str] | None = None,
-    working_dir: str | None = None,
     timeout: int = DEFAULT_TIMEOUT,
 ) -> str:
     """Execute a Python file.
 
-    Runs a Python script file with optional arguments.
+    Runs a Python script file with optional arguments. The working directory
+    is always the workspace root (the codebase location).
 
     Args:
-        file_path: Path to the Python file to execute.
+        file_path: Path to the Python file to execute (relative or absolute).
         args: Command line arguments to pass to the script.
-        working_dir: Working directory. Defaults to workspace root.
         timeout: Timeout in seconds.
 
     Returns:
         Execution output (stdout + stderr) and exit code.
     """
-    script_path = _resolve_path(file_path)
+    script_path = resolve_path(file_path)
+    workspace_root = get_workspace_root()
 
     if not script_path.exists():
         return f"Error: File not found: {script_path}"
@@ -216,12 +215,9 @@ def run_python_file(
     if not script_path.is_file():
         return f"Error: Path is not a file: {script_path}"
 
-    cwd = _resolve_path(working_dir)
-    if not cwd.exists():
-        cwd = script_path.parent
-
     cmd = [_get_python_executable(), str(script_path)]
     if args:
         cmd.extend(args)
 
-    return _execute_python(cmd, cwd, timeout)
+    # Always run from workspace root (codebase location)
+    return _execute_python(cmd, workspace_root, timeout)

@@ -46,6 +46,7 @@ RUN pip install --no-cache-dir -r requirements.txt || pip install --no-cache-dir
 
 # Copy worker source code
 COPY services/worker/src ./src
+COPY services/worker/README.md ./
 
 # Install the worker package
 RUN pip install --no-cache-dir -e .
