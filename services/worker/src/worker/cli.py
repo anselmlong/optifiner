@@ -326,10 +326,23 @@ def run_single_agent_isolated(
     # Set the workspace context for tools
     set_workspace(workspace)
 
-    # Configure evaluator to run in the actual workspace
-    # Use BENCHMARK_TIMEOUT (30s) and set improver mode (timeouts are hard fails)
-    set_evaluator(evaluator_path, timeout=BENCHMARK_TIMEOUT)
-    set_benchmark_dev_mode(False)  # Improver mode: timeouts are hard fails
+    # Configure evaluator for improver mode (timeouts are hard fails)
+    set_benchmark_dev_mode(False)
+    
+    # Check if the evaluator is an in-workspace benchmark (optifiner_benchmark.py)
+    # vs an external evaluator. For in-workspace benchmarks, DON'T set the override
+    # so the evaluate tool uses the COPY in the isolated workspace (where agent made changes).
+    # External evaluators (like volumetric_particle_evaluator.py) should use WORKSPACE_ROOT
+    # env var to find the code to evaluate.
+    evaluator_filename = os.path.basename(evaluator_path)
+    if evaluator_filename == BENCHMARK_SCRIPT_NAME:
+        # In-workspace benchmark: let evaluate tool use workspace_root/optifiner_benchmark.py
+        # This ensures we evaluate the agent's changes, not the original code
+        set_evaluator(None, timeout=BENCHMARK_TIMEOUT)
+    else:
+        # External evaluator: set the override path
+        # The external evaluator should use WORKSPACE_ROOT env var to find code
+        set_evaluator(evaluator_path, timeout=BENCHMARK_TIMEOUT)
 
     # Set up observer
     log_file = None
@@ -627,8 +640,8 @@ def run_benchmark_builder_cli(
               help="Stop generation early when improvement found (default: enabled)")
 @click.option("--build-benchmark", "-b", is_flag=True,
               help="Run benchmark builder agent to create optifiner_benchmark.py")
-@click.option("--min-improvement", "-m", default=3.0, type=float,
-              help="Minimum improvement percentage to accept a change (default: 3.0%%, filters noise)")
+@click.option("--min-improvement", "-m", default=6.0, type=float,
+              help="Minimum improvement percentage to accept a change (default: 6.0%%, filters noise)")
 def main(
     repository: str,
     evaluator: str | None,

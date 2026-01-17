@@ -19,6 +19,15 @@ from typing import List, Tuple
 
 
 import pygame
+import time
+
+_frame_count = 0
+_fps_start_time = time.time()
+_current_fps = 0.0
+
+def get_fps():
+    return _current_fps
+
 
 
 # Configuration
@@ -289,16 +298,15 @@ class VolumetricRenderer:
 class ParticleSimulation:
     """Main simulation class"""
     
-    def __init__(self, headless: bool = False):
+    def __init__(self, benchmark_mode: bool = False, benchmark_duration: float = 5.0):
         pygame.init()
-        self.headless = headless
-        if not self.headless:
-            self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-            pygame.display.set_caption("Volumetric Particle Simulation - Optimize Me!")
-        else:
-            self.screen = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT)) # Create a dummy surface
+        self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+        pygame.display.set_caption("Volumetric Particle Simulation - Optimize Me!")
         self.clock = pygame.time.Clock()
         self.running = True
+        self.benchmark_mode = benchmark_mode
+        self.benchmark_duration = benchmark_duration
+        self._benchmark_start_time = 0.0
         
         self.renderer = VolumetricRenderer(SCREEN_WIDTH, SCREEN_HEIGHT)
         self.particles: List[Particle] = []
@@ -307,10 +315,6 @@ class ParticleSimulation:
         self.camera_rotation = 0.0
         self.camera_position = Vector3(0, 50, -self.renderer.camera_distance)
         self.time = 0.0
-        self._frame_count = 0
-        self._fps_start_time = pygame.time.get_ticks()
-        self._current_fps = 0.0
-        self._benchmark_running = True
         
         self._init_particles()
         self._init_lights()
@@ -688,14 +692,18 @@ class ParticleSimulation:
                 pygame.draw.rect(vignette, (0, 0, 0, alpha), (x, y, vignette_step, vignette_step))
         self.screen.blit(vignette, (0, 0))
         
-        self.screen.blit(vignette, (0, 0))
-        
-        if not self.headless:
-            pygame.display.flip()
+        pygame.display.flip()
     
     def run(self) -> None:
         """Run the simulation."""
-        while self.running and self._benchmark_running:
+        if self.benchmark_mode:
+            self._benchmark_start_time = time.time()
+
+        while self.running:
+            if self.benchmark_mode and (time.time() - self._benchmark_start_time > self.benchmark_duration):
+                self.running = False
+                break
+
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     self.running = False
@@ -709,37 +717,17 @@ class ParticleSimulation:
             self.update(dt)
             self.render()
 
-            self._frame_count += 1
-            elapsed_time = (pygame.time.get_ticks() - self._fps_start_time) / 1000.0
-            if elapsed_time >= 1.0:
-                self._current_fps = self._frame_count / elapsed_time
-                self._frame_count = 0
-                self._fps_start_time = pygame.time.get_ticks()
+            global _frame_count, _fps_start_time, _current_fps
+            _frame_count += 1
+            elapsed = time.time() - _fps_start_time
+            if elapsed >= 1.0:
+                _current_fps = _frame_count / elapsed
+                _frame_count = 0
+                _fps_start_time = time.time()
     
     def cleanup(self) -> None:
         """Clean up pygame resources"""
         pygame.quit()
-
-    def get_fps(self) -> float:
-        """Return the current FPS."""
-        return self._current_fps
-
-    def get_particle_count(self) -> int:
-        """Return the number of particles."""
-        return len(self.particles)
-
-    def stop_simulation(self) -> None:
-        """Stop the simulation loop for benchmarking."""
-        self._benchmark_running = False
-
-    def run_headless_frames(self, num_frames: int) -> None:
-        """Run a fixed number of frames without display updates or event handling."""
-        for _ in range(num_frames):
-            dt = 1.0 / 60.0  # Assume 60 FPS for consistent updates
-            self.update(dt)
-            self.render()
-            # No pygame.display.flip() in headless mode
-
 
 
 def main():
