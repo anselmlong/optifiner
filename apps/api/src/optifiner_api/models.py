@@ -86,13 +86,14 @@ class EvaluationDataStoreRequest(BaseModel):
 
 
 class RepositoryCommitRequest(BaseModel):
-    """Request model for committing changes."""
+    """Request model for committing changes.
+    
+    Commits will be attributed to the GitHub App automatically.
+    """
 
     commit_message: str = Field(..., description="Commit message")
     branch: str | None = Field(None, description="Branch name (default: current branch)")
     files: list[str] | None = Field(None, description="Specific files to commit (None = all changes)")
-    author_name: str = Field("Optifiner", description="Git author name")
-    author_email: str = Field("optifiner@example.com", description="Git author email")
 
 
 class RepositoryPushRequest(BaseModel):

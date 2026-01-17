@@ -12,11 +12,13 @@ class Settings(BaseSettings):
     # Redis
     REDIS_URL: str = "redis://redis:6379/0"
 
-    # GitHub
-    GITHUB_TOKEN: str | None = None
+    # GitHub App
+    GITHUB_APP_ID: str | None = None
+    GITHUB_APP_PRIVATE_KEY: str | None = None  # PEM content or path to PEM file
+    GITHUB_APP_CLIENT_ID: str | None = None  # GitHub App Client ID
 
     # Worker
-    WORKER_WORKSPACE_PATH: str = "/workspaces"
+    WORKER_WORKSPACE_PATH: str = "apps/workspace"
 
     # CORS
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:8000"]
