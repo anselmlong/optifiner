@@ -5,16 +5,19 @@ import json
 import sys
 import time
 import os
-from typing import List, Tuple
 
-os.environ["OPTIFINER_HEADLESS_BENCHMARK"] = "1"
-
-# Add the current directory to the path to import particle_sim
+# Add the parent directory to the path to import particle_sim
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import particle_sim
+try:
+    import particle_sim
+except ImportError:
+    # Fallback for when the script is run directly from the workspace root
+    sys.path.insert(0, os.getcwd())
+    import particle_sim
 
-def run_tests() -> Tuple[int, int]:
+
+def run_tests():
     """Run functional tests to verify the application works."""
     tests_passed = 0
     tests_total = 0
@@ -43,27 +46,25 @@ def run_tests() -> Tuple[int, int]:
 
     return tests_passed, tests_total
 
-def measure_performance(num_frames: int = 300) -> Tuple[float, dict]:
+def measure_performance():
     """Measure the primary performance metric (FPS)."""
-    # Temporarily test time measurement
-    start_time = time.time()
-    time.sleep(1.0) # Sleep for 1 second
-    end_time = time.time()
-    duration = end_time - start_time
+    benchmark_frames = 60  # Run for 60 frames for benchmarking
     
-    # If duration is 0, something is wrong with time.time()
-    if duration == 0:
-        return 0.0, {}
-    
-    # For this test, we'll pretend 60 frames were rendered in 1 second
-    average_fps = 60.0 / duration
-    
-    extra_metrics = {
-        "duration_seconds": duration,
-        "frames_rendered": 60
-    }
-    
-    return average_fps, extra_metrics
+    sim = None
+    try:
+        sim = particle_sim.ParticleSimulation()
+        sim.run(benchmark_frames=benchmark_frames)
+        
+        # The FPS is updated in particle_sim.py, so we can just retrieve it
+        score = particle_sim.get_fps()
+        
+        return score, {}
+    except Exception as e:
+        print(f"Performance measurement failed: {e}", file=sys.stderr)
+        return None, {}
+    finally:
+        if sim:
+            sim.cleanup()
 
 def main():
     quiet = "--quiet" in sys.argv
@@ -84,11 +85,7 @@ def main():
             "message": f"Score: {score:.2f} FPS, Tests: {tests_passed}/{tests_total} passed"
         }
         
-        if not quiet:
-            print(json.dumps(result, indent=4))
-        else:
-            print(json.dumps(result))
-        
+        print(json.dumps(result))
         sys.exit(0 if result["test_gate"] and result["score"] is not None else 1)
         
     except Exception as e:
@@ -98,10 +95,7 @@ def main():
             "test_gate": False,
             "message": str(e)
         }
-        if not quiet:
-            print(json.dumps(result, indent=4))
-        else:
-            print(json.dumps(result))
+        print(json.dumps(result))
         sys.exit(1)
 
 if __name__ == "__main__":

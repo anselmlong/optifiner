@@ -403,23 +403,29 @@ def run_single_agent_isolated(
 
     # Run the agent
     try:
-        final_task = f"""Your goal is to improve the codebase to increase its benchmark score.
+        final_task = f"""Optimize this codebase to improve its benchmark score (currently {baseline_score}).
 
 {task}
 
 {baseline_info}
 
-IMPORTANT: The baseline score ({baseline_score}) has already been measured. Do NOT run `evaluate` at the start - this wastes time.
+## Your Mission
+Find and fix ONE performance bottleneck to beat the baseline score of {baseline_score}.
 
-WORKFLOW:
-1. Explore the codebase to understand its structure
-2. Identify specific optimizations that will improve performance
-3. Make targeted improvements
-4. THEN use `evaluate` to test your changes
-5. If score improved above {baseline_score}, you've succeeded!
-6. If score is lower or there's an error, try a different approach
+## Workflow
+1. **READ** the main files to understand the code structure
+2. **IDENTIFY** the biggest performance bottleneck (look for: nested loops, object creation in hot paths, redundant calculations, Python loops that could be vectorized)
+3. **IMPLEMENT** your optimization
+4. **VERIFY** with `evaluate` - if score > {baseline_score}, you've succeeded!
 
-Remember: Only improvements that INCREASE the score are kept!"""
+## Quick Wins to Look For
+- Nested loops over collections → spatial partitioning or hash maps
+- Python loops over numbers/arrays → NumPy vectorization  
+- Same calculation repeated → caching/memoization
+- Objects created every frame → pre-allocation or pooling
+- Many individual draw calls → sprite caching or batching
+
+Don't run `evaluate` until you've made changes - the baseline is already measured."""
 
         state = run_evolution_agent(
             task=final_task,
