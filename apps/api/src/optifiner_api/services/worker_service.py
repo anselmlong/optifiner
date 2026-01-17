@@ -149,6 +149,12 @@ class WorkerService:
             result = json.loads(result_data)
             task_info["result"] = result
 
+        # Check for evaluation data separately
+        eval_key = f"evaluation:{task_id}"
+        eval_data = await self.redis_client.get(eval_key)
+        if eval_data:
+            task_info["evaluation_data"] = json.loads(eval_data)
+
         return {
             "success": True,
             "task": task_info,
@@ -180,6 +186,7 @@ class WorkerService:
             "error": result.error,
             "iterations": result.iterations,
             "messages_count": result.messages_count,
+            "evaluation_data": result.evaluation_data,
         }
         await self.redis_client.setex(result_key, 3600, json.dumps(result_data))
 
@@ -201,9 +208,130 @@ class WorkerService:
         for key in task_keys[:limit]:
             task_data = await self.redis_client.get(key)
             if task_data:
-                tasks.append(json.loads(task_data))
+                task_info = json.loads(task_data)
+                task_id = task_info.get("task_id")
+                
+                # Add result if available
+                if task_id:
+                    result_key = f"result:{task_id}"
+                    result_data = await self.redis_client.get(result_key)
+                    if result_data:
+                        task_info["result"] = json.loads(result_data)
+                    
+                    # Add evaluation data if available
+                    eval_key = f"evaluation:{task_id}"
+                    eval_data = await self.redis_client.get(eval_key)
+                    if eval_data:
+                        task_info["evaluation_data"] = json.loads(eval_data)
+                
+                tasks.append(task_info)
 
         # Sort by task_id (which includes timestamp from UUID)
         tasks.sort(key=lambda x: x.get("task_id", ""), reverse=True)
 
         return tasks
+
+    async def get_evaluation_data(self, task_id: str) -> dict[str, Any]:
+        """Get evaluation data for a completed task.
+
+        Args:
+            task_id: Task identifier
+
+        Returns:
+            Dictionary with evaluation data
+        """
+        await self.connect()
+
+        eval_key = f"evaluation:{task_id}"
+        eval_data = await self.redis_client.get(eval_key)
+
+        if not eval_data:
+            return {
+                "success": False,
+                "error": f"Evaluation data not found for task: {task_id}",
+            }
+
+        return {
+            "success": True,
+            "task_id": task_id,
+            "evaluation_data": json.loads(eval_data),
+        }
+
+    async def store_evaluation_data(
+        self, task_id: str, evaluation_data: dict[str, Any]
+    ) -> None:
+        """Store evaluation data for a task.
+
+        Args:
+            task_id: Task identifier
+            evaluation_data: Evaluation data dictionary
+        """
+        await self.connect()
+
+        eval_key = f"evaluation:{task_id}"
+        await self.redis_client.setex(
+            eval_key, 3600, json.dumps(evaluation_data)
+        )  # 1 hour TTL
+
+    async def list_evaluations(self, limit: int = 50) -> list[dict[str, Any]]:
+        """List all evaluations with their data.
+
+        Args:
+            limit: Maximum number of evaluations to return
+
+        Returns:
+            List of evaluation data dictionaries
+        """
+        await self.connect()
+
+        # Get all evaluation keys
+        eval_keys = await self.redis_client.keys("evaluation:*")
+        evaluations = []
+
+        for key in eval_keys[:limit]:
+            eval_data = await self.redis_client.get(key)
+            if eval_data:
+                task_id = key.replace("evaluation:", "")
+                eval_info = json.loads(eval_data)
+                eval_info["task_id"] = task_id
+                evaluations.append(eval_info)
+
+        # Sort by task_id (reverse chronological order)
+        evaluations.sort(key=lambda x: x.get("task_id", ""), reverse=True)
+
+        return evaluations
+
+    async def get_evaluations_by_repo(self, repo_dir: str) -> list[dict[str, Any]]:
+        """Get all evaluations for a specific repository.
+
+        Args:
+            repo_dir: Directory name of the repository
+
+        Returns:
+            List of evaluation data for the repository
+        """
+        await self.connect()
+
+        # Get all tasks for this repo
+        task_keys = await self.redis_client.keys("task:*")
+        evaluations = []
+
+        for key in task_keys:
+            task_data = await self.redis_client.get(key)
+            if task_data:
+                task_info = json.loads(task_data)
+                if task_info.get("repo_dir") == repo_dir:
+                    task_id = task_info.get("task_id")
+                    if task_id:
+                        eval_key = f"evaluation:{task_id}"
+                        eval_data = await self.redis_client.get(eval_key)
+                        if eval_data:
+                            eval_info = json.loads(eval_data)
+                            eval_info["task_id"] = task_id
+                            eval_info["repo_dir"] = repo_dir
+                            evaluations.append(eval_info)
+
+        # Sort by task_id (reverse chronological order)
+        evaluations.sort(key=lambda x: x.get("task_id", ""), reverse=True)
+
+        return evaluations
