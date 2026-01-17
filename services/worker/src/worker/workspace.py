@@ -1,11 +1,11 @@
-"""Workspace isolation and path translation for running agents on host machine.
+"""Workspace isolation for running agents on host machine.
 
-This module provides chroot-like isolation for agents:
-- The actual workspace is at /tmp/optifiner_<uuid>/app/
-- The agent sees and interacts with /app (virtual root)
-- All file operations are transparently translated
+This module provides isolated workspace copies for agents:
+- Each workspace is at /tmp/optifiner_workspaces/ws_<uuid>/
+- Agents see and work with real paths (no emulation)
+- All file operations are confined to the workspace for safety
 
-This allows agents to work in isolated copies without affecting the original codebase.
+The benchmark script is always at: <workspace_root>/optifiner_benchmark.py
 """
 
 import os
@@ -15,18 +15,18 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Generator
 
-# Virtual root that agents see
-VIRTUAL_ROOT = "/app"
-
 # Base directory for workspace copies
 WORKSPACE_BASE = Path("/tmp/optifiner_workspaces")
 
+# Standard benchmark script filename (always at workspace root)
+BENCHMARK_SCRIPT_NAME = "optifiner_benchmark.py"
+
 
 class WorkspaceManager:
-    """Manages isolated workspace copies with path translation.
+    """Manages isolated workspace copies.
     
-    Agents think they're working in /app, but they're actually working in
-    /tmp/optifiner_<uuid>/app/. This provides isolation without containers.
+    Agents work in real paths at /tmp/optifiner_workspaces/ws_<uuid>/.
+    No path emulation - agents see the actual filesystem paths.
     """
     
     def __init__(self, workspace_id: str | None = None):
@@ -36,20 +36,26 @@ class WorkspaceManager:
             workspace_id: Optional ID for the workspace. If not provided, generates UUID.
         """
         self.workspace_id = workspace_id or str(uuid.uuid4())[:8]
-        self._actual_root: Path | None = None
+        self._workspace_root: Path | None = None
         self._source_path: Path | None = None
         
     @property
-    def actual_root(self) -> Path:
-        """Get the actual filesystem root for this workspace."""
-        if self._actual_root is None:
+    def workspace_root(self) -> Path:
+        """Get the workspace root path (actual filesystem path)."""
+        if self._workspace_root is None:
             raise RuntimeError("Workspace not initialized. Call setup() first.")
-        return self._actual_root
+        return self._workspace_root
     
+    # Alias for backwards compatibility
     @property 
-    def virtual_root(self) -> str:
-        """Get the virtual root that agents see."""
-        return VIRTUAL_ROOT
+    def actual_root(self) -> Path:
+        """Alias for workspace_root (backwards compatibility)."""
+        return self.workspace_root
+    
+    @property
+    def benchmark_path(self) -> Path:
+        """Get the standard benchmark script path."""
+        return self.workspace_root / BENCHMARK_SCRIPT_NAME
     
     def setup(self, source_path: str | Path) -> Path:
         """Set up the isolated workspace by copying source.
@@ -58,7 +64,7 @@ class WorkspaceManager:
             source_path: Path to the source codebase to copy.
             
         Returns:
-            The actual root path of the isolated workspace.
+            The workspace root path.
         """
         source = Path(source_path).resolve()
         if not source.exists():
@@ -68,83 +74,74 @@ class WorkspaceManager:
         
         # Create workspace directory structure
         WORKSPACE_BASE.mkdir(parents=True, exist_ok=True)
-        workspace_dir = WORKSPACE_BASE / f"ws_{self.workspace_id}"
         
-        # The actual root mirrors the virtual root structure
-        # Agent sees /app, actual is /tmp/optifiner_workspaces/ws_<id>/app
-        self._actual_root = workspace_dir / "app"
+        # Workspace is directly at /tmp/optifiner_workspaces/ws_<id>/
+        self._workspace_root = WORKSPACE_BASE / f"ws_{self.workspace_id}"
         
         # Clean up if exists
-        if workspace_dir.exists():
-            shutil.rmtree(workspace_dir)
+        if self._workspace_root.exists():
+            shutil.rmtree(self._workspace_root)
         
         # Copy source to workspace
-        shutil.copytree(source, self._actual_root, symlinks=True)
+        shutil.copytree(source, self._workspace_root, symlinks=True)
         
-        return self._actual_root
+        return self._workspace_root
     
     def cleanup(self):
         """Remove the isolated workspace."""
-        if self._actual_root and self._actual_root.parent.exists():
+        if self._workspace_root and self._workspace_root.exists():
             try:
-                shutil.rmtree(self._actual_root.parent)
+                shutil.rmtree(self._workspace_root)
             except Exception:
                 pass
     
-    def translate_to_actual(self, virtual_path: str) -> Path:
-        """Translate a virtual path to the actual filesystem path.
+    def resolve_path(self, path: str | Path) -> Path:
+        """Resolve a path within the workspace.
         
         Args:
-            virtual_path: Path as seen by the agent (e.g., /app/src/main.py)
+            path: Relative or absolute path.
             
         Returns:
-            The actual filesystem path.
+            Absolute path within the workspace.
+            
+        Raises:
+            ValueError: If path attempts to escape workspace.
         """
-        if self._actual_root is None:
+        if self._workspace_root is None:
             raise RuntimeError("Workspace not initialized. Call setup() first.")
         
-        path = Path(virtual_path)
+        p = Path(path)
         
-        # If path is already pointing to actual root, return as-is
+        # If already within workspace, return resolved
+        if p.is_absolute():
+            try:
+                p.resolve().relative_to(self._workspace_root.resolve())
+                return p.resolve()
+            except ValueError:
+                # Absolute path outside workspace - confine it
+                # Use just the last component for safety
+                return self._workspace_root / p.name
+        
+        # Relative path - resolve relative to workspace root
+        resolved = (self._workspace_root / p).resolve()
+        
+        # Security check: ensure result is within workspace
         try:
-            path.relative_to(self._actual_root)
-            return path
+            resolved.relative_to(self._workspace_root.resolve())
         except ValueError:
-            pass
+            raise ValueError(f"Path escapes workspace: {path}")
         
-        # Handle absolute paths starting with virtual root
-        if str(path).startswith(VIRTUAL_ROOT):
-            relative = path.relative_to(VIRTUAL_ROOT)
-            return self._actual_root / relative
-        
-        # Handle relative paths - treat as relative to virtual root
-        if not path.is_absolute():
-            return self._actual_root / path
-        
-        # Path is absolute but not in virtual root - could be system path
-        # For security, still confine to workspace
-        return self._actual_root / path.name
+        return resolved
     
-    def translate_to_virtual(self, actual_path: str | Path) -> str:
-        """Translate an actual filesystem path to the virtual path.
-        
-        Args:
-            actual_path: Actual filesystem path.
-            
-        Returns:
-            The virtual path as seen by the agent.
-        """
-        if self._actual_root is None:
-            raise RuntimeError("Workspace not initialized. Call setup() first.")
-        
-        path = Path(actual_path)
-        
+    def is_within_workspace(self, path: str | Path) -> bool:
+        """Check if a path is within the workspace."""
+        if self._workspace_root is None:
+            return False
         try:
-            relative = path.relative_to(self._actual_root)
-            return str(Path(VIRTUAL_ROOT) / relative)
+            Path(path).resolve().relative_to(self._workspace_root.resolve())
+            return True
         except ValueError:
-            # Path is not in workspace, return as-is
-            return str(path)
+            return False
     
     def copy_back_changes(self, target_path: str | Path | None = None) -> list[str]:
         """Copy changes from isolated workspace back to source.
@@ -155,22 +152,26 @@ class WorkspaceManager:
         Returns:
             List of files that were modified.
         """
-        if self._actual_root is None or self._source_path is None:
+        if self._workspace_root is None or self._source_path is None:
             raise RuntimeError("Workspace not initialized.")
         
         target = Path(target_path) if target_path else self._source_path
         modified_files: list[str] = []
         
         # Walk through workspace and copy changed/new files
-        for root, dirs, files in os.walk(self._actual_root):
+        for root, dirs, files in os.walk(self._workspace_root):
             # Skip .git directories
             dirs[:] = [d for d in dirs if d != ".git"]
             
             root_path = Path(root)
-            relative_root = root_path.relative_to(self._actual_root)
+            relative_root = root_path.relative_to(self._workspace_root)
             target_root = target / relative_root
             
             for file in files:
+                # Skip the benchmark script - it's workspace-specific
+                if file == BENCHMARK_SCRIPT_NAME and root_path == self._workspace_root:
+                    continue
+                    
                 src_file = root_path / file
                 tgt_file = target_root / file
                 
@@ -202,45 +203,45 @@ def get_workspace() -> WorkspaceManager | None:
 
 
 def get_workspace_root() -> Path:
-    """Get the actual workspace root for file operations.
+    """Get the workspace root for file operations.
     
-    If a workspace is set, returns the actual root.
-    Otherwise returns the WORKSPACE_ROOT env var or /app.
+    If a workspace is set, returns the workspace root.
+    Otherwise returns the WORKSPACE_ROOT env var or current directory.
     """
     if _current_workspace:
-        return _current_workspace.actual_root
-    return Path(os.environ.get("WORKSPACE_ROOT", "/app"))
+        return _current_workspace.workspace_root
+    env_root = os.environ.get("WORKSPACE_ROOT")
+    if env_root:
+        return Path(env_root)
+    return Path.cwd()
 
 
-def translate_path(path: str) -> Path:
-    """Translate a path from agent perspective to actual filesystem.
+def get_benchmark_path() -> Path:
+    """Get the standard benchmark script path.
+    
+    Returns:
+        Path to optifiner_benchmark.py in the workspace root.
+    """
+    return get_workspace_root() / BENCHMARK_SCRIPT_NAME
+
+
+def resolve_path(path: str | Path) -> Path:
+    """Resolve a path within the workspace.
     
     Args:
-        path: Path as agent sees it (may be /app/... or relative).
+        path: Relative or absolute path.
         
     Returns:
-        Actual filesystem path.
+        Resolved absolute path.
     """
     if _current_workspace:
-        return _current_workspace.translate_to_actual(path)
+        return _current_workspace.resolve_path(path)
     
-    # No workspace isolation - use direct path
+    # No workspace isolation - direct path resolution
     p = Path(path)
     if not p.is_absolute():
         p = get_workspace_root() / p
-    return p
-
-
-def translate_output(output: str) -> str:
-    """Translate actual paths in output back to virtual paths.
-    
-    This is used to sanitize tool output so agents see virtual paths.
-    """
-    if not _current_workspace:
-        return output
-    
-    actual_str = str(_current_workspace.actual_root)
-    return output.replace(actual_str, VIRTUAL_ROOT)
+    return p.resolve()
 
 
 @contextmanager
@@ -249,8 +250,8 @@ def isolated_workspace(source_path: str | Path) -> Generator[WorkspaceManager, N
     
     Example:
         with isolated_workspace("/path/to/repo") as ws:
-            # Agent runs here, sees /app
-            # Actually working in /tmp/optifiner_workspaces/ws_<id>/app
+            # Agent works in /tmp/optifiner_workspaces/ws_<id>/
+            # Real paths, no emulation
             run_agent(...)
             
             # Copy changes back if successful

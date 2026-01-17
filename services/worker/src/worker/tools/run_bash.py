@@ -1,4 +1,8 @@
-"""Bash execution tool for the evolution agent."""
+"""Bash execution tool for the evolution agent.
+
+Commands are executed from the workspace root (codebase location) as
+the working directory.
+"""
 
 import os
 import subprocess
@@ -7,7 +11,7 @@ from pathlib import Path
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
-from worker.tools.path_utils import resolve_path, virtualize_path, get_workspace_root, sanitize_output
+from worker.tools.path_utils import get_workspace_root
 
 DEFAULT_TIMEOUT = 60
 MAX_OUTPUT_LENGTH = 50000
@@ -19,19 +23,10 @@ class RunBashInput(BaseModel):
     command: str = Field(
         description="The bash command to execute."
     )
-    working_dir: str | None = Field(
-        default=None,
-        description="Working directory for the command. Defaults to workspace root.",
-    )
     timeout: int = Field(
         default=DEFAULT_TIMEOUT,
         description=f"Timeout in seconds. Defaults to {DEFAULT_TIMEOUT}.",
     )
-
-
-def _resolve_path(file_path: str | None) -> Path:
-    """Resolve the file path using workspace-aware resolution."""
-    return resolve_path(file_path)
 
 
 def _truncate_output(output: str, max_length: int = MAX_OUTPUT_LENGTH) -> str:
@@ -53,31 +48,29 @@ def _truncate_output(output: str, max_length: int = MAX_OUTPUT_LENGTH) -> str:
 @tool(args_schema=RunBashInput)
 def run_bash(
     command: str,
-    working_dir: str | None = None,
     timeout: int = DEFAULT_TIMEOUT,
 ) -> str:
     """Execute a bash command.
 
-    Runs a bash command in the workspace and returns its output.
-    Commands are executed in a shell with full access to the filesystem.
+    Runs a bash command with the workspace root (codebase location) as
+    the working directory. Commands have full access to the workspace
+    filesystem.
 
     Args:
         command: The bash command to execute.
-        working_dir: Working directory. Defaults to workspace root.
         timeout: Timeout in seconds.
 
     Returns:
         Command output (stdout + stderr) and exit code.
     """
-    cwd = _resolve_path(working_dir)
-    vcwd = virtualize_path(cwd)
+    workspace_root = get_workspace_root()
 
-    if not cwd.exists():
-        return f"Error: Working directory not found: {vcwd}"
+    if not workspace_root.exists():
+        return f"Error: Workspace root not found: {workspace_root}"
 
     try:
-        # Set up environment with virtual root for any scripts that check WORKSPACE_ROOT
-        env = {**os.environ, "WORKSPACE_ROOT": str(get_workspace_root())}
+        # Set up environment with workspace root
+        env = {**os.environ, "WORKSPACE_ROOT": str(workspace_root)}
         
         result = subprocess.run(
             command,
@@ -85,7 +78,7 @@ def run_bash(
             capture_output=True,
             text=True,
             timeout=timeout,
-            cwd=str(cwd),
+            cwd=str(workspace_root),
             env=env,
         )
 
@@ -102,9 +95,6 @@ def run_bash(
 
         output = "".join(output_parts).strip()
         output = _truncate_output(output)
-        
-        # Sanitize paths in output to show virtual paths
-        output = sanitize_output(output)
 
         # Add exit code info
         if result.returncode != 0:
