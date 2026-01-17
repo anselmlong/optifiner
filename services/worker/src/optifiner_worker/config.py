@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     # LLM Configuration
     anthropic_api_key: str = ""
     google_api_key: str = ""
-    default_model: str = "claude-sonnet-4-20250514"
+    default_model: str = "gemini-3-flash"
 
     # Workspace Configuration
     workspace_path: str = "/app"  # Docker volume mount point for target codebase
