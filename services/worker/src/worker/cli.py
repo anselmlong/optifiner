@@ -448,6 +448,7 @@ Remember: Only improvements that INCREASE the score are kept!"""
 
 def run_benchmark_builder_cli(
     repository_path: Path,
+    output_path: Path,
     model_provider: str,
     model_name: str,
     max_iterations: int = 30,
@@ -455,8 +456,13 @@ def run_benchmark_builder_cli(
 ) -> tuple[bool, str, Path | None]:
     """Run the benchmark builder agent to create optifiner_benchmark.py.
     
+    The agent works in an isolated workspace copied from output_path (which is
+    already a copy of the original). Changes are written back to output_path,
+    never to the original repository.
+    
     Args:
-        repository_path: Path to the target repository.
+        repository_path: Path to the original repository (for reference only).
+        output_path: Path to the _optifinered output directory where changes go.
         model_provider: LLM provider.
         model_name: Model name.
         max_iterations: Maximum iterations for the agent.
@@ -474,11 +480,11 @@ def run_benchmark_builder_cli(
     console.print(f"[dim]  2. Modify files to expose metrics (FPS, timing, etc.) if needed[/dim]")
     console.print(f"[dim]  3. Create {BENCHMARK_SCRIPT_NAME} benchmark script[/dim]")
     console.print(f"[dim]  4. Test and iterate until it works[/dim]")
-    console.print(f"[dim]All changes become the baseline for evolution agents.[/dim]")
+    console.print(f"[dim]All changes will be saved to: {output_path}[/dim]")
     
-    # Create workspace for benchmark builder
+    # Create workspace for benchmark builder (from the output_path, not original)
     workspace = WorkspaceManager(workspace_id="benchmark-builder")
-    workspace.setup(repository_path)
+    workspace.setup(output_path)
     
     # Set up observer
     observer = AgentObserver(
@@ -503,10 +509,10 @@ def run_benchmark_builder_cli(
         )
         
         if success:
-            # Copy ALL changes back to the original repo (not just the benchmark script)
+            # Copy ALL changes back to the output directory (not the original repo!)
             # The benchmark builder may have modified the codebase to expose metrics
             # These modifications become the baseline for evolution agents
-            console.print(f"[dim]Copying all modifications back to repository...[/dim]")
+            console.print(f"[dim]Copying all modifications to output directory...[/dim]")
             
             modified_files = []
             for item in workspace.actual_root.rglob("*"):
@@ -517,7 +523,7 @@ def run_benchmark_builder_cli(
                     if ".git" in rel_path.parts:
                         continue
                     
-                    dst_path = repository_path / rel_path
+                    dst_path = output_path / rel_path
                     src_path = item
                     
                     # Check if file is new or modified
@@ -541,7 +547,7 @@ def run_benchmark_builder_cli(
                 if len(modified_files) > 10:
                     console.print(f"[dim]  ... and {len(modified_files) - 10} more[/dim]")
             
-            benchmark_path = repository_path / BENCHMARK_SCRIPT_NAME
+            benchmark_path = output_path / BENCHMARK_SCRIPT_NAME
             if benchmark_path.exists():
                 console.print(f"[green]✓ Benchmark script ready at {benchmark_path}[/green]")
                 return True, message, benchmark_path
@@ -703,7 +709,8 @@ def main(
 
     console.print(Panel.fit(
         f"[bold cyan]Self-Evolving Code Framework[/bold cyan]\n\n"
-        f"Repository: [green]{repository_path}[/green]\n"
+        f"Original: [dim]{repository_path}[/dim] [yellow](unchanged)[/yellow]\n"
+        f"Output: [green]{working_path}[/green]\n"
         f"Evaluator: [green]{evaluator_path}[/green]\n"
         f"Agents: [yellow]{agents}[/yellow] (parallel: {parallel})\n"
         f"Generations: [yellow]{generations}[/yellow]\n"
@@ -714,9 +721,9 @@ def main(
         title="Evolution Setup"
     ))
 
-    # Get initial baseline score with full data
+    # Get initial baseline score with full data (from the working copy)
     console.print("\n[bold]Getting baseline score...[/bold]")
-    baseline_result = run_evaluator(str(evaluator_path), str(repository_path), return_full_data=True)
+    baseline_result = run_evaluator(str(evaluator_path), str(working_path), return_full_data=True)
     baseline_score, baseline_error, baseline_data = baseline_result
 
     if baseline_error:
@@ -742,8 +749,8 @@ def main(
         best_score=baseline_score,
     )
 
-    # Create initial git commit
-    commit_hash = git_commit(str(repository_path), f"Initial state - Score: {baseline_score}")
+    # Create initial git commit in the working copy
+    commit_hash = git_commit(str(working_path), f"Initial state - Score: {baseline_score}")
     if commit_hash:
         console.print(f"[dim]Created initial commit: {commit_hash}[/dim]")
 
@@ -788,7 +795,7 @@ def main(
                     progress.update(task_id, description=f"[cyan]Agent {i+1}/{agents} ({agent_type})...")
 
                     result, workspace = run_single_agent_isolated(
-                        source_workspace=str(repository_path),
+                        source_workspace=str(working_path),
                         evaluator_path=str(evaluator_path),
                         agent_type=agent_type,
                         agent_id=agent_id,
@@ -808,11 +815,11 @@ def main(
 
                     # Check if improved
                     if result.success and result.final_score > state.best_score and workspace:
-                        # Copy improved workspace back to original
-                        git_reset(str(repository_path))
+                        # Copy improved workspace back to working copy (not original!)
+                        git_reset(str(working_path))
                         
-                        # Remove original files and copy improved version
-                        for item in repository_path.iterdir():
+                        # Remove files and copy improved version
+                        for item in working_path.iterdir():
                             if item.name != ".git":
                                 if item.is_dir():
                                     shutil.rmtree(item)
@@ -822,9 +829,9 @@ def main(
                         for item in workspace.actual_root.iterdir():
                             if item.name != ".git":
                                 if item.is_dir():
-                                    shutil.copytree(item, repository_path / item.name)
+                                    shutil.copytree(item, working_path / item.name)
                                 else:
-                                    shutil.copy2(item, repository_path / item.name)
+                                    shutil.copy2(item, working_path / item.name)
 
                         state.best_score = result.final_score
                         state.total_improvements += 1
@@ -834,7 +841,7 @@ def main(
                             f"Gen {state.generation} | Agent {agent_id}: +{result.improvement:.2f} "
                             f"(Score: {result.baseline_score:.2f} → {result.final_score:.2f})"
                         )
-                        commit_hash = git_commit(str(repository_path), commit_msg)
+                        commit_hash = git_commit(str(working_path), commit_msg)
 
                         console.print(f"\n[green]✓ Agent {agent_id} improved! "
                                       f"Score: {result.baseline_score:.2f} → {result.final_score:.2f} "
@@ -843,7 +850,7 @@ def main(
                             console.print(f"[dim]  Committed: {commit_hash}[/dim]")
 
                         # Update baseline data
-                        new_result = run_evaluator(str(evaluator_path), str(repository_path), return_full_data=True)
+                        new_result = run_evaluator(str(evaluator_path), str(working_path), return_full_data=True)
                         if new_result[0] is not None:
                             current_baseline_data = new_result[2]
 
@@ -866,7 +873,7 @@ def main(
                     agent_id = f"gen{state.generation}-{agent_type}-{i+1}"
                     
                     return run_single_agent_isolated(
-                        source_workspace=str(repository_path),
+                        source_workspace=str(working_path),
                         evaluator_path=str(evaluator_path),
                         agent_type=agent_type,
                         agent_id=agent_id,
@@ -902,9 +909,9 @@ def main(
                             state.total_attempts += 1
 
                             if result.success and result.final_score > state.best_score and workspace:
-                                git_reset(str(repository_path))
+                                git_reset(str(working_path))
                                 
-                                for item in repository_path.iterdir():
+                                for item in working_path.iterdir():
                                     if item.name != ".git":
                                         if item.is_dir():
                                             shutil.rmtree(item)
@@ -914,20 +921,20 @@ def main(
                                 for item in workspace.actual_root.iterdir():
                                     if item.name != ".git":
                                         if item.is_dir():
-                                            shutil.copytree(item, repository_path / item.name)
+                                            shutil.copytree(item, working_path / item.name)
                                         else:
-                                            shutil.copy2(item, repository_path / item.name)
+                                            shutil.copy2(item, working_path / item.name)
 
                                 state.best_score = result.final_score
                                 state.total_improvements += 1
                                 generation_improved = True
 
                                 commit_msg = f"Gen {state.generation} | Agent {result.agent_id}: +{result.improvement:.2f}"
-                                git_commit(str(repository_path), commit_msg)
+                                git_commit(str(working_path), commit_msg)
 
                                 console.print(f"\n[green]✓ {result.agent_id} improved! +{result.improvement:.2f}[/green]")
 
-                                new_result = run_evaluator(str(evaluator_path), str(repository_path), return_full_data=True)
+                                new_result = run_evaluator(str(evaluator_path), str(working_path), return_full_data=True)
                                 if new_result[0] is not None:
                                     current_baseline_data = new_result[2]
 
@@ -978,7 +985,9 @@ def main(
         f"Final score: [green]{state.best_score}[/green]\n"
         f"Total improvement: [cyan]+{state.best_score - state.baseline_score:.2f}[/cyan] "
         f"([cyan]+{improvement_pct:.1f}%[/cyan])\n\n"
-        f"Successful improvements: {state.total_improvements}/{state.total_attempts}",
+        f"Successful improvements: {state.total_improvements}/{state.total_attempts}\n\n"
+        f"[bold]Output location:[/bold] [green]{working_path}[/green]\n"
+        f"[dim]Original repository was not modified.[/dim]",
         title="Results"
     ))
 
@@ -986,6 +995,7 @@ def main(
     if output:
         results_data = {
             "repository": str(repository_path),
+            "output_directory": str(working_path),
             "evaluator": str(evaluator_path),
             "baseline_score": state.baseline_score,
             "final_score": state.best_score,
