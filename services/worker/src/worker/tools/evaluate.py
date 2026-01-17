@@ -2,7 +2,9 @@
 
 import json
 import os
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from langchain_core.tools import tool
@@ -47,6 +49,20 @@ def _resolve_path(file_path: str | None) -> Path:
     return path
 
 
+def _get_python_executable() -> str:
+    """Get the Python executable to use for running scripts."""
+    # First try sys.executable (the current Python interpreter)
+    if sys.executable:
+        return sys.executable
+    # Fallback to python3, then python
+    if shutil.which("python3"):
+        return "python3"
+    if shutil.which("python"):
+        return "python"
+    # Last resort
+    return "python3"
+
+
 @tool(args_schema=EvaluateInput)
 def evaluate(message: str = "") -> str:
     """Evaluate the current codebase and return a score.
@@ -82,7 +98,7 @@ def evaluate(message: str = "") -> str:
     try:
         # Determine how to run the evaluator based on extension
         if evaluator.suffix == ".py":
-            cmd = ["python", str(evaluator)]
+            cmd = [_get_python_executable(), str(evaluator)]
         elif evaluator.suffix == ".sh":
             cmd = ["bash", str(evaluator)]
         elif evaluator.suffix in (".js", ".mjs"):

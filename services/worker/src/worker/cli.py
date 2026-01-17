@@ -56,6 +56,20 @@ class EvolutionState:
     history: list[dict] = field(default_factory=list)
 
 
+def _get_python_executable() -> str:
+    """Get the Python executable to use for running scripts."""
+    # First try sys.executable (the current Python interpreter)
+    if sys.executable:
+        return sys.executable
+    # Fallback to python3, then python
+    if shutil.which("python3"):
+        return "python3"
+    if shutil.which("python"):
+        return "python"
+    # Last resort
+    return "python3"
+
+
 def run_evaluator(evaluator_path: str, workspace: str, timeout: int = 120) -> tuple[float | None, str | None]:
     """Run the evaluator script and return (score, error).
 
@@ -75,7 +89,7 @@ def run_evaluator(evaluator_path: str, workspace: str, timeout: int = 120) -> tu
 
     # Determine how to run the evaluator
     if evaluator.suffix == ".py":
-        cmd = ["python", str(evaluator)]
+        cmd = [_get_python_executable(), str(evaluator)]
     elif evaluator.suffix == ".sh":
         cmd = ["bash", str(evaluator)]
     elif evaluator.suffix in (".js", ".mjs"):
