@@ -23,6 +23,8 @@ class ModelConfig(BaseModel):
     model_name: str
     temperature: float = 0.0
     max_tokens: int = 4096
+    timeout: float = 60.0  # seconds for model call timeout
+    max_retries: int = 3  # number of retries on timeout/transient errors
 
     @classmethod
     def sonnet(cls) -> "ModelConfig":
@@ -32,6 +34,8 @@ class ModelConfig(BaseModel):
             model_name="claude-sonnet-4-20250514",
             temperature=0.0,
             max_tokens=8192,
+            timeout=60.0,
+            max_retries=3,
         )
 
     @classmethod
@@ -42,6 +46,8 @@ class ModelConfig(BaseModel):
             model_name="gemini-3-flash-preview",
             temperature=0.0,
             max_tokens=8192,
+            timeout=20.0,  # Shorter timeout for faster model
+            max_retries=3,
         )
 
     @classmethod
@@ -52,6 +58,8 @@ class ModelConfig(BaseModel):
             model_name="gpt-4o",
             temperature=0.0,
             max_tokens=4096,
+            timeout=60.0,
+            max_retries=3,
         )
 
 
@@ -94,12 +102,19 @@ class WorkerConfig(BaseModel):
         # Workspace root comes from WORKSPACE_ROOT env or will be set dynamically
         workspace_root = os.getenv("WORKSPACE_ROOT", "")
 
+        # Default timeout based on model
+        default_timeout = 20.0 if "gemini" in model_name.lower() and "flash" in model_name.lower() else 60.0
+        timeout = float(os.getenv("MODEL_TIMEOUT", str(default_timeout)))
+        max_retries = int(os.getenv("MODEL_MAX_RETRIES", "3"))
+
         return cls(
             model=ModelConfig(
                 provider=ModelProvider(provider),
                 model_name=model_name,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                timeout=timeout,
+                max_retries=max_retries,
             ),
             agent_type=AgentType(os.getenv("AGENT_TYPE", "general")),
             max_iterations=int(os.getenv("MAX_ITERATIONS", "10")),
@@ -110,7 +125,11 @@ class WorkerConfig(BaseModel):
 
 
 def get_llm(config: ModelConfig):
-    """Create an LLM instance based on configuration."""
+    """Create an LLM instance based on configuration.
+    
+    Timeout and retries are configured per-model. The timeout applies to
+    the model API call only (not tool execution).
+    """
     if config.provider == ModelProvider.ANTHROPIC:
         from langchain_anthropic import ChatAnthropic
 
@@ -126,6 +145,8 @@ def get_llm(config: ModelConfig):
             api_key=api_key,
             temperature=config.temperature,
             max_tokens=config.max_tokens,
+            timeout=config.timeout,
+            max_retries=config.max_retries,
         )
     elif config.provider == ModelProvider.GOOGLE:
         from langchain_google_genai import ChatGoogleGenerativeAI
@@ -142,6 +163,8 @@ def get_llm(config: ModelConfig):
             google_api_key=api_key,
             temperature=config.temperature,
             max_output_tokens=config.max_tokens,
+            timeout=config.timeout,
+            max_retries=config.max_retries,
         )
     elif config.provider == ModelProvider.OPENAI:
         from langchain_openai import ChatOpenAI
@@ -158,6 +181,8 @@ def get_llm(config: ModelConfig):
             api_key=api_key,
             temperature=config.temperature,
             max_tokens=config.max_tokens,
+            timeout=config.timeout,
+            max_retries=config.max_retries,
         )
     else:
         raise ValueError(f"Unsupported provider: {config.provider}")
