@@ -101,7 +101,7 @@ def _apply_edit(content: str, edit: EditOperation, edit_index: int) -> tuple[str
 
 
 @tool(args_schema=MultiEditInput)
-def multi_edit(file_path: str, edits: list[dict[str, Any]]) -> str:
+def multi_edit(file_path: str, edits: list[EditOperation | dict[str, Any]]) -> str:
     """Perform multiple edits to a single file atomically.
 
     All edits are applied in sequence. If any edit fails, none are applied.
@@ -120,7 +120,8 @@ def multi_edit(file_path: str, edits: list[dict[str, Any]]) -> str:
 
     if not path.exists():
         # Allow creating new file if first edit has empty old_string
-        first_old = edits[0].get("old_string", "") if isinstance(edits[0], dict) else edits[0].old_string
+        first_edit = edits[0]
+        first_old = first_edit.old_string if isinstance(first_edit, EditOperation) else first_edit.get("old_string", "")
         if edits and first_old == "":
             try:
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -144,28 +145,35 @@ def multi_edit(file_path: str, edits: list[dict[str, Any]]) -> str:
     if not edits:
         return "Error: No edits provided"
 
-    # Convert dicts to EditOperation objects
+    # Convert dicts to EditOperation objects (edits may already be EditOperation if parsed by Pydantic)
     logger.debug(f"multi_edit called on {vpath} with {len(edits)} edit(s)")
     edit_ops = []
-    for i, edit_dict in enumerate(edits):
+    for i, edit_item in enumerate(edits):
         try:
-            if not isinstance(edit_dict, dict):
-                err = f"Error in edit {i + 1}: expected dict, got {type(edit_dict).__name__}"
-                logger.error(f"multi_edit {vpath}: {err}")
-                return err
-            # Check for required fields
-            if 'old_string' not in edit_dict:
-                err = f"Error in edit {i + 1}: missing 'old_string' field. Got keys: {list(edit_dict.keys())}"
-                logger.error(f"multi_edit {vpath}: {err}")
-                return err
-            if 'new_string' not in edit_dict:
-                err = f"Error in edit {i + 1}: missing 'new_string' field. Got keys: {list(edit_dict.keys())}"
+            # Handle both EditOperation objects (from Pydantic schema) and dicts (from direct calls)
+            if isinstance(edit_item, EditOperation):
+                edit_op = edit_item
+                old_str = edit_op.old_string
+                new_str = edit_op.new_string
+            elif isinstance(edit_item, dict):
+                # Check for required fields
+                if 'old_string' not in edit_item:
+                    err = f"Error in edit {i + 1}: missing 'old_string' field. Got keys: {list(edit_item.keys())}"
+                    logger.error(f"multi_edit {vpath}: {err}")
+                    return err
+                if 'new_string' not in edit_item:
+                    err = f"Error in edit {i + 1}: missing 'new_string' field. Got keys: {list(edit_item.keys())}"
+                    logger.error(f"multi_edit {vpath}: {err}")
+                    return err
+                old_str = edit_item.get('old_string', '')
+                new_str = edit_item.get('new_string', '')
+                edit_op = EditOperation(**edit_item)
+            else:
+                err = f"Error in edit {i + 1}: expected EditOperation or dict, got {type(edit_item).__name__}"
                 logger.error(f"multi_edit {vpath}: {err}")
                 return err
             
-            # Log the full edit for debugging (before parsing)
-            old_str = edit_dict.get('old_string', '')
-            new_str = edit_dict.get('new_string', '')
+            # Log the full edit for debugging
             logger.debug(
                 f"Edit {i + 1} - old_string ({len(old_str)} chars, {old_str.count(chr(10))+1} lines):\n"
                 f"---OLD_STRING_START---\n{old_str}\n---OLD_STRING_END---"
@@ -175,18 +183,21 @@ def multi_edit(file_path: str, edits: list[dict[str, Any]]) -> str:
                 f"---NEW_STRING_START---\n{new_str}\n---NEW_STRING_END---"
             )
             
-            edit_ops.append(EditOperation(**edit_dict))
+            edit_ops.append(edit_op)
         except Exception as e:
             # Log full details before truncating for return message
             logger.error(
                 f"multi_edit {vpath}: Error parsing edit {i + 1}: {e}\n"
-                f"Full edit_dict:\n{edit_dict}"
+                f"Full edit_item:\n{edit_item}"
             )
-            # Truncate the edit_dict preview for return message to avoid hiding the actual error
-            preview_keys = list(edit_dict.keys())
-            old_preview = str(edit_dict.get('old_string', ''))[:50] + '...' if len(str(edit_dict.get('old_string', ''))) > 50 else str(edit_dict.get('old_string', ''))
-            new_preview = str(edit_dict.get('new_string', ''))[:50] + '...' if len(str(edit_dict.get('new_string', ''))) > 50 else str(edit_dict.get('new_string', ''))
-            return f"Error in edit {i + 1} specification: {e}. Keys: {preview_keys}, old_string preview: {repr(old_preview)}, new_string preview: {repr(new_preview)}"
+            # Truncate the preview for return message to avoid hiding the actual error
+            if isinstance(edit_item, dict):
+                preview_keys = list(edit_item.keys())
+                old_preview = str(edit_item.get('old_string', ''))[:50] + '...' if len(str(edit_item.get('old_string', ''))) > 50 else str(edit_item.get('old_string', ''))
+                new_preview = str(edit_item.get('new_string', ''))[:50] + '...' if len(str(edit_item.get('new_string', ''))) > 50 else str(edit_item.get('new_string', ''))
+                return f"Error in edit {i + 1} specification: {e}. Keys: {preview_keys}, old_string preview: {repr(old_preview)}, new_string preview: {repr(new_preview)}"
+            else:
+                return f"Error in edit {i + 1} specification: {e}"
 
     # Validate all edits first (dry run)
     test_content = content
