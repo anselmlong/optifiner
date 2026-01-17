@@ -97,8 +97,9 @@ def evaluate(message: str = "") -> str:
 
     try:
         # Determine how to run the evaluator based on extension
+        # Always pass --quiet for Python evaluators to get JSON output
         if evaluator.suffix == ".py":
-            cmd = [_get_python_executable(), str(evaluator)]
+            cmd = [_get_python_executable(), str(evaluator), "--quiet"]
         elif evaluator.suffix == ".sh":
             cmd = ["bash", str(evaluator)]
         elif evaluator.suffix in (".js", ".mjs"):
