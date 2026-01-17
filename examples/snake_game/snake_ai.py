@@ -6,7 +6,6 @@ The AI makes random moves most of the time, leading to low scores.
 
 import random
 from typing import Literal
-from collections import deque
 
 Move = Literal["up", "down", "left", "right"]
 
@@ -110,18 +109,19 @@ class SnakeAI:
     def get_move(self, game: SnakeGame) -> Move:
         """Decide the next move for the snake.
 
-        Advanced implementation:
-        1. Find shortest path to food.
-        2. If path exists, simulate it and check if tail is reachable.
-        3. If safe, follow path to food.
-        4. Otherwise, follow the tail.
-        5. If still no move, pick the move with most free space.
+        Improved implementation: Uses BFS to find the shortest path to food,
+        falling back to a greedy safe move if no path exists.
         """
         head = game.get_head()
         food = game.food
         grid_size = game.grid_size
-        snake = game.snake
-        snake_set = set(snake)
+        snake_set = set(game.snake)
+
+        # BFS to find shortest path to food
+        queue = [(head, [])]
+        visited = {head}
+        
+        opposites = {"up": "down", "down": "up", "left": "right", "right": "left"}
         
         move_offsets = {
             "up": (-1, 0),
@@ -129,93 +129,51 @@ class SnakeAI:
             "left": (0, -1),
             "right": (0, 1)
         }
-        opposites = {"up": "down", "down": "up", "left": "right", "right": "left"}
 
-        def get_path(start, target, current_snake):
-            current_snake_set = set(current_snake)
-            queue = [(start, [])]
-            visited = {start}
-            while queue:
-                (curr_x, curr_y), path = queue.pop(0)
-                if (curr_x, curr_y) == target:
-                    return path
-                for move, (dx, dy) in move_offsets.items():
-                    next_pos = (curr_x + dx, curr_y + dy)
-                    if (0 <= next_pos[0] < grid_size and
-                        0 <= next_pos[1] < grid_size and
-                        next_pos not in current_snake_set and
-                        next_pos not in visited):
-                        visited.add(next_pos)
-                        queue.append((next_pos, path + [move]))
-            return None
-
-        def is_path_safe(path_to_food):
-            # Simulate following the path to food
-            temp_snake = list(snake)
-            for move in path_to_food:
-                dx, dy = move_offsets[move]
-                new_head = (temp_snake[0][0] + dx, temp_snake[0][1] + dy)
-                temp_snake.insert(0, new_head)
-                if new_head == food:
-                    # Snake grows, tail stays
-                    pass
-                else:
-                    temp_snake.pop()
+        while queue:
+            (curr_x, curr_y), path = queue.pop(0)
             
-            # After reaching food, can we reach the tail?
-            # The tail is temp_snake[-1]
-            # We need to be able to reach it to not get trapped.
-            # Use a simplified snake set for the check
-            return get_path(temp_snake[0], temp_snake[-1], temp_snake[:-1]) is not None
+            if (curr_x, curr_y) == food:
+                if path:
+                    return path[0]
+            
+            for move, (dx, dy) in move_offsets.items():
+                # Cannot reverse direction on the first move
+                if not path and move == opposites.get(game.direction):
+                    continue
+                
+                next_pos = (curr_x + dx, curr_y + dy)
+                
+                if (0 <= next_pos[0] < grid_size and
+                    0 <= next_pos[1] < grid_size and
+                    next_pos not in snake_set and
+                    next_pos not in visited):
+                    visited.add(next_pos)
+                    queue.append((next_pos, path + [move]))
 
-        # 1. Try to find shortest path to food
-        path_to_food = get_path(head, food, snake)
-        if path_to_food:
-            if is_path_safe(path_to_food):
-                return path_to_food[0]
-
-        # 2. If no safe path to food, try to follow tail
-        # To follow tail, we want to reach the position where the tail currently is.
-        # As we move, the tail will move away, so this is generally safe.
-        path_to_tail = get_path(head, snake[-1], snake[:-1])
-        if path_to_tail:
-            return path_to_tail[0]
-
-        # 3. Fallback: move to the neighbor that has the most free space
-        best_move = None
-        max_free_space = -1
-        
+        # Fallback: Greedy safe move
+        head_x, head_y = head
+        safe_moves = []
         for move, (dx, dy) in move_offsets.items():
             if move == opposites.get(game.direction):
                 continue
-            next_pos = (head[0] + dx, head[1] + dy)
+            next_pos = (head_x + dx, head_y + dy)
             if (0 <= next_pos[0] < grid_size and
                 0 <= next_pos[1] < grid_size and
                 next_pos not in snake_set):
-                
-                # Count free space using BFS
-                free_space = 0
-                q = [next_pos]
-                v = {next_pos} | snake_set
-                while q:
-                    curr = q.pop(0)
-                    free_space += 1
-                    for _, (mdx, mdy) in move_offsets.items():
-                        np = (curr[0] + mdx, curr[1] + mdy)
-                        if (0 <= np[0] < grid_size and
-                            0 <= np[1] < grid_size and
-                            np not in v):
-                            v.add(np)
-                            q.append(np)
-                
-                if free_space > max_free_space:
-                    max_free_space = free_space
-                    best_move = move
-        
-        if best_move:
-            return best_move
-            
-        return game.direction
+                safe_moves.append((move, next_pos))
+
+        if not safe_moves:
+            return game.direction
+
+        best_move = safe_moves[0][0]
+        min_dist = float('inf')
+        for move, (nx, ny) in safe_moves:
+            dist = abs(nx - food[0]) + abs(ny - food[1])
+            if dist < min_dist:
+                min_dist = dist
+                best_move = move
+        return best_move
 
     def play_game(self, grid_size: int = GRID_SIZE) -> int:
         """Play a complete game and return the final score."""

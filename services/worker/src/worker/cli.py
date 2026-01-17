@@ -27,6 +27,8 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskPr
 from rich.table import Table
 from rich.text import Text
 
+from worker.observability import AgentObserver, create_observer, set_observer
+
 # Set up console for rich output
 console = Console()
 
@@ -218,6 +220,8 @@ def run_single_agent(
     max_iterations: int,
     model_provider: str,
     model_name: str,
+    verbosity: int = 1,
+    log_dir: str | None = None,
 ) -> AgentResult:
     """Run a single evolution agent.
 
@@ -231,6 +235,8 @@ def run_single_agent(
         max_iterations: Maximum iterations.
         model_provider: LLM provider.
         model_name: Model name.
+        verbosity: Observability verbosity (0=quiet, 1=normal, 2=verbose, 3=debug).
+        log_dir: Optional directory to write agent logs.
 
     Returns:
         AgentResult with the outcome.
@@ -247,6 +253,19 @@ def run_single_agent(
     # Configure evaluator
     set_evaluator(evaluator_path)
 
+    # Set up observer for this agent
+    log_file = None
+    if log_dir:
+        Path(log_dir).mkdir(parents=True, exist_ok=True)
+        log_file = str(Path(log_dir) / f"{agent_id}.jsonl")
+
+    observer = AgentObserver(
+        verbosity=verbosity,
+        console=console,
+        log_file=log_file,
+    )
+    set_observer(observer)
+
     # Build config
     try:
         config = WorkerConfig(
@@ -261,6 +280,7 @@ def run_single_agent(
             workspace_root=workspace,
         )
     except Exception as e:
+        observer.close()
         return AgentResult(
             agent_id=agent_id,
             agent_type=agent_type,
@@ -294,6 +314,7 @@ Remember: Only improvements that INCREASE the score are kept!"""
             agent_id=agent_id,
             generation=0,
             baseline_score=baseline_score,
+            observer=observer,
         )
 
         # Try to extract the final score from messages
@@ -303,6 +324,7 @@ Remember: Only improvements that INCREASE the score are kept!"""
         if final_score is None:
             final_score, eval_error = run_evaluator(evaluator_path, workspace)
             if eval_error:
+                observer.close()
                 return AgentResult(
                     agent_id=agent_id,
                     agent_type=agent_type,
@@ -319,6 +341,12 @@ Remember: Only improvements that INCREASE the score are kept!"""
         improvement = final_score - baseline_score
         success = improvement > 0
 
+        # Print execution summary if verbose
+        if verbosity >= 2:
+            observer.print_summary()
+
+        observer.close()
+
         return AgentResult(
             agent_id=agent_id,
             agent_type=agent_type,
@@ -331,6 +359,8 @@ Remember: Only improvements that INCREASE the score are kept!"""
         )
 
     except Exception as e:
+        observer.on_error(str(e))
+        observer.close()
         return AgentResult(
             agent_id=agent_id,
             agent_type=agent_type,
@@ -359,13 +389,10 @@ Remember: Only improvements that INCREASE the score are kept!"""
               help="Model name (default: gemini-3-flash-preview)")
 @click.option("--output", "-o", type=click.Path(), help="Output file for results (JSON)")
 @click.option("--verbose", "-v", count=True, default=1,
-              help="Verbosity level: -v (normal), -vv (verbose), -vvv (debug)")
-@click.option("--quiet", "-q", is_flag=True, help="Quiet mode - minimal output")
-@click.option("--show-prompts", is_flag=True, help="Show full system prompts sent to agents")
-@click.option("--show-reasoning/--no-reasoning", default=True, 
-              help="Show agent reasoning (default: on)")
-@click.option("--show-tools/--no-tools", default=True,
-              help="Show tool calls (default: on)")
+              help="Increase observability verbosity (-v=normal, -vv=verbose, -vvv=debug, omit for quiet)")
+@click.option("--quiet", "-q", is_flag=True, help="Quiet mode - minimal output (overrides -v)")
+@click.option("--log-dir", "-l", type=click.Path(),
+              help="Directory to save agent execution logs (JSONL format)")
 def main(
     repository: str,
     evaluator: str,
@@ -379,9 +406,7 @@ def main(
     output: str | None,
     verbose: int,
     quiet: bool,
-    show_prompts: bool,
-    show_reasoning: bool,
-    show_tools: bool,
+    log_dir: str | None,
 ):
     """Run evolution agents on a repository to improve its benchmark score.
 
@@ -394,33 +419,22 @@ def main(
         {"score": 60.5, "metrics": {"fps": 60.5}}
     or just:
         60.5
+
+    VERBOSITY LEVELS:
+        (no flags): quiet mode - only show progress and results
+        -v: normal - show iteration progress, tool calls (compact)
+        -vv: verbose - show agent reasoning, full tool calls/results
+        -vvv: debug - show everything including full system prompts
     """
-    from worker.callbacks import create_observer
-    
-    # Set up observability
-    verbosity = 0 if quiet else verbose
-    observer = create_observer(
-        verbose=verbosity,
-        show_prompts=show_prompts,
-        show_reasoning=show_reasoning,
-        show_tool_calls=show_tools,
-        show_tool_results=show_tools,  # Show tool results when tools are shown
-        console=console,
-    )
-    
     repository_path = Path(repository).resolve()
     evaluator_path = Path(evaluator).resolve()
 
-    # Build observability settings string
-    obs_settings = []
-    if show_reasoning:
-        obs_settings.append("reasoning")
-    if show_tools:
-        obs_settings.append("tools")
-    if show_prompts:
-        obs_settings.append("prompts")
-    obs_str = ", ".join(obs_settings) if obs_settings else "minimal"
-    
+    # Determine verbosity level
+    verbosity = 0 if quiet else verbose
+
+    # Resolve log directory
+    log_directory = str(Path(log_dir).resolve()) if log_dir else None
+
     console.print(Panel.fit(
         f"[bold cyan]Self-Evolving Code Framework[/bold cyan]\n\n"
         f"Repository: [green]{repository_path}[/green]\n"
@@ -428,7 +442,8 @@ def main(
         f"Agents: [yellow]{agents}[/yellow] (parallel: {parallel})\n"
         f"Generations: [yellow]{generations}[/yellow]\n"
         f"Model: [blue]{model_provider}/{model_name}[/blue]\n"
-        f"Observability: [magenta]{obs_str}[/magenta] (verbosity: {verbosity})",
+        f"Verbosity: [magenta]{['quiet', 'normal', 'verbose', 'debug'][min(verbosity, 3)]}[/magenta]"
+        + (f"\nLog dir: [dim]{log_directory}[/dim]" if log_directory else ""),
         title="Evolution Setup"
     ))
 
@@ -495,6 +510,8 @@ def main(
                         max_iterations=max_iterations,
                         model_provider=model_provider,
                         model_name=model_name,
+                        verbosity=verbosity,
+                        log_dir=log_directory,
                     )
 
                     generation_results.append(result)
@@ -549,6 +566,8 @@ def main(
                         max_iterations=max_iterations,
                         model_provider=model_provider,
                         model_name=model_name,
+                        verbosity=verbosity,
+                        log_dir=log_directory,
                     ), str(temp_ws)
 
                 try:
