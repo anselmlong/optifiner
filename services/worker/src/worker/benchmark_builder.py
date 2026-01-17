@@ -117,6 +117,29 @@ while running:
 
 Then your benchmark script can import and call `get_fps()`.
 
+### For Browser/Web Applications:
+- **Benchmarks must be Python scripts** - even for web apps, write the benchmark in Python
+- **Use Playwright with Python** for testing browser-based apps (`pip install playwright && playwright install chromium` has already been run) (FORBIDDEN TO USE PLAYWRIGHT WITH NPM/NPX, only pip with python)
+- **Headless mode**: Run browsers headlessly for faster benchmarking
+- **Page load timing**: Measure DOMContentLoaded, load events, LCP, FCP
+- **Network optimization**: Analyze and reduce request waterfalls, bundle sizes
+- **Render performance**: Use Performance API to measure paint times, long tasks
+- **Example setup**:
+```python
+from playwright.sync_api import sync_playwright
+
+port = ... # [host static files on random port]
+
+with sync_playwright() as p:
+    browser = p.chromium.launch()
+    page = browser.new_page()
+    page.goto(f"http://localhost:{{port}}")
+    # Start application (for games, press start, etc.)
+    # Measure performance, interact with UI, etc.
+```
+CRITICAL: USING PYTHON AND NOT NODE/NPM WHATERVER. USE PYTHON FOR WEB STUFF, EVEN IF THE CODE IS IN JS
+If you run npm, or check for puppeteer instead of playwright, you will be fired.
+
 ## REQUIRED Output Format
 Your benchmark script MUST output JSON to stdout with this EXACT format:
 
@@ -172,7 +195,6 @@ This is why your metric exposure code MUST work correctly - it's how we measure 
 ### Dependencies
 Use run_bash to install any needed dependencies:
 - `pip install ...` for Python packages
-- `npm install ...` for Node.js packages
 - etc.
 
 ### Script Requirements
