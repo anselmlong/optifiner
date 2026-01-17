@@ -3,7 +3,7 @@
 import re
 from typing import Any, Literal
 
-from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, ToolMessage
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 
@@ -11,6 +11,7 @@ from worker.config import AgentType, ModelConfig, WorkerConfig, get_llm
 from worker.prompts import get_system_prompt
 from worker.state import AgentState
 from worker.tools import get_all_tools
+from worker.callbacks import get_observer
 
 
 def create_evolution_agent(
@@ -47,6 +48,15 @@ def create_evolution_agent(
     # Define the agent node
     def agent_node(state: AgentState) -> dict[str, Any]:
         """The main agent reasoning node."""
+        observer = get_observer()
+        
+        # Log iteration start
+        observer.log_iteration_start(
+            state.agent_id, 
+            state.iteration + 1, 
+            state.max_iterations
+        )
+        
         # Build system message with context
         system_prompt = get_system_prompt(
             agent_type=config.agent_type,
@@ -58,9 +68,20 @@ def create_evolution_agent(
 
         # Prepare messages
         messages = [SystemMessage(content=system_prompt)] + list(state.messages)
+        
+        # Log the prompt
+        observer.log_prompt(
+            state.agent_id,
+            state.iteration + 1,
+            system_prompt,
+            list(state.messages)[-5:],  # Last 5 messages for context
+        )
 
         # Invoke the model
         response = llm_with_tools.invoke(messages)
+        
+        # Log the reasoning response
+        observer.log_reasoning(state.agent_id, state.iteration + 1, response)
 
         # Update iteration count
         return {
@@ -68,8 +89,36 @@ def create_evolution_agent(
             "iteration": state.iteration + 1,
         }
 
-    # Define the tool execution node
-    tool_node = ToolNode(tools)
+    # Define the tool execution node with observability
+    base_tool_node = ToolNode(tools)
+    
+    def tool_node_with_logging(state: AgentState) -> dict[str, Any]:
+        """Tool node wrapper that logs tool execution."""
+        observer = get_observer()
+        
+        # Get the last message to see what tools are being called
+        if state.messages:
+            last_msg = state.messages[-1]
+            if hasattr(last_msg, 'tool_calls') and last_msg.tool_calls:
+                for tc in last_msg.tool_calls:
+                    tool_name = tc.get('name', 'unknown') if isinstance(tc, dict) else getattr(tc, 'name', 'unknown')
+                    args = tc.get('args', {}) if isinstance(tc, dict) else getattr(tc, 'args', {})
+                    observer.log_tool_call(state.agent_id, state.iteration, tool_name, args)
+        
+        # Execute tools
+        result = base_tool_node.invoke(state)
+        
+        # Log tool results
+        if 'messages' in result:
+            for msg in result['messages']:
+                if isinstance(msg, ToolMessage):
+                    tool_name = getattr(msg, 'name', 'unknown')
+                    content = msg.content if hasattr(msg, 'content') else str(msg)
+                    observer.log_tool_result(state.agent_id, state.iteration, tool_name, content)
+        
+        return result
+    
+    tool_node = tool_node_with_logging
 
     # Define the routing function
     def should_continue(state: AgentState) -> Literal["tools", "end"]:
@@ -137,8 +186,20 @@ def run_evolution_agent(
     Returns:
         Final agent state after completion.
     """
+    import time
+    
     if config is None:
         config = WorkerConfig.from_env()
+
+    observer = get_observer()
+    start_time = time.time()
+    
+    # Log agent start
+    observer.log_agent_start(
+        agent_id=agent_id,
+        agent_type=config.agent_type.value,
+        task_preview=task,
+    )
 
     # Create the agent
     agent = create_evolution_agent(config)
@@ -156,9 +217,32 @@ def run_evolution_agent(
     )
 
     # Run the agent
-    final_state = agent.invoke(initial_state)
-
-    return AgentState(**final_state)
+    try:
+        final_state = agent.invoke(initial_state)
+        result_state = AgentState(**final_state)
+        
+        # Extract final score
+        final_score = extract_score_from_messages(result_state.messages)
+        
+        # Log completion
+        observer.log_agent_complete(
+            agent_id=agent_id,
+            success=final_score is not None and (baseline_score is None or final_score > baseline_score),
+            score=final_score,
+            duration=time.time() - start_time,
+        )
+        
+        return result_state
+        
+    except Exception as e:
+        observer.log_error(agent_id, 0, str(e))
+        observer.log_agent_complete(
+            agent_id=agent_id,
+            success=False,
+            score=None,
+            duration=time.time() - start_time,
+        )
+        raise
 
 
 def extract_score_from_messages(messages) -> float | None:

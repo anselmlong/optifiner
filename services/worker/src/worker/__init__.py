@@ -11,6 +11,13 @@ from worker.agent import (
 from worker.config import AgentType, ModelConfig, WorkerConfig
 from worker.state import AgentState, BenchmarkResult, EvolutionResult
 from worker.tools import get_all_tools
+from worker.callbacks import (
+    AgentObserver,
+    AgentEvent,
+    create_observer,
+    get_observer,
+    set_observer,
+)
 
 __all__ = [
     # Agent creation
@@ -30,4 +37,10 @@ __all__ = [
     "EvolutionResult",
     # Tools
     "get_all_tools",
+    # Observability
+    "AgentObserver",
+    "AgentEvent",
+    "create_observer",
+    "get_observer",
+    "set_observer",
 ]
