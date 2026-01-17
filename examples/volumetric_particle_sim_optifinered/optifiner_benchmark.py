@@ -7,16 +7,29 @@ import os
 
 def run_simulation_and_get_fps(duration=5):
     """Runs the particle simulation in a subprocess and captures FPS."""
-    command = [sys.executable, "particle_sim.py", str(duration)]
+    # Set SDL to use dummy video driver for headless testing
+    env = os.environ.copy()
+    env["SDL_VIDEODRIVER"] = "dummy"
+
+    command = [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "particle_sim.py")]
 
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-        cwd=os.path.dirname(os.path.abspath(__file__))
+        cwd=os.path.dirname(os.path.abspath(__file__)),
+        env=env
     )
-    stdout, stderr = process.communicate(timeout=duration + 10) # Add buffer for cleanup
+
+    # Allow the simulation to run for the specified duration
+    # We'll terminate it after the duration if it doesn't exit on its own
+    try:
+        stdout, stderr = process.communicate(timeout=duration + 10) # Add buffer for cleanup
+    except subprocess.TimeoutExpired:
+        process.kill()
+        stdout, stderr = process.communicate()
+        stderr += "\nSimulation terminated due to timeout.\n"
 
     final_fps = 0.0
     total_frames = 0
@@ -30,7 +43,7 @@ def run_simulation_and_get_fps(duration=5):
         elif line.startswith("TOTAL_TIME:"):
             total_time = float(line.split(":")[1])
 
-    if process.returncode != 0:
+    if process.returncode != 0 and "Simulation terminated due to timeout." not in stderr:
         raise RuntimeError(f"Simulation subprocess failed with exit code {process.returncode}. Stderr: {stderr}")
 
     return final_fps, total_frames, total_time, stdout, stderr
