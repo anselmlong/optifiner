@@ -1044,7 +1044,7 @@ def main(
                                     item.unlink()
                         
                         for item in workspace.actual_root.iterdir():
-                            if item.name != ".git" and item.name != "steps":
+                            if item.name != ".git":
                                 if item.is_dir():
                                     shutil.copytree(item, working_path / item.name)
                                 else:
@@ -1122,11 +1122,11 @@ def main(
                         max_iterations=max_iterations,
                         model_provider=model_provider,
                         model_name=model_name,
-                        verbosity=0,  # Disable regular verbosity
+                        verbosity=verbosity,  # Use actual verbosity setting
                         log_dir=log_directory,
                         baseline_data=current_baseline_data,
                         stop_event=_stop_generation if early_stop else None,
-                        compact=False,  # Enable compact logging for parallel agents
+                        compact=True,  # Enable compact logging for parallel agents
                     )
 
                 try:
@@ -1165,7 +1165,7 @@ def main(
                                             item.unlink()
                                 
                                 for item in workspace.actual_root.iterdir():
-                                    if item.name != ".git" and item.name != "steps":
+                                    if item.name != ".git":
                                         if item.is_dir():
                                             shutil.copytree(item, working_path / item.name)
                                         else:
