@@ -108,13 +108,28 @@ def create_evolution_agent(
         # Execute tools
         result = base_tool_node.invoke(state)
         
-        # Log tool results
+        # Log tool results - handle various result structures
+        messages_to_log = []
         if 'messages' in result:
-            for msg in result['messages']:
-                if isinstance(msg, ToolMessage):
-                    tool_name = getattr(msg, 'name', 'unknown')
-                    content = msg.content if hasattr(msg, 'content') else str(msg)
-                    observer.log_tool_result(state.agent_id, state.iteration, tool_name, content)
+            messages_to_log = result['messages']
+        elif isinstance(result, dict) and result:
+            # Try to find messages in the result
+            for v in result.values():
+                if isinstance(v, list):
+                    messages_to_log = v
+                    break
+        
+        for msg in messages_to_log:
+            # Check if it's a ToolMessage by type or by having tool_call_id
+            is_tool_msg = (
+                isinstance(msg, ToolMessage) or 
+                (hasattr(msg, 'tool_call_id') and msg.tool_call_id) or
+                (hasattr(msg, 'type') and getattr(msg, 'type', '') == 'tool')
+            )
+            if is_tool_msg:
+                tool_name = getattr(msg, 'name', None) or getattr(msg, 'tool_call_id', 'unknown')[:20]
+                content = msg.content if hasattr(msg, 'content') else str(msg)
+                observer.log_tool_result(state.agent_id, state.iteration, tool_name, content)
         
         return result
     
