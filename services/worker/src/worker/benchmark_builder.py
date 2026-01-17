@@ -141,6 +141,11 @@ The benchmark is considered SUCCESSFUL when BOTH conditions are met:
 
 Once your benchmark passes both conditions, your job is complete and the code becomes the base for evolution agents.
 
+## AUTOMATIC STOPPING:
+When you call `evaluate` and it returns `[BENCHMARK PASSED]`, you will be automatically stopped.
+You do NOT need to do anything else after seeing `[BENCHMARK PASSED]` - the system handles completion.
+This means: once the evaluate tool shows your benchmark passes, your work is done!
+
 ## Workflow
 1. **Explore the codebase** using list_dir, read_file, grep, glob_search
 2. **Understand the application** - What does it do? How is it run? What metrics matter?
@@ -383,7 +388,7 @@ def create_benchmark_builder_agent(
         return result
     
     def should_continue(state: AgentState) -> str:
-        """Determine whether to continue or end."""
+        """Determine whether to continue or end after agent response."""
         if state.iteration >= state.max_iterations:
             if obs:
                 obs.on_error(f"Max iterations ({state.max_iterations}) reached")
@@ -400,6 +405,33 @@ def create_benchmark_builder_agent(
         
         return "end"
     
+    def should_continue_after_tools(state: AgentState) -> str:
+        """Determine whether to continue or end after tools run.
+        
+        Checks if evaluate() returned a passing benchmark - if so, stop early.
+        """
+        messages = state.messages
+        if not messages:
+            return "agent"
+        
+        # Check the most recent tool messages for benchmark passed
+        for msg in reversed(messages):
+            # Stop checking once we hit an AI message (tool results come after AI message)
+            if isinstance(msg, AIMessage):
+                break
+            if isinstance(msg, ToolMessage):
+                content = msg.content if hasattr(msg, "content") else ""
+                if "[BENCHMARK PASSED]" in content:
+                    if obs:
+                        obs.on_agent_end(
+                            agent_id="benchmark-builder",
+                            success=True,
+                            summary="Benchmark passed - stopping early",
+                        )
+                    return "end"
+        
+        return "agent"
+    
     workflow = StateGraph(AgentState)
     workflow.add_node("agent", agent_node)
     workflow.add_node("tools", observed_tool_node)
@@ -412,7 +444,14 @@ def create_benchmark_builder_agent(
             "end": END,
         },
     )
-    workflow.add_edge("tools", "agent")
+    workflow.add_conditional_edges(
+        "tools",
+        should_continue_after_tools,
+        {
+            "agent": "agent",
+            "end": END,
+        },
+    )
     
     return workflow.compile()
 

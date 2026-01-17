@@ -178,91 +178,64 @@ class VolumetricRenderer:
         Raymarch through the scene to calculate volumetric fog contribution.
         This is INTENTIONALLY slow - per-pixel, no vectorization.
         """
-        # Pre-filter particles that could possibly affect this ray
-        ox, oy, oz = ray_origin.x, ray_origin.y, ray_origin.z
-        dx, dy, dz = ray_dir.x, ray_dir.y, ray_dir.z
-        
-        active_particles = []
-        for p in particles:
-            px, py, pz = p.position.x, p.position.y, p.position.z
-            vx, vy, vz = px - ox, py - oy, pz - oz
-            proj = vx * dx + vy * dy + vz * dz
-            
-            max_r = p.radius * 3.0
-            if -max_r <= proj <= max_distance + max_r:
-                dist_sq = (vx * vx + vy * vy + vz * vz) - proj * proj
-                max_r_sq = max_r * max_r
-                if dist_sq < max_r_sq:
-                    active_particles.append((px, py, pz, max_r_sq, 1.0 / max_r, p.color, p.emission / 255.0))
-
-        accumulated_r = 0.0
-        accumulated_g = 0.0
-        accumulated_b = 0.0
+        accumulated_color = [0.0, 0.0, 0.0]
         accumulated_density = 0.0
         step_size = max_distance / RAYMARCH_STEPS
         
-        light_data = [(l.position.x, l.position.y, l.position.z, 
-                       l.color[0] * 0.1, l.color[1] * 0.1, l.color[2] * 0.1, 
-                       l.intensity) for l in lights]
-        
         for step in range(RAYMARCH_STEPS):
+            # Calculate current position along ray
             t = step * step_size
-            curr_x = ox + dx * t
-            curr_y = oy + dy * t
-            curr_z = oz + dz * t
+            current_pos = Vector3(
+                ray_origin.x + ray_dir.x * t,
+                ray_origin.y + ray_dir.y * t,
+                ray_origin.z + ray_dir.z * t
+            )
             
+            # Calculate density at this point (influenced by nearby particles)
             local_density = 0.0
-            local_r = 0.0
-            local_g = 0.0
-            local_b = 0.0
+            local_color = [0.0, 0.0, 0.0]
             
-            for px, py, pz, max_r_sq, inv_max_r, p_color, p_em_base in active_particles:
-                pdx = curr_x - px
-                pdy = curr_y - py
-                pdz = curr_z - pz
-                d_sq = pdx*pdx + pdy*pdy + pdz*pdz
-                
-                if d_sq < max_r_sq:
-                    dist = math.sqrt(d_sq)
-                    falloff = 1.0 - (dist * inv_max_r)
-                    falloff_sq = falloff * falloff
+            # Check contribution from each particle - O(n) per raymarch step!
+            for particle in particles:
+                dist = (current_pos - particle.position).length()
+                if dist < particle.radius * 3:
+                    # Falloff based on distance
+                    falloff = 1.0 - (dist / (particle.radius * 3))
+                    falloff = max(0, falloff ** 2)
                     
-                    local_density += falloff_sq * 0.5
-                    p_em = falloff_sq * p_em_base
-                    local_r += p_color[0] * p_em
-                    local_g += p_color[1] * p_em
-                    local_b += p_color[2] * p_em
+                    local_density += falloff * 0.5
+                    local_color[0] += particle.color[0] / 255.0 * falloff * particle.emission
+                    local_color[1] += particle.color[1] / 255.0 * falloff * particle.emission
+                    local_color[2] += particle.color[2] / 255.0 * falloff * particle.emission
             
-            for lx, ly, lz, lr01, lg01, lb01, l_intensity in light_data:
-                ldx = curr_x - lx
-                ldy = curr_y - ly
-                ldz = curr_z - lz
-                ld_sq = ldx*ldx + ldy*ldy + ldz*ldz
-                
-                if ld_sq > 0:
-                    attenuation = l_intensity / (1.0 + ld_sq * 0.0001)
-                    local_r += lr01 * attenuation
-                    local_g += lg01 * attenuation
-                    local_b += lb01 * attenuation
+            # Add light contribution at this point
+            for light in lights:
+                light_dist = (current_pos - light.position).length()
+                if light_dist > 0:
+                    # Calculate light falloff
+                    attenuation = light.intensity / (1.0 + light_dist * light_dist * 0.0001)
+                    local_color[0] += light.color[0] * attenuation * 0.1
+                    local_color[1] += light.color[1] * attenuation * 0.1
+                    local_color[2] += light.color[2] * attenuation * 0.1
             
+            # Accumulate fog using front-to-back compositing
             if local_density > 0:
                 alpha = 1.0 - math.exp(-local_density * step_size * FOG_DENSITY)
-                if alpha > 1.0: alpha = 1.0
+                alpha = min(1.0, alpha)
                 
                 remaining = 1.0 - accumulated_density
-                weight = alpha * remaining
-                accumulated_r += local_r * weight
-                accumulated_g += local_g * weight
-                accumulated_b += local_b * weight
-                accumulated_density += weight
+                accumulated_color[0] += local_color[0] * alpha * remaining
+                accumulated_color[1] += local_color[1] * alpha * remaining
+                accumulated_color[2] += local_color[2] * alpha * remaining
+                accumulated_density += alpha * remaining
                 
                 if accumulated_density > 0.99:
                     break
         
         return (
-            min(1.0, accumulated_r),
-            min(1.0, accumulated_g),
-            min(1.0, accumulated_b)
+            min(1.0, accumulated_color[0]),
+            min(1.0, accumulated_color[1]),
+            min(1.0, accumulated_color[2])
         )
     
     def shade_particle(self, particle: Particle, lights: List[Light], 
@@ -606,13 +579,12 @@ class ParticleSimulation:
         
         pygame.display.flip()
     
-    def run(self, max_frames: int = None, target_fps: int = 60) -> float:
+    def run(self, max_frames: int = None) -> float:
         """
         Run the simulation.
         
         Args:
             max_frames: If set, stop after this many frames and return average FPS
-            target_fps: Target FPS for the simulation (0 for no limit)
             
         Returns:
             Average FPS if max_frames is set, otherwise 0
@@ -628,12 +600,7 @@ class ParticleSimulation:
                     if event.key == pygame.K_ESCAPE:
                         self.running = False
             
-            if target_fps > 0:
-                dt = self.clock.tick(target_fps) / 1000.0
-            else:
-                self.clock.tick()
-                dt = 1.0 / 60.0  # Use fixed dt for simulation stability when uncapped
-            
+            dt = self.clock.tick(60) / 1000.0
             dt = min(dt, 0.1)  # Cap delta time
             
             self.update(dt)
