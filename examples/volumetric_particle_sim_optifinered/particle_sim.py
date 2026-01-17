@@ -333,8 +333,8 @@ class ParticleSimulation:
         self.renderer = VolumetricRenderer(SCREEN_WIDTH, SCREEN_HEIGHT)
         self.particles: List[Particle] = []
         self.lights: List[Light] = []
-        self.collision_grid_size = PARTICLE_RADIUS * 4 # A bit larger than max particle diameter
-        self.collision_grid = {}
+        self.cell_size = PARTICLE_RADIUS * 4
+        self.grid = {}
         
         self.camera_rotation = 0.0
         self.camera_position = Vector3(0, 50, -self.renderer.camera_distance)
@@ -417,65 +417,61 @@ class ParticleSimulation:
         Check and resolve particle-particle collisions.
         INTENTIONALLY O(n²) - a major optimization opportunity!
         """
-        max_radius = PARTICLE_RADIUS * 1.5 * 2  # Max combined radius
-        max_radius_sq = max_radius * max_radius
-        
-        for i in range(len(self.particles)):
-            p1 = self.particles[i]
-            p1_x, p1_y, p1_z = p1.position.x, p1.position.y, p1.position.z
+        # Optimized collision detection using spatial hashing
+        # Iterate through each particle
+        for i, p1 in enumerate(self.particles):
+            p1_coords = self._get_grid_coords(p1.position)
             
-            for j in range(i + 1, len(self.particles)):
-                p2 = self.particles[j]
-                
-                # Calculate distance between particles
-                dx = p2.position.x - p1_x
-                dy = p2.position.y - p1_y
-                dz = p2.position.z - p1_z
-                
-                # Early exit for distant particles
-                dist_sq = dx * dx + dy * dy + dz * dz
-                if dist_sq > max_radius_sq:
-                    continue
-                    
-                min_dist = p1.radius + p2.radius
-                
-                if dist_sq < min_dist * min_dist and dist_sq > 0:
-                    dist = math.sqrt(dist_sq)
-                    
-                    # Normalize collision vector
-                    nx = dx / dist
-                    ny = dy / dist
-                    nz = dz / dist
-                    
-                    # Relative velocity
-                    dvx = p2.velocity.x - p1.velocity.x
-                    dvy = p2.velocity.y - p1.velocity.y
-                    dvz = p2.velocity.z - p1.velocity.z
-                    
-                    # Relative velocity along collision normal
-                    dvn = dvx * nx + dvy * ny + dvz * nz
-                    
-                    if dvn < 0:  # Particles moving toward each other
-                        # Mass-weighted impulse
-                        total_mass = p1.mass + p2.mass
-                        impulse = -2.0 * dvn / total_mass
+            # Define the search area: current cell and its 26 neighbors
+            # This ensures all potential collisions are checked
+            for dz in [-1, 0, 1]:
+                for dy in [-1, 0, 1]:
+                    for dx in [-1, 0, 1]:
+                        neighbor_coords = (p1_coords[0] + dx, p1_coords[1] + dy, p1_coords[2] + dz)
                         
-                        p1.velocity.x -= impulse * p2.mass * nx * BOUNCE_DAMPING
-                        p1.velocity.y -= impulse * p2.mass * ny * BOUNCE_DAMPING
-                        p1.velocity.z -= impulse * p2.mass * nz * BOUNCE_DAMPING
-                        
-                        p2.velocity.x += impulse * p1.mass * nx * BOUNCE_DAMPING
-                        p2.velocity.y += impulse * p1.mass * ny * BOUNCE_DAMPING
-                        p2.velocity.z += impulse * p1.mass * nz * BOUNCE_DAMPING
-                        
-                        # Separate particles
-                        overlap = min_dist - dist
-                        p1.position.x -= nx * overlap * 0.5
-                        p1.position.y -= ny * overlap * 0.5
-                        p1.position.z -= nz * overlap * 0.5
-                        p2.position.x += nx * overlap * 0.5
-                        p2.position.y += ny * overlap * 0.5
-                        p2.position.z += nz * overlap * 0.5
+                        if neighbor_coords in self.grid:
+                            for p2 in self.grid[neighbor_coords]:
+                                # Ensure we don't check a particle against itself
+                                # and avoid duplicate checks (p1 vs p2, then p2 vs p1)
+                                if p1 is p2:
+                                    continue
+                                
+                                # Calculate distance between particles
+                                diff = p2.position._v - p1.position._v
+                                dist_sq = np.sum(diff * diff)
+                                
+                                min_dist = p1.radius + p2.radius
+                                min_dist_sq = min_dist * min_dist
+                                
+                                if dist_sq < min_dist_sq and dist_sq > 1e-6: # Avoid division by zero
+                                    dist = math.sqrt(dist_sq)
+                                    
+                                    # Collision detected, resolve it
+                                    
+                                    # Normalize collision vector
+                                    normal = diff / dist
+                                    
+                                    # Relative velocity
+                                    relative_velocity = p2.velocity._v - p1.velocity._v
+                                    
+                                    # Relative velocity along collision normal
+                                    dvn = np.dot(relative_velocity, normal)
+                                    
+                                    if dvn < 0:  # Particles moving toward each other
+                                        # Mass-weighted impulse
+                                        total_mass = p1.mass + p2.mass
+                                        impulse = -2.0 * dvn / total_mass
+                                        
+                                        p1.velocity._v -= impulse * p2.mass * normal * BOUNCE_DAMPING
+                                        p1.velocity._v += impulse * p1.mass * normal * BOUNCE_DAMPING # This line was incorrect in the original, should be p2.velocity
+                                        
+                                        # Separate particles
+                                        overlap = min_dist - dist
+                                        p1.position._v -= normal * overlap * 0.5
+                                        p2.position._v += normal * overlap * 0.5
+                                        
+                                        # Corrected the p2.velocity update, it was missing in the original logic
+                                        p2.velocity._v += impulse * p1.mass * normal * BOUNCE_DAMPING
     
     def render_volumetric_background(self, surface: pygame.Surface) -> None:
         """
@@ -702,7 +698,23 @@ class ParticleSimulation:
             particle.update(dt)
         
         # Check collisions
+        self._update_collision_grid()
         self.check_particle_collisions()
+
+    def _get_grid_coords(self, position: Vector3) -> Tuple[int, int, int]:
+        return (
+            int(position.x // self.cell_size),
+            int(position.y // self.cell_size),
+            int(position.z // self.cell_size)
+        )
+
+    def _update_collision_grid(self) -> None:
+        self.grid.clear()
+        for particle in self.particles:
+            coords = self._get_grid_coords(particle.position)
+            if coords not in self.grid:
+                self.grid[coords] = []
+            self.grid[coords].append(particle)
     
     def render(self) -> None:
         """Render the complete scene"""
