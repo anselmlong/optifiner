@@ -131,8 +131,7 @@ def run_evaluator(
 
         output = result.stdout.strip()
 
-        # Try to parse as JSON (may have prefix garbage like pygame welcome message)
-        # First try direct parse
+        # Try to parse as JSON
         try:
             data = json.loads(output)
             score = data.get("score")
@@ -141,29 +140,10 @@ def run_evaluator(
                     return float(score), None, data
                 return float(score), None
         except json.JSONDecodeError:
-            # Try to find JSON object in output (skip any prefix garbage)
-            json_start = output.find("{")
-            if json_start >= 0:
-                try:
-                    data = json.loads(output[json_start:])
-                    score = data.get("score")
-                    if score is not None:
-                        if return_full_data:
-                            return float(score), None, data
-                        return float(score), None
-                except json.JSONDecodeError:
-                    pass
+            pass
 
-        # Try to extract score from "Score: X" pattern first (more reliable)
+        # Try to extract a number
         import re
-        score_match = re.search(r"(?:score|SCORE|Score)[:\s]+([+-]?\d+\.?\d*)", output)
-        if score_match:
-            score = float(score_match.group(1))
-            if return_full_data:
-                return score, None, {"score": score, "raw": output}
-            return score, None
-
-        # Last resort: try to extract any number (less reliable)
         numbers = re.findall(r"[-+]?\d*\.?\d+", output)
         if numbers:
             if return_full_data:
