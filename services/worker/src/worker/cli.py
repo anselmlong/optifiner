@@ -268,6 +268,7 @@ def run_single_agent_isolated(
     log_dir: str | None = None,
     baseline_data: dict | None = None,
     stop_event: threading.Event | None = None,
+    compact: bool = False,
 ) -> tuple[AgentResult, WorkspaceManager | None]:
     """Run a single evolution agent in an isolated workspace.
 
@@ -285,6 +286,7 @@ def run_single_agent_isolated(
         log_dir: Optional directory to write agent logs.
         baseline_data: Optional dict with baseline evaluation data.
         stop_event: Optional threading.Event to check for early stopping.
+        compact: Enable compact logging mode for parallel execution.
 
     Returns:
         Tuple of (AgentResult, workspace_manager). Workspace is kept if successful
@@ -356,6 +358,8 @@ def run_single_agent_isolated(
         verbosity=verbosity,
         console=console,
         log_file=log_file,
+        agent_id=agent_id,
+        compact=compact,
     )
     set_observer(observer)
 
@@ -939,7 +943,9 @@ def main(
                     progress.update(task_id, advance=1)
 
             else:
-                # Parallel execution
+                # Parallel execution with compact logging
+                console.print(f"[dim]Running {agents} agents in parallel ({parallel} at a time)...[/dim]")
+                
                 def run_agent_parallel(i: int) -> tuple[AgentResult, WorkspaceManager | None]:
                     agent_type = agent_types[i % len(agent_types)]
                     agent_id = f"gen{state.generation}-{agent_type}-{i+1}"
@@ -954,10 +960,11 @@ def main(
                         max_iterations=max_iterations,
                         model_provider=model_provider,
                         model_name=model_name,
-                        verbosity=0,  # Quiet in parallel
+                        verbosity=0,  # Disable regular verbosity
                         log_dir=log_directory,
                         baseline_data=current_baseline_data,
                         stop_event=_stop_generation if early_stop else None,
+                        compact=True,  # Enable compact logging for parallel agents
                     )
 
                 try:
