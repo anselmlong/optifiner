@@ -17,9 +17,9 @@ import random
 from dataclasses import dataclass
 from typing import List, Tuple
 
-
 import pygame
 import time
+import numpy as np
 
 _frame_count = 0
 _fps_start_time = time.time()
@@ -46,35 +46,56 @@ PARTICLE_INFLUENCE_RADIUS = PARTICLE_RADIUS * 3  # Pre-calculated
 
 @dataclass
 class Vector3:
-    """3D Vector class - intentionally not using numpy for 'simplicity'"""
-    x: float
-    y: float
-    z: float
+    """3D Vector class - now using numpy for performance"""
+    _v: np.ndarray
+
+    def __init__(self, x: float, y: float, z: float):
+        self._v = np.array([x, y, z], dtype=np.float32)
+
+    @property
+    def x(self) -> float:
+        return self._v[0]
+
+    @x.setter
+    def x(self, value: float):
+        self._v[0] = value
+
+    @property
+    def y(self) -> float:
+        return self._v[1]
+
+    @y.setter
+    def y(self, value: float):
+        self._v[1] = value
+
+    @property
+    def z(self) -> float:
+        return self._v[2]
+
+    @z.setter
+    def z(self, value: float):
+        self._v[2] = value
     
     def __add__(self, other: 'Vector3') -> 'Vector3':
-        return Vector3(self.x + other.x, self.y + other.y, self.z + other.z)
+        return Vector3(0,0,0)._from_array(self._v + other._v)
     
     def __sub__(self, other: 'Vector3') -> 'Vector3':
-        return Vector3(self.x - other.x, self.y - other.y, self.z - other.z)
+        return Vector3(0,0,0)._from_array(self._v - other._v)
     
     def __mul__(self, scalar: float) -> 'Vector3':
-        return Vector3(self.x * scalar, self.y * scalar, self.z * scalar)
+        return Vector3(0,0,0)._from_array(self._v * scalar)
     
     def __truediv__(self, scalar: float) -> 'Vector3':
-        return Vector3(self.x / scalar, self.y / scalar, self.z / scalar)
+        return Vector3(0,0,0)._from_array(self._v / scalar)
     
     def dot(self, other: 'Vector3') -> float:
-        return self.x * other.x + self.y * other.y + self.z * other.z
+        return np.dot(self._v, other._v)
     
     def cross(self, other: 'Vector3') -> 'Vector3':
-        return Vector3(
-            self.y * other.z - self.z * other.y,
-            self.z * other.x - self.x * other.z,
-            self.x * other.y - self.y * other.x
-        )
+        return Vector3(0,0,0)._from_array(np.cross(self._v, other._v))
     
     def length(self) -> float:
-        return math.sqrt(self.x * self.x + self.y * self.y + self.z * self.z)
+        return np.linalg.norm(self._v)
     
     def normalize(self) -> 'Vector3':
         l = self.length()
@@ -83,7 +104,12 @@ class Vector3:
         return Vector3(0, 0, 0)
     
     def copy(self) -> 'Vector3':
-        return Vector3(self.x, self.y, self.z)
+        return Vector3(0,0,0)._from_array(self._v.copy())
+
+    def _from_array(self, arr: np.ndarray) -> 'Vector3':
+        self._v = arr
+        return self
+
 
 
 @dataclass
@@ -97,36 +123,41 @@ class Particle:
     emission: float  # Light emission strength
     
     def update(self, dt: float) -> None:
-        """Update particle physics - intentionally basic"""
+        """Update particle physics - now using vectorized operations"""
         # Apply gravity
-        self.velocity.y -= GRAVITY * dt * 60
+        self.velocity._v[1] -= GRAVITY * dt * 60
         
         # Update position
-        self.position.x += self.velocity.x * dt * 60
-        self.position.y += self.velocity.y * dt * 60
-        self.position.z += self.velocity.z * dt * 60
+        self.position._v += self.velocity._v * dt * 60
         
         # Bounce off world bounds
-        if self.position.x < -WORLD_BOUNDS:
-            self.position.x = -WORLD_BOUNDS
-            self.velocity.x *= -BOUNCE_DAMPING
-        if self.position.x > WORLD_BOUNDS:
-            self.position.x = WORLD_BOUNDS
-            self.velocity.x *= -BOUNCE_DAMPING
-            
-        if self.position.y < -WORLD_BOUNDS:
-            self.position.y = -WORLD_BOUNDS
-            self.velocity.y *= -BOUNCE_DAMPING
-        if self.position.y > WORLD_BOUNDS:
-            self.position.y = WORLD_BOUNDS
-            self.velocity.y *= -BOUNCE_DAMPING
-            
-        if self.position.z < -WORLD_BOUNDS:
-            self.position.z = -WORLD_BOUNDS
-            self.velocity.z *= -BOUNCE_DAMPING
-        if self.position.z > WORLD_BOUNDS:
-            self.position.z = WORLD_BOUNDS
-            self.velocity.z *= -BOUNCE_DAMPING
+        # Using np.where for vectorized conditional updates
+        # X-axis
+        bounce_x_neg = self.position._v[0] < -WORLD_BOUNDS
+        self.position._v[0] = np.where(bounce_x_neg, -WORLD_BOUNDS, self.position._v[0])
+        self.velocity._v[0] = np.where(bounce_x_neg, self.velocity._v[0] * -BOUNCE_DAMPING, self.velocity._v[0])
+
+        bounce_x_pos = self.position._v[0] > WORLD_BOUNDS
+        self.position._v[0] = np.where(bounce_x_pos, WORLD_BOUNDS, self.position._v[0])
+        self.velocity._v[0] = np.where(bounce_x_pos, self.velocity._v[0] * -BOUNCE_DAMPING, self.velocity._v[0])
+
+        # Y-axis
+        bounce_y_neg = self.position._v[1] < -WORLD_BOUNDS
+        self.position._v[1] = np.where(bounce_y_neg, -WORLD_BOUNDS, self.position._v[1])
+        self.velocity._v[1] = np.where(bounce_y_neg, self.velocity._v[1] * -BOUNCE_DAMPING, self.velocity._v[1])
+
+        bounce_y_pos = self.position._v[1] > WORLD_BOUNDS
+        self.position._v[1] = np.where(bounce_y_pos, WORLD_BOUNDS, self.position._v[1])
+        self.velocity._v[1] = np.where(bounce_y_pos, self.velocity._v[1] * -BOUNCE_DAMPING, self.velocity._v[1])
+
+        # Z-axis
+        bounce_z_neg = self.position._v[2] < -WORLD_BOUNDS
+        self.position._v[2] = np.where(bounce_z_neg, -WORLD_BOUNDS, self.position._v[2])
+        self.velocity._v[2] = np.where(bounce_z_neg, self.velocity._v[2] * -BOUNCE_DAMPING, self.velocity._v[2])
+
+        bounce_z_pos = self.position._v[2] > WORLD_BOUNDS
+        self.position._v[2] = np.where(bounce_z_pos, WORLD_BOUNDS, self.position._v[2])
+        self.velocity._v[2] = np.where(bounce_z_pos, self.velocity._v[2] * -BOUNCE_DAMPING, self.velocity._v[2])
 
 
 @dataclass
@@ -174,77 +205,70 @@ class VolumetricRenderer:
         return (int(screen_x), int(screen_y), rot_z)
     
     def calculate_volumetric_fog(self, ray_origin: Vector3, ray_dir: Vector3, 
-                                  particles: List[Particle], lights: List[Light],
-                                  max_distance: float) -> Tuple[float, float, float]:
+                                  particle_positions: np.ndarray, particle_radii: np.ndarray, 
+                                  particle_colors: np.ndarray, particle_emissions: np.ndarray, 
+                                  light_positions: np.ndarray, light_colors: np.ndarray, 
+                                  light_intensities: np.ndarray, max_distance: float) -> Tuple[float, float, float]:
         """
         Raymarch through the scene to calculate volumetric fog contribution.
         This is INTENTIONALLY slow - per-pixel, no vectorization.
         """
-        accumulated_color = [0.0, 0.0, 0.0]
+        accumulated_color = np.array([0.0, 0.0, 0.0], dtype=np.float32)
         accumulated_density = 0.0
         step_size = max_distance / RAYMARCH_STEPS
         
-        # Pre-extract ray components for faster access
-        ray_ox, ray_oy, ray_oz = ray_origin.x, ray_origin.y, ray_origin.z
-        ray_dx, ray_dy, ray_dz = ray_dir.x, ray_dir.y, ray_dir.z
+        ray_origin_v = ray_origin._v
+        ray_dir_v = ray_dir._v
+        
+        # Pre-calculate influence radii squared for particles
+        particle_influence_radii_sq = (particle_radii * 3) ** 2
         
         for step in range(RAYMARCH_STEPS):
-            # Calculate current position along ray
-            t = step * step_size
-            curr_x = ray_ox + ray_dx * t
-            curr_y = ray_oy + ray_dy * t
-            curr_z = ray_oz + ray_dz * t
+            t = (step + 0.5) * step_size  # Sample at midpoint of step
+            curr_pos = ray_origin_v + ray_dir_v * t
             
-            # Calculate density at this point (influenced by nearby particles)
             local_density = 0.0
-            local_color = [0.0, 0.0, 0.0]
+            local_color = np.array([0.0, 0.0, 0.0], dtype=np.float32)
             
-            # Check contribution from each particle - O(n) per raymarch step!
-            for particle in particles:
-                # Quick squared distance check first (avoid sqrt)
-                dx = curr_x - particle.position.x
-                dy = curr_y - particle.position.y
-                dz = curr_z - particle.position.z
-                dist_sq = dx * dx + dy * dy + dz * dz
+            # Particle contribution
+            diff = curr_pos - particle_positions  # (N, 3) array
+            dist_sq = np.sum(diff * diff, axis=1) # (N,) array
+            
+            mask = dist_sq < particle_influence_radii_sq
+            
+            if np.any(mask):
+                active_dist = np.sqrt(dist_sq[mask])
+                active_radii = particle_radii[mask]
+                active_colors = particle_colors[mask]
+                active_emissions = particle_emissions[mask]
+
+                falloff = 1.0 - (active_dist / (active_radii * 3))
+                falloff = falloff * falloff
                 
-                influence_radius = particle.radius * 3
-                if dist_sq < influence_radius * influence_radius:
-                    dist = math.sqrt(dist_sq)
-                    # Falloff based on distance
-                    falloff = 1.0 - (dist / influence_radius)
-                    falloff = falloff * falloff
-                    
-                    local_density += falloff * 0.5
-                    emission = particle.emission * falloff
-                    local_color[0] += particle.color[0] / 255.0 * emission
-                    local_color[1] += particle.color[1] / 255.0 * emission
-                    local_color[2] += particle.color[2] / 255.0 * emission
+                local_density += np.sum(falloff * 0.5)
+                emission_contrib = active_emissions * falloff
+                local_color += np.sum(active_colors / 255.0 * emission_contrib[:, np.newaxis], axis=0)
             
-            # Add light contribution at this point
-            for light in lights:
-                lx = curr_x - light.position.x
-                ly = curr_y - light.position.y
-                lz = curr_z - light.position.z
-                light_dist_sq = lx * lx + ly * ly + lz * lz
-                if light_dist_sq > 0:
-                    # Calculate light falloff
-                    attenuation = light.intensity / (1.0 + light_dist_sq * 0.0001)
-                    local_color[0] += light.color[0] * attenuation * 0.1
-                    local_color[1] += light.color[1] * attenuation * 0.1
-                    local_color[2] += light.color[2] * attenuation * 0.1
+            # Light contribution
+            light_diff = curr_pos - light_positions # (M, 3) array
+            light_dist_sq = np.sum(light_diff * light_diff, axis=1) # (M,) array
             
-            # Accumulate fog using front-to-back compositing
+            # Avoid division by zero for lights exactly at curr_pos
+            light_dist_sq[light_dist_sq == 0] = 1e-6 
+
+            attenuation = light_intensities / (1.0 + light_dist_sq * 0.0001)
+            local_color += np.sum(light_colors * attenuation[:, np.newaxis] * 0.1, axis=0)
+            
+            # Accumulate fog
             if local_density > 0:
-                alpha = 1.0 - math.exp(-local_density * step_size * FOG_DENSITY)
+                alpha = 1.0 - np.exp(-local_density * step_size * FOG_DENSITY)
                 alpha = min(1.0, alpha)
                 
                 remaining = 1.0 - accumulated_density
-                accumulated_color[0] += local_color[0] * alpha * remaining
-                accumulated_color[1] += local_color[1] * alpha * remaining
-                accumulated_color[2] += local_color[2] * alpha * remaining
+                accumulated_color += local_color * alpha * remaining
                 accumulated_density += alpha * remaining
                 
-                if accumulated_density > 0.95:  # Slightly earlier cutoff
+                if accumulated_density > 0.95:
                     break
         
         return (
@@ -309,6 +333,8 @@ class ParticleSimulation:
         self.renderer = VolumetricRenderer(SCREEN_WIDTH, SCREEN_HEIGHT)
         self.particles: List[Particle] = []
         self.lights: List[Light] = []
+        self.collision_grid_size = PARTICLE_RADIUS * 4 # A bit larger than max particle diameter
+        self.collision_grid = {}
         
         self.camera_rotation = 0.0
         self.camera_position = Vector3(0, 50, -self.renderer.camera_distance)
@@ -454,7 +480,7 @@ class ParticleSimulation:
     def render_volumetric_background(self, surface: pygame.Surface) -> None:
         """
         Render beautiful gradient background with nebula-like effects.
-        INTENTIONALLY SLOW - per-pixel calculations!
+        Now optimized with NumPy for per-pixel calculations!
         """
         # Create a background surface with smooth gradients
         sample_rate = 16  # Coarser sampling (was 8)
@@ -474,6 +500,17 @@ class ParticleSimulation:
         time_06 = self.time * 0.6
         time_02 = self.time * 0.2
         time_015 = self.time * 0.15
+
+        # Extract particle data into NumPy arrays
+        particle_positions_arr = np.array([p.position._v for p in self.particles], dtype=np.float32)
+        particle_radii_arr = np.array([p.radius for p in self.particles], dtype=np.float32)
+        particle_colors_arr = np.array([p.color for p in self.particles], dtype=np.float32)
+        particle_emissions_arr = np.array([p.emission for p in self.particles], dtype=np.float32)
+
+        # Extract light data into NumPy arrays
+        light_positions_arr = np.array([l.position._v for l in self.lights], dtype=np.float32)
+        light_colors_arr = np.array([l.color for l in self.lights], dtype=np.float32)
+        light_intensities_arr = np.array([l.intensity for l in self.lights], dtype=np.float32)
         
         for y in range(0, height, sample_rate):
             ny = y * inv_height
@@ -521,7 +558,8 @@ class ParticleSimulation:
                 # Raymarch for volumetric fog
                 fog_color = self.renderer.calculate_volumetric_fog(
                     self.camera_position, rot_ray,
-                    self.particles, self.lights,
+                    particle_positions_arr, particle_radii_arr, particle_colors_arr, particle_emissions_arr,
+                    light_positions_arr, light_colors_arr, light_intensities_arr,
                     WORLD_BOUNDS * 3
                 )
                 
