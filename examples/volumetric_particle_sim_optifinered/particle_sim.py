@@ -25,16 +25,6 @@ if os.environ.get("SDL_VIDEODRIVER") is None and os.environ.get("DISPLAY") is No
         pass
 
 import pygame
-import time
-
-_frame_count = 0
-_fps_start_time = time.time()
-_current_fps = 0.0
-
-def get_fps():
-    global _current_fps
-    return _current_fps
-
 
 
 # Configuration
@@ -654,14 +644,8 @@ class ParticleSimulation:
         
         pygame.display.flip()
     
-    def run(self, duration: float = 0.0) -> None:
+    def run(self) -> None:
         """Run the simulation."""
-        start_time = time.time()
-        while self.running:
-            if duration > 0 and (time.time() - start_time) > duration:
-                self.running = False
-                break
-
         while self.running:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
@@ -672,14 +656,6 @@ class ParticleSimulation:
             
             dt = self.clock.tick(60) / 1000.0
             dt = min(dt, 0.1)  # Cap delta time
-
-            global _frame_count, _fps_start_time, _current_fps
-            _frame_count += 1
-            elapsed = time.time() - _fps_start_time
-            if elapsed >= 1.0:
-                _current_fps = _frame_count / elapsed
-                _frame_count = 0
-                _fps_start_time = time.time()
             
             self.update(dt)
             self.render()
@@ -687,9 +663,6 @@ class ParticleSimulation:
     def cleanup(self) -> None:
         """Clean up pygame resources"""
         pygame.quit()
-
-    def stop(self):
-        self.running = False
 
 
 def main():
