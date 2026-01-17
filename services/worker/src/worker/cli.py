@@ -33,6 +33,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskPr
 from worker.observability import AgentObserver, set_observer
 from worker.workspace import WorkspaceManager, set_workspace, isolated_workspace, BENCHMARK_SCRIPT_NAME
 from worker.evaluator import get_evaluator, evaluate as queue_evaluate
+from worker.tools.evaluate import set_benchmark_dev_mode, BENCHMARK_TIMEOUT
 
 # Set up console for rich output
 console = Console()
@@ -326,7 +327,9 @@ def run_single_agent_isolated(
     set_workspace(workspace)
 
     # Configure evaluator to run in the actual workspace
-    set_evaluator(evaluator_path)
+    # Use BENCHMARK_TIMEOUT (30s) and set improver mode (timeouts are hard fails)
+    set_evaluator(evaluator_path, timeout=BENCHMARK_TIMEOUT)
+    set_benchmark_dev_mode(False)  # Improver mode: timeouts are hard fails
 
     # Set up observer
     log_file = None
