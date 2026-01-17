@@ -13,6 +13,7 @@ import shutil
 import threading
 import uuid
 from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Generator
 
@@ -22,10 +23,19 @@ WORKSPACE_BASE = Path("/tmp/optifiner_workspaces")
 # Standard benchmark script filename (always at workspace root)
 BENCHMARK_SCRIPT_NAME = "optifiner_benchmark.py"
 
-# Thread-local workspace context for tools
+# Context variable for workspace - propagates through async/await better than threading.local
+# This is the PRIMARY mechanism for workspace isolation
+_workspace_context: ContextVar["WorkspaceManager | None"] = ContextVar("workspace_context", default=None)
+
+# Thread-local workspace context as FALLBACK for legacy code
 # Using threading.local() ensures each thread (agent) has its own workspace context
-# This prevents race conditions when running multiple agents in parallel
 _thread_local = threading.local()
+
+# Process-level workspace registry keyed by agent_id
+# This is a FALLBACK when context vars and thread-local both fail
+# (e.g., when LangGraph uses internal thread pools)
+_workspace_registry: dict[str, "WorkspaceManager"] = {}
+_registry_lock = threading.Lock()
 
 
 class WorkspaceManager:
@@ -35,13 +45,15 @@ class WorkspaceManager:
     No path emulation - agents see the actual filesystem paths.
     """
     
-    def __init__(self, workspace_id: str | None = None):
+    def __init__(self, workspace_id: str | None = None, agent_id: str | None = None):
         """Initialize workspace manager.
         
         Args:
             workspace_id: Optional ID for the workspace. If not provided, generates UUID.
+            agent_id: Optional agent ID for registry lookup. If not provided, uses workspace_id.
         """
         self.workspace_id = workspace_id or str(uuid.uuid4())[:8]
+        self.agent_id = agent_id or self.workspace_id
         self._workspace_root: Path | None = None
         self._source_path: Path | None = None
         
@@ -71,6 +83,9 @@ class WorkspaceManager:
             
         Returns:
             The workspace root path.
+            
+        Raises:
+            ValueError: If source doesn't exist or benchmark copy fails.
         """
         source = Path(source_path).resolve()
         if not source.exists():
@@ -91,10 +106,36 @@ class WorkspaceManager:
         # Copy source to workspace
         shutil.copytree(source, self._workspace_root, symlinks=True)
         
+        # Verify benchmark was copied if it exists in source
+        source_benchmark = source / BENCHMARK_SCRIPT_NAME
+        dest_benchmark = self._workspace_root / BENCHMARK_SCRIPT_NAME
+        if source_benchmark.exists() and not dest_benchmark.exists():
+            # Benchmark should have been copied but wasn't - manually copy it
+            import sys
+            print(f"[WARN] Benchmark not copied by copytree, copying manually: {source_benchmark} -> {dest_benchmark}", 
+                  file=sys.stderr)
+            shutil.copy2(source_benchmark, dest_benchmark)
+        
+        # Final verification
+        if source_benchmark.exists() and not dest_benchmark.exists():
+            raise ValueError(
+                f"Failed to copy benchmark file to workspace.\n"
+                f"Source: {source_benchmark} (exists: {source_benchmark.exists()})\n"
+                f"Dest: {dest_benchmark} (exists: {dest_benchmark.exists()})"
+            )
+        
+        # Register in process-level registry for fallback lookup
+        with _registry_lock:
+            _workspace_registry[self.agent_id] = self
+        
         return self._workspace_root
     
     def cleanup(self):
         """Remove the isolated workspace."""
+        # Unregister from process-level registry
+        with _registry_lock:
+            _workspace_registry.pop(self.agent_id, None)
+        
         if self._workspace_root and self._workspace_root.exists():
             try:
                 shutil.rmtree(self._workspace_root)
@@ -194,29 +235,63 @@ class WorkspaceManager:
 
 
 def set_workspace(workspace: WorkspaceManager | None):
-    """Set the workspace context for the current thread.
+    """Set the workspace context for the current execution context.
     
     This must be called before any tools are used to ensure they
-    operate within the correct workspace.
+    operate within the correct workspace. Sets workspace in multiple
+    mechanisms for maximum compatibility:
+    1. ContextVar (primary - works with async/await and thread pools)
+    2. Thread-local (fallback for synchronous code on same thread)
     """
+    # Set context var (primary mechanism - propagates through asyncio)
+    _workspace_context.set(workspace)
+    
+    # Also set thread-local as fallback
     _thread_local.workspace = workspace
 
 
 def get_workspace() -> WorkspaceManager | None:
-    """Get the workspace for the current thread.
+    """Get the workspace for the current execution context.
+    
+    Tries multiple mechanisms in order:
+    1. ContextVar (primary - works with async/await)
+    2. Thread-local (fallback for synchronous code)
+    3. Process-level registry lookup by workspace path from WORKSPACE_ROOT env var
     
     Returns None if no workspace is set.
     """
-    return getattr(_thread_local, 'workspace', None)
+    # Try context var first (primary mechanism)
+    workspace = _workspace_context.get()
+    if workspace is not None:
+        return workspace
+    
+    # Try thread-local as fallback
+    workspace = getattr(_thread_local, 'workspace', None)
+    if workspace is not None:
+        return workspace
+    
+    # Try registry lookup by workspace path from WORKSPACE_ROOT env var
+    # This is a last resort - find the workspace whose path matches
+    env_root = os.environ.get("WORKSPACE_ROOT")
+    if env_root:
+        env_path = Path(env_root).resolve()
+        with _registry_lock:
+            for ws in _workspace_registry.values():
+                if ws._workspace_root and ws._workspace_root.resolve() == env_path:
+                    return ws
+    
+    return None
 
 
 def get_workspace_root() -> Path:
     """Get the workspace root for file operations.
     
     Priority:
-    1. Thread-local workspace (set via set_workspace)
-    2. WORKSPACE_ROOT environment variable
-    3. Current working directory
+    1. ContextVar workspace (primary - works with async/await)
+    2. Thread-local workspace (fallback for synchronous code)
+    3. Process-level registry lookup by WORKSPACE_ROOT env var path
+    4. WORKSPACE_ROOT environment variable directly
+    5. Current working directory
     
     Returns:
         Path to the workspace root directory.
