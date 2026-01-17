@@ -38,6 +38,7 @@ class AgentState(BaseModel):
     agent_id: str = Field(default="", description="Unique identifier for this agent instance")
     iteration: int = Field(default=0, description="Current iteration within this agent's run")
     max_iterations: int = Field(default=10, description="Maximum iterations allowed")
+    benchmark_timeout: int = Field(default=30, description="Timeout in seconds for benchmark execution")
 
     # Results
     success: bool = Field(default=False, description="Whether the agent completed successfully")

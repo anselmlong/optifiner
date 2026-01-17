@@ -249,11 +249,27 @@ class EvaluatorQueue:
                 duration_seconds=duration,
             ).to_dict()
             
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as e:
+            # Collect partial output from the timed-out process
+            partial_output = None
+            if e.output:
+                partial_output = e.output if isinstance(e.output, str) else e.output.decode("utf-8", errors="replace")
+            if e.stderr:
+                stderr_text = e.stderr if isinstance(e.stderr, str) else e.stderr.decode("utf-8", errors="replace")
+                if partial_output:
+                    partial_output = f"{partial_output}\n--- STDERR ---\n{stderr_text}"
+                else:
+                    partial_output = stderr_text
+            
+            # Print partial output for debugging
+            if partial_output:
+                print(f"\n[TIMEOUT] Partial output before timeout:\n{partial_output}\n", file=sys.stderr)
+            
             return EvaluationResult(
                 success=False,
                 score=None,
                 error=f"Evaluator timed out after {request.timeout} seconds",
+                raw_output=partial_output,
                 duration_seconds=time.time() - start_time,
             ).to_dict()
             
