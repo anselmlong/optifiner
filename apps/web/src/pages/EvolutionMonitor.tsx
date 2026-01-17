@@ -9,13 +9,17 @@ import {
   faFlask,
   faMemory,
   faGaugeHigh,
-  faArrowLeft
+  faArrowLeft,
+  faPlay,
+  faPause,
+  faSpinner
 } from '@fortawesome/free-solid-svg-icons'
 import { Header } from '../components/layout/Header'
 import { Card } from '../components/ui/Card'
 import { Button } from '../components/ui/Button'
 import { Badge } from '../components/ui/Badge'
 import { StatusDot } from '../components/ui/StatusDot'
+import { RunConfigModal } from '../components/ui/RunConfigModal'
 import { useStore } from '../store'
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts'
 
@@ -219,11 +223,17 @@ function EvolutionTree({ data, onNodeClick }: { data: TreeNodeData, onNodeClick:
 export function EvolutionMonitor() {
   const { projectId } = useParams<{ projectId: string }>()
   const navigate = useNavigate()
-  const { agents, logs, projects } = useStore()
+  const { agents, logs, projects, isPaused, togglePause } = useStore()
 
   // Console resize state
   const [consoleHeight, setConsoleHeight] = useState(200)
   const [isDragging, setIsDragging] = useState(false)
+
+  // Run configuration modal state
+  const [isRunModalOpen, setIsRunModalOpen] = useState(false)
+  const [isRunning, setIsRunning] = useState(false)
+  const [isStarting, setIsStarting] = useState(false)
+  const [workflowId, setWorkflowId] = useState<string | null>(null)
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
@@ -263,6 +273,69 @@ export function EvolutionMonitor() {
     navigate(`/projects/${projectId}/analysis/${node.id}`)
   }
 
+  // Handle starting the optimization
+  const handleStartOptimization = async (config: { 
+    models: Array<{ id: string; provider: string; modelName: string; apiKey: string; instances: number }>; 
+    maxCost: number; 
+    userPrompt: string 
+  }) => {
+    setIsStarting(true)
+    
+    try {
+      const response = await fetch('/api/v1/optimization/start', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          repo_url: project?.repository || '',
+          total_cost_limit: config.maxCost,
+          user_prompt: config.userPrompt,
+          models: config.models.map(m => ({
+            provider: m.provider,
+            model_name: m.modelName,
+            api_key: m.apiKey,
+            instances: m.instances,
+          })),
+        }),
+      })
+
+      const data = await response.json()
+      
+      if (response.ok && data.success) {
+        setWorkflowId(data.workflow_id)
+        setIsRunning(true)
+        setIsRunModalOpen(false)
+      } else {
+        console.error('Failed to start optimization:', data.error || data.detail)
+        alert(`Failed to start: ${data.error || data.detail || 'Unknown error'}`)
+      }
+    } catch (error) {
+      console.error('Error starting optimization:', error)
+      alert('Failed to connect to the server. Make sure the API is running.')
+    } finally {
+      setIsStarting(false)
+    }
+  }
+
+  // Handle pause/resume
+  const handlePauseResume = async () => {
+    if (!workflowId) return
+    
+    try {
+      const action = isPaused ? 'resume' : 'pause'
+      const response = await fetch(`/api/v1/optimization/${workflowId}/${action}`, {
+        method: 'POST',
+      })
+      
+      if (response.ok) {
+        togglePause()
+      }
+    } catch (error) {
+      console.error('Error toggling pause:', error)
+    }
+  }
+
   const fitnessData = [
     { label: 'Gen 35', value: 0.65 },
     { label: 'Gen 36', value: 0.68 },
@@ -285,9 +358,50 @@ export function EvolutionMonitor() {
           <h1 className="text-lg font-semibold text-slate-900 dark:text-white">
             {project?.name || 'Evolution Monitor'}
           </h1>
-          <p className="text-sm text-slate-500">Darwin-Alpha-9 • Online</p>
+          <p className="text-sm text-slate-500">
+            {isRunning ? (
+              <span className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+                {isPaused ? 'Paused' : 'Running'}
+                {workflowId && <span className="text-xs text-slate-400">• {workflowId.slice(0, 8)}</span>}
+              </span>
+            ) : (
+              'Not started'
+            )}
+          </p>
+        </div>
+
+        {/* Run/Pause Button */}
+        <div className="flex items-center gap-3">
+          {isRunning ? (
+            <Button 
+              variant={isPaused ? 'primary' : 'secondary'}
+              icon={isPaused ? faPlay : faPause}
+              onClick={handlePauseResume}
+            >
+              {isPaused ? 'Resume' : 'Pause'}
+            </Button>
+          ) : (
+            <Button 
+              variant="primary" 
+              icon={isStarting ? faSpinner : faPlay}
+              onClick={() => setIsRunModalOpen(true)}
+              disabled={isStarting}
+              className={isStarting ? 'animate-pulse' : ''}
+            >
+              {isStarting ? 'Starting...' : 'Run Optimization'}
+            </Button>
+          )}
         </div>
       </div>
+
+      {/* Run Configuration Modal */}
+      <RunConfigModal
+        isOpen={isRunModalOpen}
+        onClose={() => setIsRunModalOpen(false)}
+        onStart={handleStartOptimization}
+        projectName={project?.name}
+      />
 
       {/* Main Content Area - Flex 1 */}
       <div className="flex-1 min-h-0 relative">

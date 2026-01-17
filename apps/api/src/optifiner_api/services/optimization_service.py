@@ -275,12 +275,20 @@ class OptimizationService:
             workflow_data: Initial workflow data
         """
         try:
-            generation = 0
-            current_best_score = workflow_data["baseline_score"]
-            total_cost = 0.0
-            parent_instance_id = None  # Track parent instance for graph
+            generation = workflow_data.get("generation", 0)
+            current_best_score = workflow_data.get("current_best_score", workflow_data["baseline_score"])
+            total_cost = workflow_data.get("total_cost", 0.0)
+            parent_instance_id = workflow_data.get("parent_instance_id", None)
 
             while total_cost < workflow_data["total_cost_limit"]:
+                # Check if workflow was paused or stopped
+                workflow_key = f"optimization_workflow:{workflow_id}"
+                current_data = await self.redis_client.get(workflow_key)
+                if current_data:
+                    current_status = json.loads(current_data).get("status")
+                    if current_status in ("paused", "stopped"):
+                        return  # Exit execution loop
+                
                 generation += 1
                 workflow_data["generation"] = generation
                 workflow_data["parent_instance_id"] = parent_instance_id
@@ -825,14 +833,14 @@ class OptimizationService:
             workflow_key, 7200, json.dumps(workflow_data)
         )
 
-    async def get_workflow_status(self, workflow_id: str) -> dict[str, Any]:
-        """Get workflow status (internal function, not exposed as API route).
+    async def get_workflow_status(self, workflow_id: str) -> dict[str, Any] | None:
+        """Get workflow status.
 
         Args:
             workflow_id: Workflow identifier
 
         Returns:
-            Dictionary with workflow status
+            OptimizationWorkflowStatus compatible dictionary or None if not found
         """
         await self.connect()
 
@@ -840,10 +848,7 @@ class OptimizationService:
         workflow_data = await self.redis_client.get(workflow_key)
 
         if not workflow_data:
-            return {
-                "success": False,
-                "error": f"Workflow not found: {workflow_id}",
-            }
+            return None
 
         data = json.loads(workflow_data)
 
@@ -859,11 +864,174 @@ class OptimizationService:
                 else:
                     instances.append(instance)
 
-        data["worker_instances"] = instances
+        # Map to response model format
+        worker_instances = [
+            {
+                "instance_id": i.get("instance_id", ""),
+                "model_provider": i.get("model_provider", ""),
+                "model_name": i.get("model_name", ""),
+                "status": i.get("status", 1),
+                "evaluation_score": i.get("evaluation_score"),
+                "started_at": i.get("started_at"),
+                "completed_at": i.get("completed_at"),
+                "error": i.get("error"),
+                "generation": i.get("generation"),
+                "parent_instance_id": i.get("parent_instance_id"),
+                "accepted_at_generation": i.get("accepted_at_generation"),
+                "rejected_at_generation": i.get("rejected_at_generation"),
+            }
+            for i in instances
+        ]
+
+        # Build graph data
+        graph_data = data.get("graph_data", {"nodes": [], "edges": []})
+
+        return {
+            "workflow_id": workflow_id,
+            "status": data.get("status", "unknown"),
+            "repo_dir": data.get("repo_dir", ""),
+            "baseline_score": data.get("baseline_score"),
+            "current_best_score": data.get("current_best_score"),
+            "generation": data.get("generation", 0),
+            "total_generations": data.get("total_generations", 0),
+            "last_improvement_generation": data.get("last_improvement_generation"),
+            "final_generation": data.get("final_generation"),
+            "accepted_layers_count": data.get("accepted_layers_count", 0),
+            "accepted_generations": data.get("accepted_generations", []),
+            "graph_data": graph_data,
+            "parent_instance_id": data.get("parent_instance_id"),
+            "worker_instances": worker_instances,
+            "total_cost": data.get("total_cost", 0.0),
+            "message": data.get("message"),
+        }
+    
+    async def pause_workflow(self, workflow_id: str) -> dict[str, Any]:
+        """Pause an active workflow.
+
+        Args:
+            workflow_id: Workflow identifier
+
+        Returns:
+            Result dictionary with success status
+        """
+        await self.connect()
+
+        workflow_key = f"optimization_workflow:{workflow_id}"
+        workflow_data = await self.redis_client.get(workflow_key)
+
+        if not workflow_data:
+            return {
+                "success": False,
+                "error": f"Workflow not found: {workflow_id}",
+            }
+
+        data = json.loads(workflow_data)
+        
+        if data.get("status") != "running":
+            return {
+                "success": False,
+                "error": f"Workflow is not running (current status: {data.get('status')})",
+            }
+
+        data["status"] = "paused"
+        data["paused_at"] = time.time()
+        
+        await self.redis_client.setex(
+            workflow_key, 7200, json.dumps(data)
+        )
 
         return {
             "success": True,
-            "workflow": data,
+            "workflow_id": workflow_id,
+            "status": "paused",
+            "message": "Workflow paused successfully",
+        }
+
+    async def resume_workflow(self, workflow_id: str) -> dict[str, Any]:
+        """Resume a paused workflow.
+
+        Args:
+            workflow_id: Workflow identifier
+
+        Returns:
+            Result dictionary with success status
+        """
+        await self.connect()
+
+        workflow_key = f"optimization_workflow:{workflow_id}"
+        workflow_data = await self.redis_client.get(workflow_key)
+
+        if not workflow_data:
+            return {
+                "success": False,
+                "error": f"Workflow not found: {workflow_id}",
+            }
+
+        data = json.loads(workflow_data)
+        
+        if data.get("status") != "paused":
+            return {
+                "success": False,
+                "error": f"Workflow is not paused (current status: {data.get('status')})",
+            }
+
+        data["status"] = "running"
+        data["resumed_at"] = time.time()
+        
+        await self.redis_client.setex(
+            workflow_key, 7200, json.dumps(data)
+        )
+
+        # Resume workflow execution
+        asyncio.create_task(
+            self._execute_workflow(workflow_id, data)
+        )
+
+        return {
+            "success": True,
+            "workflow_id": workflow_id,
+            "status": "running",
+            "message": "Workflow resumed successfully",
+        }
+
+    async def stop_workflow(self, workflow_id: str) -> dict[str, Any]:
+        """Stop a workflow completely.
+
+        Args:
+            workflow_id: Workflow identifier
+
+        Returns:
+            Result dictionary with final status
+        """
+        await self.connect()
+
+        workflow_key = f"optimization_workflow:{workflow_id}"
+        workflow_data = await self.redis_client.get(workflow_key)
+
+        if not workflow_data:
+            return {
+                "success": False,
+                "error": f"Workflow not found: {workflow_id}",
+            }
+
+        data = json.loads(workflow_data)
+        
+        data["status"] = "stopped"
+        data["stopped_at"] = time.time()
+        data["final_generation"] = data.get("generation", 0)
+        
+        await self.redis_client.setex(
+            workflow_key, 7200, json.dumps(data)
+        )
+
+        return {
+            "success": True,
+            "workflow_id": workflow_id,
+            "status": "stopped",
+            "final_score": data.get("current_best_score"),
+            "total_generations": data.get("generation", 0),
+            "total_cost": data.get("total_cost", 0.0),
+            "message": "Workflow stopped successfully",
         }
     
     async def get_workflow_worker_instances(self, workflow_id: str) -> dict[str, Any]:
