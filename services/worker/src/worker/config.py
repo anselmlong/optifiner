@@ -109,24 +109,48 @@ def get_llm(config: ModelConfig):
     if config.provider == ModelProvider.ANTHROPIC:
         from langchain_anthropic import ChatAnthropic
 
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "ANTHROPIC_API_KEY environment variable is required. "
+                "Please set it with: export ANTHROPIC_API_KEY='your-api-key'"
+            )
+
         return ChatAnthropic(
             model=config.model_name,
+            api_key=api_key,
             temperature=config.temperature,
             max_tokens=config.max_tokens,
         )
     elif config.provider == ModelProvider.GOOGLE:
         from langchain_google_genai import ChatGoogleGenerativeAI
 
+        api_key = os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "GOOGLE_API_KEY environment variable is required. "
+                "Please set it with: export GOOGLE_API_KEY='your-api-key'"
+            )
+
         return ChatGoogleGenerativeAI(
             model=config.model_name,
+            google_api_key=api_key,
             temperature=config.temperature,
             max_output_tokens=config.max_tokens,
         )
     elif config.provider == ModelProvider.OPENAI:
         from langchain_openai import ChatOpenAI
 
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "OPENAI_API_KEY environment variable is required. "
+                "Please set it with: export OPENAI_API_KEY='your-api-key'"
+            )
+
         return ChatOpenAI(
             model=config.model_name,
+            api_key=api_key,
             temperature=config.temperature,
             max_tokens=config.max_tokens,
         )
