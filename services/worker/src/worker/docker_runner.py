@@ -227,10 +227,11 @@ def run_agent_in_docker(
                 for line in iter(process.stdout.readline, ''):
                     if line:
                         output_lines.append(line)
-                        # Print non-JSON lines (logs) to console
+                        # Print non-JSON lines (logs) directly - they already have ANSI colors
                         stripped = line.strip()
                         if stripped and not stripped.startswith('{"'):
-                            console.print(f"  [dim]{stripped}[/dim]")
+                            # Use print() directly to preserve ANSI escape codes from container
+                            print(f"  {stripped}", flush=True)
                 process.stdout.close()
             
             # Start output reader thread
