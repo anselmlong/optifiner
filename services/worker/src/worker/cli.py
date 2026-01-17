@@ -77,6 +77,46 @@ def _get_python_executable() -> str:
     return "python3"
 
 
+def get_optifinered_path(original_path: Path) -> Path:
+    """Get the _optifinered output directory path.
+    
+    The original codebase is never modified. All changes (benchmark creation,
+    optimizations) are made to a copy in a directory with the _optifinered suffix.
+    
+    Args:
+        original_path: Path to the original repository.
+        
+    Returns:
+        Path to the _optifinered output directory.
+    """
+    return original_path.parent / f"{original_path.name}_optifinered"
+
+
+def create_optifinered_copy(original_path: Path, console: Console) -> Path:
+    """Create or update the _optifinered output directory.
+    
+    Creates a fresh copy of the original repository in the _optifinered directory.
+    If the directory already exists, it will be removed and recreated.
+    
+    Args:
+        original_path: Path to the original repository.
+        console: Rich console for output.
+        
+    Returns:
+        Path to the created _optifinered directory.
+    """
+    optifinered_path = get_optifinered_path(original_path)
+    
+    if optifinered_path.exists():
+        console.print(f"[dim]Removing existing {optifinered_path.name}...[/dim]")
+        shutil.rmtree(optifinered_path)
+    
+    console.print(f"[dim]Creating {optifinered_path.name} from original...[/dim]")
+    shutil.copytree(original_path, optifinered_path, symlinks=True)
+    
+    return optifinered_path
+
+
 def run_evaluator(
     evaluator_path: str, 
     workspace: str, 
@@ -596,6 +636,12 @@ def main(
     # Resolve log directory
     log_directory = str(Path(log_dir).resolve()) if log_dir else None
 
+    # Create the _optifinered output directory - original codebase is never modified
+    console.print(f"\n[bold cyan]Setting up output directory...[/bold cyan]")
+    working_path = create_optifinered_copy(repository_path, console)
+    console.print(f"[green]Output directory: {working_path}[/green]")
+    console.print(f"[dim]Original repository will not be modified.[/dim]\n")
+
     # Handle evaluator
     evaluator_path: Path | None = None
     
@@ -605,9 +651,9 @@ def main(
             console.print(f"[red]Error: Evaluator not found: {evaluator_path}[/red]")
             sys.exit(1)
     else:
-        # Check for benchmark script - try new name first, then legacy name
-        benchmark_path = repository_path / BENCHMARK_SCRIPT_NAME
-        legacy_path = repository_path / "run_validator.py"
+        # Check for benchmark script in working_path - try new name first, then legacy name
+        benchmark_path = working_path / BENCHMARK_SCRIPT_NAME
+        legacy_path = working_path / "run_validator.py"
         
         if benchmark_path.exists():
             evaluator_path = benchmark_path
@@ -619,6 +665,7 @@ def main(
             # Explicitly requested to build benchmark
             success, message, created_path = run_benchmark_builder_cli(
                 repository_path,
+                working_path,
                 model_provider,
                 model_name,
                 max_iterations=30,
@@ -637,6 +684,7 @@ def main(
             
             success, message, created_path = run_benchmark_builder_cli(
                 repository_path,
+                working_path,
                 model_provider,
                 model_name,
                 max_iterations=30,
