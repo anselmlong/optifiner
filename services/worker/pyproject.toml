@@ -1,0 +1,45 @@
+[project]
+name = "evolution-worker"
+version = "0.1.0"
+description = "LangGraph-based agent workers for the Self Evolving Code Framework"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "langgraph>=0.2.0",
+    "langchain>=0.3.0",
+    "langchain-anthropic>=0.3.0",
+    "langchain-google-genai>=2.0.0",
+    "langchain-openai>=0.3.0",
+    "pydantic>=2.0.0",
+    "httpx>=0.27.0",
+    "redis>=5.0.0",
+    "celery>=5.4.0",
+    "gitpython>=3.1.0",
+    "click>=8.1.0",
+    "rich>=13.0.0",
+]
+
+[project.scripts]
+evolution-worker = "worker.__main__:main"
+evolution-cli = "worker.cli:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.5.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/worker"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]

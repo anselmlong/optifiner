@@ -1,0 +1,55 @@
+# Optifiner Worker - LangGraph Agent Container
+FROM python:3.11-slim
+
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    curl \
+    ripgrep \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user for running the worker
+RUN useradd --create-home --shell /bin/bash worker
+
+# Set up workspace directory (will be mounted as volume)
+RUN mkdir -p /app && chown worker:worker /app
+
+# Set up worker code directory
+WORKDIR /worker
+
+# Copy dependency file first for better caching
+COPY services/worker/pyproject.toml ./
+
+# Install dependencies
+RUN pip install --no-cache-dir -e . || pip install --no-cache-dir \
+    "langgraph>=0.2.0" \
+    "langchain>=0.3.0" \
+    "langchain-anthropic>=0.3.0" \
+    "langchain-google-genai>=2.0.0" \
+    "pydantic>=2.0.0" \
+    "pydantic-settings>=2.0.0" \
+    "redis>=5.0.0" \
+    "gitpython>=3.1.0" \
+    "aiofiles>=24.0.0" \
+    "httpx>=0.27.0"
+
+# Copy worker source code
+COPY services/worker/src ./src
+
+# Install the worker package
+RUN pip install --no-cache-dir -e .
+
+# Switch to non-root user
+USER worker
+
+# Set workspace as default working directory for tools
+ENV OPTIFINER_WORKSPACE_PATH=/app
+
+# Default command (can be overridden)
+CMD ["python", "-m", "optifiner_worker.worker"]
