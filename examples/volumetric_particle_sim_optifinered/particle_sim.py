@@ -456,7 +456,7 @@ class ParticleSimulation:
         INTENTIONALLY SLOW - per-pixel calculations!
         """
         # Create a background surface with smooth gradients
-        sample_rate = 16  # Coarser sampling (was 8)
+        sample_rate = 20  # Coarser sampling (was 16)
         
         # Pre-compute values used in the loop
         width = self.renderer.width
