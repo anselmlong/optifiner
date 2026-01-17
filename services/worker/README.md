@@ -1,179 +1,166 @@
-# Optifiner Worker
+# Evolution Worker
 
-LangGraph-based agent service for the Self Evolving Code Framework. Workers are responsible for analyzing, refactoring, and optimizing code in the target codebase.
+LangGraph-based agent workers for the Self Evolving Code Framework.
 
-## Architecture
+## Quick Start
 
+```bash
+# Install the package
+cd services/worker
+pip install -e .
+
+# Run evolution on a target codebase
+evolution-cli /path/to/repo --evaluator /path/to/evaluate.py --agents 10
 ```
-┌─────────────────────────────────────────────────┐
-│              Worker Container                    │
-│                                                  │
-│  ┌──────────────────────────────────────────┐  │
-│  │           LangGraph Agent                 │  │
-│  │  ┌─────────┐  ┌─────────┐  ┌─────────┐  │  │
-│  │  │Analyzer │  │Refactor │  │Optimizer│  │  │
-│  │  └────┬────┘  └────┬────┘  └────┬────┘  │  │
-│  │       │            │            │        │  │
-│  │       └────────────┼────────────┘        │  │
-│  │                    ▼                     │  │
-│  │              Tool Layer                  │  │
-│  │  ┌────┬────┬────┬────┬────┬────┬────┐  │  │
-│  │  │Read│Edit│Grep│Glob│ LS │Bash│ Py │  │  │
-│  │  └────┴────┴────┴────┴────┴────┴────┘  │  │
-│  └───────────────────┬──────────────────────┘  │
-│                      ▼                         │
-│              /app (target codebase)            │
-└─────────────────────────────────────────────────┘
+
+## CLI Usage
+
+The `evolution-cli` command runs multiple AI agents on a codebase, each trying to improve it based on a benchmark score.
+
+```bash
+evolution-cli REPOSITORY [OPTIONS]
+```
+
+### Required Arguments
+
+- `REPOSITORY`: Path to the target repository to evolve
+
+### Options
+
+| Option | Short | Default | Description |
+|--------|-------|---------|-------------|
+| `--evaluator` | `-e` | (required) | Path to evaluator script |
+| `--agents` | `-n` | 10 | Number of agents to run |
+| `--parallel` | `-p` | 1 | Parallel agent count |
+| `--generations` | `-g` | 1 | Evolution generations |
+| `--max-iterations` | `-i` | 15 | Max tool calls per agent |
+| `--task` | `-t` | "Improve..." | Task description |
+| `--model-provider` | | anthropic | LLM provider |
+| `--model-name` | | claude-sonnet-4-20250514 | Model name |
+| `--output` | `-o` | | JSON output file |
+
+### Example
+
+```bash
+# Run 10 agents on a snake game AI
+evolution-cli ./examples/snake_game \
+    --evaluator ./examples/snake_game/evaluate.py \
+    --agents 10 \
+    --task "Improve the snake AI to get higher scores"
+
+# Run with parallel agents
+evolution-cli ./my-project \
+    --evaluator ./benchmark.py \
+    --agents 20 \
+    --parallel 4 \
+    --generations 3
+
+# Use different model
+evolution-cli ./project \
+    --evaluator ./eval.py \
+    --model-provider google \
+    --model-name gemini-2.0-flash
+```
+
+## Evaluator Script
+
+The evaluator script should output a score. It can be a Python, Bash, or Node.js script.
+
+### JSON Format (Recommended)
+
+```python
+#!/usr/bin/env python3
+import json
+
+def evaluate():
+    # Run your benchmark
+    score = run_benchmark()
+    
+    print(json.dumps({
+        "score": score,
+        "metrics": {"fps": 60, "memory": 128},
+        "passed": True
+    }))
+
+if __name__ == "__main__":
+    evaluate()
+```
+
+### Simple Format
+
+The evaluator can also just print a number:
+
+```bash
+#!/bin/bash
+python benchmark.py | grep "Score:" | awk '{print $2}'
 ```
 
 ## Agent Types
 
-| Type | Purpose | Capabilities |
-|------|---------|--------------|
-| **Analyzer** | Understand codebase, identify opportunities | Profile performance, detect bottlenecks, suggest improvements |
-| **Refactoring** | Improve code quality | Simplify functions, remove duplication, improve algorithms |
-| **Feature** | Add new capabilities | Caching, parallelization, heuristics, optimizations |
-| **Optimizer** | Fine-tune performance | Parameter tuning, data structure optimization, micro-optimizations |
+The CLI cycles through different agent types:
 
-## Tools
+| Type | Specialization |
+|------|----------------|
+| `optimizer` | Fine-tuning, parameter adjustment |
+| `refactoring` | Code restructuring, algorithm improvement |
+| `feature` | Adding caching, parallelization |
+| `analyzer` | Understanding code, finding bottlenecks |
+| `general` | All-purpose improvements |
 
-All tools operate within the `/app` workspace directory:
+## How It Works
 
-| Tool | Description |
-|------|-------------|
-| `read_tool` | Read file contents with line numbers |
-| `write_tool` | Write/create files |
-| `edit_tool` | Make targeted string replacements |
-| `multi_edit_tool` | Multiple edits in one atomic operation |
-| `glob_tool` | Find files by pattern (e.g., `**/*.py`) |
-| `grep_tool` | Search file contents with regex |
-| `ls_tool` | List directory contents |
-| `bash_tool` | Execute shell commands |
-| `python_tool` | Execute Python code directly |
+1. **Baseline**: Get initial score from evaluator
+2. **Agent Run**: Each agent:
+   - Explores the codebase
+   - Makes improvements
+   - Uses `evaluate` tool to test changes
+   - If score improved, changes are kept
+3. **Git Integration**: Successful improvements are committed
+4. **Evolution**: Process repeats for multiple generations
 
-## Configuration
+## Available Tools
 
-Environment variables:
+Agents have access to:
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `OPTIFINER_ANTHROPIC_API_KEY` | Anthropic API key | - |
-| `OPTIFINER_GOOGLE_API_KEY` | Google API key | - |
-| `OPTIFINER_DEFAULT_MODEL` | Default LLM model | `claude-sonnet-4-20250514` |
-| `OPTIFINER_WORKSPACE_PATH` | Target codebase path | `/app` |
-| `OPTIFINER_REDIS_URL` | Redis connection URL | `redis://redis:6379/0` |
-| `OPTIFINER_COMMAND_TIMEOUT` | Command timeout (seconds) | `30` |
-| `OPTIFINER_MAX_FILE_LINES` | Max lines to read | `2000` |
+- `read_file` - Read files
+- `write_file` - Write files  
+- `edit_file` - Search & replace
+- `multi_edit` - Multiple edits atomically
+- `grep` - Search with regex
+- `glob_search` - Find files by pattern
+- `list_dir` - List directories
+- `run_python` - Execute Python code
+- `run_bash` - Execute shell commands
+- `evaluate` - Run the benchmark
 
-## Usage
+## Environment Variables
 
-### Running with Docker
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ANTHROPIC_API_KEY` | | Anthropic API key |
+| `GOOGLE_API_KEY` | | Google AI API key |
+| `OPENAI_API_KEY` | | OpenAI API key |
+| `WORKSPACE_ROOT` | /app | Workspace path |
 
-```bash
-# Build the worker image
-docker build -t optifiner-worker -f infra/docker/Dockerfile.worker .
+## Example: Snake Game
 
-# Run with a target codebase
-docker run -v /path/to/codebase:/app \
-  -e OPTIFINER_ANTHROPIC_API_KEY=your-key \
-  optifiner-worker
-```
-
-### Running with Docker Compose
+See `examples/snake_game/` for a complete example:
 
 ```bash
-cd infra/compose
-docker-compose up worker
+# The snake AI starts with random moves (score ~5-10)
+# Evolution agents improve it to use pathfinding (score ~50-100+)
+
+evolution-cli ./examples/snake_game \
+    --evaluator ./examples/snake_game/evaluate.py \
+    --agents 5 \
+    --task "Improve the SnakeAI class to get higher scores. The AI currently makes mostly random moves."
 ```
 
-### Local Development
+## Output
 
-```bash
-cd services/worker
-pip install -e ".[dev]"
-
-# Set environment variables
-export OPTIFINER_ANTHROPIC_API_KEY=your-key
-export OPTIFINER_WORKSPACE_PATH=/path/to/test/codebase
-
-# Run the worker
-python -m optifiner_worker.worker
-```
-
-## API
-
-### Creating and Running an Agent
-
-```python
-from optifiner_worker.agents import AgentType, create_agent
-from optifiner_worker.agents.base import run_agent
-
-# Run an analyzer agent
-result = await run_agent(
-    agent_type=AgentType.ANALYZER,
-    task="Analyze the codebase and identify performance bottlenecks",
-    model="claude-sonnet-4-20250514",
-    max_iterations=20,
-)
-
-print(result["result"])
-```
-
-### Evolution Workflows
-
-```python
-from optifiner_worker.agents.evolution import (
-    run_analysis_agent,
-    run_improvement_agent,
-)
-from optifiner_worker.agents import AgentType
-
-# Step 1: Analyze the codebase
-analysis = await run_analysis_agent(
-    metrics="Execution time, memory usage",
-    baseline="Current: 5.2s avg, 150MB peak",
-)
-
-# Step 2: Run improvement agent
-improvement = await run_improvement_agent(
-    agent_type=AgentType.OPTIMIZER,
-    metrics="Execution time, memory usage",
-    baseline="Current: 5.2s avg, 150MB peak",
-    analysis=analysis["result"],
-)
-```
-
-## Testing
-
-```bash
-cd services/worker
-pytest tests/
-```
-
-## File Structure
-
-```
-services/worker/
-├── pyproject.toml
-├── README.md
-└── src/optifiner_worker/
-    ├── __init__.py
-    ├── config.py          # Settings and configuration
-    ├── worker.py          # Main worker entry point
-    ├── agents/
-    │   ├── __init__.py
-    │   ├── base.py        # LangGraph agent creation
-    │   ├── types.py       # Agent types and prompts
-    │   └── evolution.py   # Evolution-specific workflows
-    └── tools/
-        ├── __init__.py
-        ├── read.py        # File reading
-        ├── write.py       # File writing
-        ├── edit.py        # String replacement
-        ├── multi_edit.py  # Multiple edits
-        ├── glob.py        # File pattern matching
-        ├── grep.py        # Content search
-        ├── ls.py          # Directory listing
-        ├── bash.py        # Shell commands
-        └── python.py      # Python execution
-```
+The CLI provides:
+- Real-time progress display
+- Per-agent success/failure status
+- Generation summaries
+- Final improvement statistics
+- Optional JSON output file
