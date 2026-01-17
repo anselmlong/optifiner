@@ -1,0 +1,10 @@
+{
+  "name": "@optifiner/worker",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "evolve": "python cli.py",
+    "install:deps": "pip install -r requirements.txt"
+  },
+  "packageManager": "pnpm@9.0.0"
+}
