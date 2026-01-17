@@ -37,14 +37,24 @@ from pydantic import BaseModel, Field
 from worker.tools.path_utils import get_workspace_root, get_benchmark_script_path
 from worker.workspace import BENCHMARK_SCRIPT_NAME
 
+# Timeout for running benchmarks - 30 seconds
+# This is intentionally short to prevent runaway benchmarks and keep iteration fast
+BENCHMARK_TIMEOUT = 30
+
+# Legacy timeout for backwards compatibility
 DEFAULT_TIMEOUT = 120
 
 # Global evaluator path override - if set, uses this instead of the standard benchmark path
 _evaluator_path_override: str | None = None
-_evaluator_timeout: int = DEFAULT_TIMEOUT
+_evaluator_timeout: int = BENCHMARK_TIMEOUT
+
+# Flag to indicate benchmark development mode vs improver agent mode
+# In benchmark dev mode: timeout tells agent to retry (they can fix the benchmark)
+# In improver mode: timeout is a hard fail (benchmark should already work)
+_is_benchmark_dev_mode: bool = False
 
 
-def set_evaluator(path: str | None, timeout: int = DEFAULT_TIMEOUT):
+def set_evaluator(path: str | None, timeout: int = BENCHMARK_TIMEOUT):
     """Set an evaluator path override.
     
     By default, the evaluate tool uses <workspace_root>/optifiner_benchmark.py.
@@ -52,11 +62,24 @@ def set_evaluator(path: str | None, timeout: int = DEFAULT_TIMEOUT):
     
     Args:
         path: Path to the evaluator script, or None to use the default.
-        timeout: Evaluation timeout in seconds.
+        timeout: Evaluation timeout in seconds (default: BENCHMARK_TIMEOUT = 30s).
     """
     global _evaluator_path_override, _evaluator_timeout
     _evaluator_path_override = path
     _evaluator_timeout = timeout
+
+
+def set_benchmark_dev_mode(is_dev: bool):
+    """Set whether we're in benchmark development mode.
+    
+    In benchmark dev mode (True): timeout tells agent to retry and fix the benchmark
+    In improver mode (False): timeout is a hard fail
+    
+    Args:
+        is_dev: True for benchmark builder agent, False for improver agents.
+    """
+    global _is_benchmark_dev_mode
+    _is_benchmark_dev_mode = is_dev
 
 
 def get_evaluator() -> str | None:
@@ -304,11 +327,27 @@ def evaluate(message: str = "") -> str:
         return _format_result(parsed)
         
     except subprocess.TimeoutExpired:
-        return (
-            f"Error: Benchmark timed out after {_evaluator_timeout} seconds.\n\n"
-            f"[BENCHMARK FAILED - timeout]\n"
-            f"Please fix the benchmark script to complete faster and try again."
-        )
+        if _is_benchmark_dev_mode:
+            # In benchmark dev mode: agent can fix the benchmark
+            return (
+                f"Error: Benchmark timed out after {_evaluator_timeout} seconds.\n\n"
+                f"[BENCHMARK FAILED - timeout]\n"
+                f"The benchmark must complete within {BENCHMARK_TIMEOUT} seconds.\n"
+                f"Please optimize the benchmark script to run faster and try again.\n"
+                f"Tips:\n"
+                f"- Reduce the number of frames/iterations being measured\n"
+                f"- Use a shorter measurement window\n"
+                f"- Ensure the benchmark exits cleanly after measurement"
+            )
+        else:
+            # In improver mode: hard fail, benchmark should already work
+            return (
+                f"Error: Benchmark timed out after {_evaluator_timeout} seconds.\n\n"
+                f"[BENCHMARK FAILED - timeout]\n"
+                f"The benchmark exceeded the {BENCHMARK_TIMEOUT}s time limit.\n"
+                f"This evaluation is considered a FAIL. Your changes may have caused "
+                f"an infinite loop or severe performance regression."
+            )
     except PermissionError:
         return (
             f"Error: Permission denied running benchmark: {benchmark_path}\n\n"
