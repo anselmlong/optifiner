@@ -59,7 +59,7 @@ def main():
     
     # Build config
     # Use shorter timeout for fast models like gemini flash
-    model_timeout = 20.0 if "gemini" in model_name.lower() and "flash" in model_name.lower() else 60.0
+    model_timeout = 50.0 if "gemini" in model_name.lower() and "flash" in model_name.lower() else 60.0
     try:
         config = WorkerConfig(
             model=ModelConfig(

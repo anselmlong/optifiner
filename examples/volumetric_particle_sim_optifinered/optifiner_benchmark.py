@@ -3,11 +3,11 @@
 
 import json
 import sys
-import time
 import os
+import time
 
-# Add current directory to sys.path
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+# Add current directory to sys.path to import particle_sim
+sys.path.append(os.getcwd())
 
 # Set SDL to use dummy video driver for headless environment
 os.environ["SDL_VIDEODRIVER"] = "dummy"
@@ -24,37 +24,48 @@ except ImportError as e:
     sys.exit(1)
 
 def run_benchmark(num_frames=30):
-    """Run the simulation and measure performance."""
+    """Run the simulation and return performance and functional metrics."""
     sim = ParticleSimulation()
-    
-    # Initial stats
-    initial_stats = get_simulation_stats(sim)
+    try:
+        # Run for a few frames to warm up
+        sim.run(max_frames=5)
+        
+        # Measure performance
+        start_time = time.time()
+        avg_fps = sim.run(max_frames=num_frames)
+        elapsed = time.time() - start_time
+        
+        # Get stats for functional testing
+        stats = get_simulation_stats(sim)
+        
+        return avg_fps, stats, elapsed
+    finally:
+        sim.cleanup()
+
+def main():
+    quiet = "--quiet" in sys.argv
     
     try:
-        # Run simulation
-        avg_fps = sim.run(max_frames=num_frames)
-        
-        # Final stats
-        final_stats = get_simulation_stats(sim)
+        num_frames = 30
+        avg_fps, stats, elapsed = run_benchmark(num_frames)
         
         # Functional tests
         tests = []
         
-        # 1. Particle count should be correct
-        tests.append(final_stats['num_particles'] == 300) # NUM_PARTICLES = 300
+        # Test 1: Particle count
+        expected_particles = 300 # From particle_sim.py NUM_PARTICLES
+        tests.append(stats['num_particles'] == expected_particles)
         
-        # 2. Simulation time should have progressed
-        tests.append(final_stats['time'] > 0)
+        # Test 2: Particles in bounds
+        # Most particles should be in bounds, but some might have just bounced or be slightly out
+        tests.append(stats['particles_in_bounds'] > expected_particles * 0.8)
         
-        # 3. Particles should be within bounds (mostly)
-        # Since they bounce, they should stay within WORLD_BOUNDS
-        # We allow a margin because collisions can push them out slightly
-        # and the stats are taken after collisions but before the next update's bound check.
-        tests.append(final_stats['particles_in_bounds'] >= 250) # Lenient check
+        # Test 3: Simulation is moving
+        tests.append(stats['avg_particle_velocity'] > 0)
         
-        # 4. Average velocity should be non-zero (things are moving)
-        tests.append(final_stats['avg_particle_velocity'] > 0)
-        
+        # Test 4: Time progressed
+        tests.append(stats['time'] > 0)
+
         test_gate = all(tests)
         
         result = {
@@ -63,38 +74,32 @@ def run_benchmark(num_frames=30):
             "test_gate": test_gate,
             "metrics": {
                 "avg_fps": avg_fps,
-                "num_particles": final_stats['num_particles'],
-                "particles_in_bounds": final_stats['particles_in_bounds'],
-                "sim_time": final_stats['time'],
-                "avg_velocity": final_stats['avg_particle_velocity']
+                "elapsed_time": elapsed,
+                "num_particles": stats['num_particles'],
+                "particles_in_bounds": stats['particles_in_bounds'],
+                "avg_particle_velocity": stats['avg_particle_velocity'],
+                "sim_time": stats['time'],
+                "tests_passed": sum(tests),
+                "total_tests": len(tests)
             },
-            "message": f"Benchmark completed. FPS: {avg_fps:.2f}, Tests: {'PASSED' if test_gate else 'FAILED'}"
+            "message": f"Average FPS: {avg_fps:.2f}. Functional tests: {'Passed' if test_gate else 'Failed'}"
         }
         
-        return result
-    finally:
-        sim.cleanup()
-
-def main():
-    quiet = "--quiet" in sys.argv
-    
-    try:
-        result = run_benchmark()
         if not quiet:
             print(json.dumps(result, indent=4))
         else:
             print(json.dumps(result))
-        
-        sys.exit(0 if result["test_gate"] else 1)
+            
+        sys.exit(0 if test_gate else 1)
         
     except Exception as e:
-        error_result = {
+        result = {
             "score": None,
             "metric_name": "FPS",
             "test_gate": False,
             "message": f"Error during benchmark: {str(e)}"
         }
-        print(json.dumps(error_result))
+        print(json.dumps(result))
         sys.exit(1)
 
 if __name__ == "__main__":

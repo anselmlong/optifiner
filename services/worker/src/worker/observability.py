@@ -196,6 +196,11 @@ class AgentObserver:
             self.console.print()
             self.console.print(f"[bold yellow]━━━ Iteration {iteration} ━━━[/bold yellow]")
     
+    def on_model_call_complete(self, duration_seconds: float):
+        """Called when a model API call completes."""
+        if self.verbosity >= 1:
+            self.console.print(f"[dim]  ⏱ Model call: {duration_seconds:.2f}s[/dim]")
+    
     def on_iteration_end(self, iteration: int):
         """Called at the end of each agent iteration."""
         event = ObservabilityEvent(
