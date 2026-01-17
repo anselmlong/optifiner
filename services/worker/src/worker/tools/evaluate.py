@@ -28,34 +28,27 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
-from worker.tools.path_utils import get_workspace_root, get_benchmark_script_path
-from worker.workspace import BENCHMARK_SCRIPT_NAME
+from worker.workspace import BENCHMARK_SCRIPT_NAME, get_workspace, get_workspace_root
 
 # Timeout for running benchmarks - 30 seconds
 # This is intentionally short to prevent runaway benchmarks and keep iteration fast
 BENCHMARK_TIMEOUT = 30
 
-# Legacy timeout for backwards compatibility
-DEFAULT_TIMEOUT = 120
-
-# Global evaluator path override - if set, uses this instead of the standard benchmark path
-_evaluator_path_override: str | None = None
-_evaluator_timeout: int = BENCHMARK_TIMEOUT
-
-# Flag to indicate benchmark development mode vs improver agent mode
-# In benchmark dev mode: timeout tells agent to retry (they can fix the benchmark)
-# In improver mode: timeout is a hard fail (benchmark should already work)
-_is_benchmark_dev_mode: bool = False
+# Thread-local evaluator settings
+# Using threading.local() ensures each thread (agent) has its own evaluator config
+# This prevents race conditions when running multiple agents in parallel
+_thread_local = threading.local()
 
 
 def set_evaluator(path: str | None, timeout: int = BENCHMARK_TIMEOUT):
-    """Set an evaluator path override.
+    """Set an evaluator path override for the current thread.
     
     By default, the evaluate tool uses <workspace_root>/optifiner_benchmark.py.
     Call this function to override with a different evaluator script.
@@ -64,13 +57,12 @@ def set_evaluator(path: str | None, timeout: int = BENCHMARK_TIMEOUT):
         path: Path to the evaluator script, or None to use the default.
         timeout: Evaluation timeout in seconds (default: BENCHMARK_TIMEOUT = 30s).
     """
-    global _evaluator_path_override, _evaluator_timeout
-    _evaluator_path_override = path
-    _evaluator_timeout = timeout
+    _thread_local.evaluator_path_override = path
+    _thread_local.evaluator_timeout = timeout
 
 
 def set_benchmark_dev_mode(is_dev: bool):
-    """Set whether we're in benchmark development mode.
+    """Set whether we're in benchmark development mode for the current thread.
     
     In benchmark dev mode (True): timeout tells agent to retry and fix the benchmark
     In improver mode (False): timeout is a hard fail
@@ -78,13 +70,22 @@ def set_benchmark_dev_mode(is_dev: bool):
     Args:
         is_dev: True for benchmark builder agent, False for improver agents.
     """
-    global _is_benchmark_dev_mode
-    _is_benchmark_dev_mode = is_dev
+    _thread_local.is_benchmark_dev_mode = is_dev
 
 
 def get_evaluator() -> str | None:
-    """Get the current evaluator path override, if any."""
-    return _evaluator_path_override
+    """Get the current evaluator path override for the current thread, if any."""
+    return getattr(_thread_local, 'evaluator_path_override', None)
+
+
+def _get_evaluator_timeout() -> int:
+    """Get the current evaluator timeout for the current thread."""
+    return getattr(_thread_local, 'evaluator_timeout', BENCHMARK_TIMEOUT)
+
+
+def _is_dev_mode() -> bool:
+    """Check if we're in benchmark dev mode for the current thread."""
+    return getattr(_thread_local, 'is_benchmark_dev_mode', False)
 
 
 class EvaluateInput(BaseModel):
@@ -250,14 +251,25 @@ def _format_result(result: BenchmarkResult) -> str:
     return "\n".join(parts)
 
 
-def _get_evaluator_path() -> Path:
-    """Get the evaluator path to use.
+def _get_benchmark_path_and_cwd() -> tuple[Path, Path]:
+    """Get the benchmark script path and the working directory for execution.
     
-    Returns the override path if set, otherwise the standard benchmark path.
+    Returns:
+        Tuple of (benchmark_path, cwd_path).
+        - benchmark_path: Absolute path to the benchmark script to run
+        - cwd_path: Working directory where the benchmark should be executed
     """
-    if _evaluator_path_override:
-        return Path(_evaluator_path_override)
-    return get_benchmark_script_path()
+    workspace_root = get_workspace_root()
+    
+    # Check if there's an evaluator override
+    override = get_evaluator()
+    if override:
+        # External evaluator - run it from the workspace root
+        return Path(override).resolve(), workspace_root
+    
+    # Default: use the benchmark in the workspace
+    benchmark_path = workspace_root / BENCHMARK_SCRIPT_NAME
+    return benchmark_path, workspace_root
 
 
 @tool(args_schema=EvaluateInput)
@@ -287,8 +299,7 @@ def evaluate(message: str = "") -> str:
     Returns:
         Evaluation result with score, test_gate status, and metrics.
     """
-    benchmark_path = _get_evaluator_path()
-    workspace_root = get_workspace_root()
+    benchmark_path, cwd = _get_benchmark_path_and_cwd()
     
     if not benchmark_path.exists():
         return (
@@ -301,15 +312,15 @@ def evaluate(message: str = "") -> str:
     try:
         # Run the benchmark script with --quiet flag
         cmd = [_get_python_executable(), str(benchmark_path), "--quiet"]
-        print(f"[evaluate] Running: {benchmark_path}")
         
+        timeout = _get_evaluator_timeout()
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            timeout=_evaluator_timeout,
-            cwd=str(workspace_root),
-            env={**os.environ, "WORKSPACE_ROOT": str(workspace_root)},
+            timeout=timeout,
+            cwd=str(cwd),
+            env={**os.environ, "WORKSPACE_ROOT": str(cwd)},
         )
         
         # Check for execution errors
@@ -327,27 +338,51 @@ def evaluate(message: str = "") -> str:
         parsed = _parse_benchmark_output(output)
         return _format_result(parsed)
         
-    except subprocess.TimeoutExpired:
-        if _is_benchmark_dev_mode:
+    except subprocess.TimeoutExpired as e:
+        timeout = _get_evaluator_timeout()
+        
+        # Capture any partial output that was produced before the timeout
+        partial_stdout = ""
+        partial_stderr = ""
+        if e.stdout:
+            partial_stdout = e.stdout if isinstance(e.stdout, str) else e.stdout.decode('utf-8', errors='replace')
+        if e.stderr:
+            partial_stderr = e.stderr if isinstance(e.stderr, str) else e.stderr.decode('utf-8', errors='replace')
+        
+        # Build partial output section for debugging
+        partial_output_section = ""
+        if partial_stdout or partial_stderr:
+            partial_output_section = "\n--- Partial Output (captured before timeout) ---\n"
+            if partial_stdout:
+                partial_output_section += f"STDOUT:\n{partial_stdout[:2000]}\n"
+            if partial_stderr:
+                partial_output_section += f"STDERR:\n{partial_stderr[:2000]}\n"
+            partial_output_section += "--- End Partial Output ---\n"
+        
+        if _is_dev_mode():
             # In benchmark dev mode: agent can fix the benchmark
             return (
-                f"Error: Benchmark timed out after {_evaluator_timeout} seconds.\n\n"
+                f"Error: Benchmark timed out after {timeout} seconds.\n\n"
                 f"[BENCHMARK FAILED - timeout]\n"
-                f"The benchmark must complete within {BENCHMARK_TIMEOUT} seconds.\n"
-                f"Please optimize the benchmark script to run faster and try again.\n"
+                f"The benchmark script MUST exit within {timeout} seconds. If it doesn't exit "
+                f"(return/complete) within this time limit, the evaluation automatically fails.\n\n"
+                f"Please optimize the benchmark script to complete faster and ensure it exits cleanly.\n"
+                f"{partial_output_section}"
                 f"Tips:\n"
                 f"- Reduce the number of frames/iterations being measured\n"
                 f"- Use a shorter measurement window\n"
-                f"- Ensure the benchmark exits cleanly after measurement"
+                f"- Ensure the benchmark calls sys.exit() or returns after measurement\n"
+                f"- Check for infinite loops or blocking operations"
             )
         else:
             # In improver mode: hard fail, benchmark should already work
             return (
-                f"Error: Benchmark timed out after {_evaluator_timeout} seconds.\n\n"
+                f"Error: Benchmark timed out after {timeout} seconds.\n\n"
                 f"[BENCHMARK FAILED - timeout]\n"
-                f"The benchmark exceeded the {BENCHMARK_TIMEOUT}s time limit.\n"
+                f"The benchmark script did not exit within the {timeout}s time limit.\n"
                 f"This evaluation is considered a FAIL. Your changes may have caused "
-                f"an infinite loop or severe performance regression."
+                f"an infinite loop or severe performance regression.\n"
+                f"{partial_output_section}"
             )
     except PermissionError:
         return (
@@ -398,7 +433,15 @@ def run_benchmark_for_validation(workspace_root: Path) -> BenchmarkResult:
         
         return _parse_benchmark_output(result.stdout.strip())
         
-    except subprocess.TimeoutExpired:
-        return BenchmarkResult(error=f"Timed out after {BENCHMARK_TIMEOUT} seconds. Benchmark must complete within {BENCHMARK_TIMEOUT}s.")
+    except subprocess.TimeoutExpired as e:
+        # Capture partial output for debugging
+        partial_output = ""
+        if e.stdout:
+            stdout_str = e.stdout if isinstance(e.stdout, str) else e.stdout.decode('utf-8', errors='replace')
+            partial_output += f" Partial stdout: {stdout_str[:500]}"
+        if e.stderr:
+            stderr_str = e.stderr if isinstance(e.stderr, str) else e.stderr.decode('utf-8', errors='replace')
+            partial_output += f" Partial stderr: {stderr_str[:500]}"
+        return BenchmarkResult(error=f"Timed out after {BENCHMARK_TIMEOUT} seconds. The benchmark script must exit within {BENCHMARK_TIMEOUT}s.{partial_output}")
     except Exception as e:
         return BenchmarkResult(error=str(e))

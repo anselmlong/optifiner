@@ -10,6 +10,7 @@ The benchmark script is always at: <workspace_root>/optifiner_benchmark.py
 
 import os
 import shutil
+import threading
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -20,6 +21,11 @@ WORKSPACE_BASE = Path("/tmp/optifiner_workspaces")
 
 # Standard benchmark script filename (always at workspace root)
 BENCHMARK_SCRIPT_NAME = "optifiner_benchmark.py"
+
+# Thread-local workspace context for tools
+# Using threading.local() ensures each thread (agent) has its own workspace context
+# This prevents race conditions when running multiple agents in parallel
+_thread_local = threading.local()
 
 
 class WorkspaceManager:
@@ -187,32 +193,42 @@ class WorkspaceManager:
         return modified_files
 
 
-# Global workspace context for tools
-_current_workspace: WorkspaceManager | None = None
-
-
 def set_workspace(workspace: WorkspaceManager | None):
-    """Set the global workspace context."""
-    global _current_workspace
-    _current_workspace = workspace
+    """Set the workspace context for the current thread.
+    
+    This must be called before any tools are used to ensure they
+    operate within the correct workspace.
+    """
+    _thread_local.workspace = workspace
 
 
 def get_workspace() -> WorkspaceManager | None:
-    """Get the current global workspace."""
-    return _current_workspace
+    """Get the workspace for the current thread.
+    
+    Returns None if no workspace is set.
+    """
+    return getattr(_thread_local, 'workspace', None)
 
 
 def get_workspace_root() -> Path:
     """Get the workspace root for file operations.
     
-    If a workspace is set, returns the workspace root.
-    Otherwise returns the WORKSPACE_ROOT env var or current directory.
+    Priority:
+    1. Thread-local workspace (set via set_workspace)
+    2. WORKSPACE_ROOT environment variable
+    3. Current working directory
+    
+    Returns:
+        Path to the workspace root directory.
     """
-    if _current_workspace:
-        return _current_workspace.workspace_root
+    workspace = get_workspace()
+    if workspace:
+        return workspace.workspace_root
+    
     env_root = os.environ.get("WORKSPACE_ROOT")
     if env_root:
         return Path(env_root)
+    
     return Path.cwd()
 
 
@@ -228,14 +244,18 @@ def get_benchmark_path() -> Path:
 def resolve_path(path: str | Path) -> Path:
     """Resolve a path within the workspace.
     
+    If a workspace manager is active, uses its path resolution.
+    Otherwise, resolves relative to workspace root.
+    
     Args:
         path: Relative or absolute path.
         
     Returns:
         Resolved absolute path.
     """
-    if _current_workspace:
-        return _current_workspace.resolve_path(path)
+    workspace = get_workspace()
+    if workspace:
+        return workspace.resolve_path(path)
     
     # No workspace isolation - direct path resolution
     p = Path(path)
