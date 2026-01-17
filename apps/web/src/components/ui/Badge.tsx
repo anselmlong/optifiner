@@ -12,7 +12,7 @@ interface BadgeProps extends HTMLAttributes<HTMLSpanElement> {
 
 export const Badge = forwardRef<HTMLSpanElement, BadgeProps>(
   ({ className = '', variant = 'default', size = 'md', icon, dot, pulse, children, ...props }, ref) => {
-    const baseStyles = 'inline-flex items-center font-medium rounded-full'
+    const baseStyles = 'inline-flex items-center font-tech-label rounded-full tracking-wider'
 
     const variants = {
       default: 'bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300',
