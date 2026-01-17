@@ -71,6 +71,69 @@ class GitHubService:
                 "error": str(e),
             }
 
+    def create_branch(
+        self,
+        repo_dir: str,
+        branch_name: str,
+        from_branch: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a new branch in the repository.
+
+        Args:
+            repo_dir: Directory name of the repository
+            branch_name: Name of the new branch to create
+            from_branch: Branch to create from (default: current branch)
+
+        Returns:
+            Dictionary with branch creation information
+        """
+        try:
+            repo_path = self.workspace_root / repo_dir
+
+            if not repo_path.exists():
+                return {
+                    "success": False,
+                    "error": f"Repository directory not found: {repo_dir}",
+                }
+
+            repo = Repo(str(repo_path))
+
+            # Check if branch already exists
+            if branch_name in [ref.name for ref in repo.heads]:
+                # Branch exists, just checkout
+                repo.heads[branch_name].checkout()
+                return {
+                    "success": True,
+                    "branch": branch_name,
+                    "message": f"Switched to existing branch: {branch_name}",
+                }
+
+            # Switch to source branch if specified
+            if from_branch:
+                if from_branch in [ref.name for ref in repo.heads]:
+                    repo.heads[from_branch].checkout()
+                else:
+                    return {
+                        "success": False,
+                        "error": f"Source branch not found: {from_branch}",
+                    }
+
+            # Create new branch from current branch
+            new_branch = repo.create_head(branch_name)
+            new_branch.checkout()
+
+            return {
+                "success": True,
+                "branch": branch_name,
+                "from_branch": repo.active_branch.name if from_branch else None,
+                "commit": repo.head.commit.hexsha,
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+            }
+
     def get_repository_info(self, owner: str, repo_name: str) -> dict[str, Any]:
         """Get repository information from GitHub API.
 
