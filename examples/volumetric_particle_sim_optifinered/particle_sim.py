@@ -14,6 +14,7 @@ without breaking visual correctness or functionality.
 import os
 import math
 import random
+import sys
 from dataclasses import dataclass
 from typing import List, Tuple
 
@@ -298,15 +299,12 @@ class VolumetricRenderer:
 class ParticleSimulation:
     """Main simulation class"""
     
-    def __init__(self, benchmark_mode: bool = False, benchmark_duration: float = 5.0):
+    def __init__(self):
         pygame.init()
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
         pygame.display.set_caption("Volumetric Particle Simulation - Optimize Me!")
         self.clock = pygame.time.Clock()
         self.running = True
-        self.benchmark_mode = benchmark_mode
-        self.benchmark_duration = benchmark_duration
-        self._benchmark_start_time = 0.0
         
         self.renderer = VolumetricRenderer(SCREEN_WIDTH, SCREEN_HEIGHT)
         self.particles: List[Particle] = []
@@ -694,16 +692,34 @@ class ParticleSimulation:
         
         pygame.display.flip()
     
+    def run_headless_benchmark(self, frames_to_run: int) -> float:
+        """Runs the simulation for a fixed number of frames without rendering, returning average FPS."""
+        # Disable pygame display for headless run
+        os.environ['SDL_VIDEODRIVER'] = 'dummy'
+        pygame.init()
+        
+        # Re-initialize clock for accurate timing in headless mode
+        self.clock = pygame.time.Clock()
+        
+        start_time = time.time()
+        frame_count = 0
+        
+        for _ in range(frames_to_run):
+            dt = self.clock.tick(60) / 1000.0
+            dt = min(dt, 0.1) # Cap delta time
+            self.update(dt)
+            frame_count += 1
+            
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        
+        pygame.quit()
+        
+        if elapsed_time > 0:
+            return frame_count / elapsed_time
+        return 0.0
+
     def run(self) -> None:
-        """Run the simulation."""
-        if self.benchmark_mode:
-            self._benchmark_start_time = time.time()
-
-        while self.running:
-            if self.benchmark_mode and (time.time() - self._benchmark_start_time > self.benchmark_duration):
-                self.running = False
-                break
-
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     self.running = False

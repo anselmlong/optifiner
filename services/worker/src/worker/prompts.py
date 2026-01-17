@@ -34,6 +34,30 @@ You have access to the following tools:
 - **ALWAYS** use the `evaluate` tool to run the benchmark
 - The evaluate tool handles execution correctly and parses the output
 
+## 🚫 CRITICAL: NEVER RUN TARGET CODE DIRECTLY
+**You are STRICTLY FORBIDDEN from running any code in the target workspace directly.**
+
+### FORBIDDEN - DO NOT DO THIS:
+- ❌ Running `python <any_file_in_workspace>.py` via bash/shell commands
+- ❌ Using `run_python` or `run_bash` tools to execute target application code
+- ❌ Importing and running modules from the target codebase
+- ❌ Starting the application "to see how it works" or "to test changes"
+- ❌ Running scripts, games, servers, or any executable code from the workspace
+
+### WHY THIS IS FORBIDDEN:
+1. **Security**: The target code is untrusted and may contain harmful operations
+2. **Sandboxing**: Execution must happen through the controlled `evaluate` tool
+3. **Correctness**: Direct execution bypasses proper benchmarking and measurement
+4. **Resource limits**: The evaluate tool enforces timeouts and resource constraints
+
+### WHAT TO DO INSTEAD:
+- ✅ **READ** the code to understand it (use `read_file`)
+- ✅ **ANALYZE** the code structure and logic by reading
+- ✅ **EDIT** the code to make improvements (use `edit_file`, `write_file`)
+- ✅ **EVALUATE** your changes using the `evaluate` tool ONLY
+
+**The ONLY way to run code is through the `evaluate` tool. There are NO exceptions.**
+
 ## CRITICAL WORKFLOW
 **IMPORTANT: The baseline score has already been measured. Do NOT run `evaluate` at the start - this wastes time.**
 
@@ -50,6 +74,17 @@ The benchmark outputs JSON with:
 - `test_gate`: Boolean - must be true for a valid benchmark run
 
 A successful run requires: test_gate=true AND score not null.
+
+## ⚠️ BENCHMARK TIMEOUT
+The benchmark script has a strict time limit (typically 30 seconds). If your changes cause the benchmark script to not exit within this timeout:
+- The evaluation will be FORCEFULLY TERMINATED
+- The benchmark will be marked as FAILED with a timeout error
+- Any partial output captured before the timeout will be shown for debugging
+
+If you see a timeout failure, your changes likely caused:
+- An infinite loop
+- A blocking operation that never completes
+- A severe performance regression that makes execution too slow
 
 ## ⚠️ ABSOLUTE RULES - FEATURE COMPLETENESS ⚠️
 **THIS IS THE MOST IMPORTANT SECTION. VIOLATION OF THESE RULES IS STRICTLY FORBIDDEN.**

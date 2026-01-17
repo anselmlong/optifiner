@@ -34,7 +34,13 @@ from worker.agent import normalize_tool_args
 from worker.config import ModelConfig, WorkerConfig, get_llm
 from worker.observability import AgentObserver, get_observer
 from worker.state import AgentState
-from worker.workspace import WorkspaceManager, set_workspace, get_workspace, BENCHMARK_SCRIPT_NAME
+from worker.workspace import (
+    WorkspaceManager,
+    set_workspace,
+    get_workspace,
+    get_workspace_root,
+    BENCHMARK_SCRIPT_NAME,
+)
 from worker.tools import get_benchmark_builder_tools
 from worker.tools.evaluate import run_benchmark_for_validation, set_benchmark_dev_mode, BENCHMARK_TIMEOUT
 
@@ -174,7 +180,20 @@ The benchmark script should:
 - Accept `--quiet` flag to output only JSON (no other stdout)
 - Handle errors gracefully and return JSON even on failure
 - Be runnable from the repository root
-- **CRITICAL: Complete within {timeout} seconds** - benchmarks that take longer will timeout and fail!
+
+### ⚠️ CRITICAL: {timeout}-SECOND TIMEOUT ⚠️
+**The benchmark script MUST exit (complete execution) within {timeout} seconds.**
+
+If the Python script does not exit within {timeout} seconds:
+- The evaluation will be FORCEFULLY TERMINATED
+- The benchmark will be marked as FAILED with a timeout error
+- Any partial output will be shown, but the benchmark does NOT pass
+
+This means your script must:
+- Measure performance quickly (a few seconds of measurement is usually enough)
+- Call `sys.exit()` or simply return from `main()` after outputting JSON
+- NOT have infinite loops or blocking operations that prevent exit
+- NOT wait for user input or external events indefinitely
 
 ## Available Tools
 - `list_dir`: List directory contents
@@ -300,13 +319,8 @@ def create_benchmark_builder_agent(
         nonlocal system_prompt_logged
         
         # Get workspace info for the prompt
-        ws = get_workspace()
-        if ws:
-            workspace_root = str(ws.workspace_root)
-            benchmark_path = str(ws.benchmark_path)
-        else:
-            workspace_root = config.workspace_root
-            benchmark_path = f"{workspace_root}/{BENCHMARK_SCRIPT_NAME}"
+        workspace_root = str(get_workspace_root())
+        benchmark_path = f"{workspace_root}/{BENCHMARK_SCRIPT_NAME}"
         
         system_prompt = BENCHMARK_BUILDER_PROMPT.format(
             workspace_root=workspace_root,
@@ -411,17 +425,18 @@ def create_benchmark_builder_agent(
         
         # Don't allow ending without a VALID benchmark
         # Check if benchmark exists AND passes validation
-        ws = get_workspace()
-        if ws:
-            if not ws.benchmark_path.exists():
-                # Benchmark file not created yet - force agent to continue
-                return "remind"
-            
-            # Benchmark exists - check if it's valid
-            result = run_benchmark_for_validation(ws.workspace_root)
-            if not result.is_valid:
-                # Benchmark exists but doesn't pass - force agent to fix it
-                return "remind"
+        workspace_root = get_workspace_root()
+        benchmark_path = workspace_root / BENCHMARK_SCRIPT_NAME
+        
+        if not benchmark_path.exists():
+            # Benchmark file not created yet - force agent to continue
+            return "remind"
+        
+        # Benchmark exists - check if it's valid
+        result = run_benchmark_for_validation(workspace_root)
+        if not result.is_valid:
+            # Benchmark exists but doesn't pass - force agent to fix it
+            return "remind"
         
         return "end"
     
@@ -454,12 +469,12 @@ def create_benchmark_builder_agent(
     
     def remind_node(state: AgentState) -> dict[str, Any]:
         """Remind the agent to fix the benchmark script."""
-        ws = get_workspace()
-        benchmark_path = ws.benchmark_path if ws else "optifiner_benchmark.py"
+        workspace_root = get_workspace_root()
+        benchmark_path = workspace_root / BENCHMARK_SCRIPT_NAME
         
         # Check what's wrong with the benchmark
-        if ws and ws.benchmark_path.exists():
-            result = run_benchmark_for_validation(ws.workspace_root)
+        if benchmark_path.exists():
+            result = run_benchmark_for_validation(workspace_root)
             if result.error:
                 reminder_text = (
                     f"BENCHMARK ERROR - Please fix and retry!\n\n"
@@ -564,8 +579,10 @@ def run_benchmark_builder(
     # Set benchmark dev mode - timeouts tell agent to retry (they can fix the benchmark)
     set_benchmark_dev_mode(True)
     
-    # Set up workspace context
+    # Set up workspace context - both thread-local AND environment variable
+    # The env var is a fallback in case thread-local doesn't propagate through LangGraph
     set_workspace(workspace)
+    os.environ["WORKSPACE_ROOT"] = str(workspace.workspace_root)
     
     config = WorkerConfig.from_env()
     if model_config:

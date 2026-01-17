@@ -323,8 +323,10 @@ def run_single_agent_isolated(
             duration_seconds=time.time() - start_time,
         ), None
 
-    # Set the workspace context for tools
+    # Set the workspace context for tools - both thread-local AND environment variable
+    # The env var is a fallback in case thread-local doesn't propagate through LangGraph
     set_workspace(workspace)
+    os.environ["WORKSPACE_ROOT"] = str(workspace.workspace_root)
 
     # Configure evaluator for improver mode (timeouts are hard fails)
     set_benchmark_dev_mode(False)

@@ -13,11 +13,7 @@ from worker.tools.multi_edit import multi_edit
 from worker.tools.grep import grep
 from worker.tools.glob import glob_search
 from worker.tools.list_dir import list_dir
-# Execution tools - NOT available to evolution agents (prevents benchmark tampering)
-# Available to Benchmark Builder Agent via benchmark_builder.py
-# from worker.tools.run_python import run_python, run_python_file
-# from worker.tools.run_bash import run_bash
-from worker.tools.evaluate import evaluate, set_evaluator, get_evaluator
+from worker.tools.evaluate import evaluate, set_evaluator, get_evaluator, set_benchmark_dev_mode
 
 __all__ = [
     "read_file",
@@ -27,13 +23,10 @@ __all__ = [
     "grep",
     "glob_search",
     "list_dir",
-    # Execution tools available via direct import for benchmark builder:
-    # "run_python",
-    # "run_python_file",
-    # "run_bash",
     "evaluate",
     "set_evaluator",
     "get_evaluator",
+    "set_benchmark_dev_mode",
 ]
 
 
@@ -52,10 +45,6 @@ def get_all_tools():
         grep,
         glob_search,
         list_dir,
-        # NOT included for evolution agents - prevents benchmark tampering:
-        # run_python,
-        # run_python_file,
-        # run_bash,
         evaluate,
     ]
 
@@ -64,7 +53,8 @@ def get_benchmark_builder_tools():
     """Return all tools available to the Benchmark Builder Agent.
     
     This includes execution tools (run_bash, run_python) which are needed
-    to test and iterate on the benchmark script.
+    to test and iterate on the benchmark script. The evaluate tool is added
+    separately in benchmark_builder.py.
     """
     from worker.tools.run_python import run_python, run_python_file
     from worker.tools.run_bash import run_bash
@@ -80,5 +70,4 @@ def get_benchmark_builder_tools():
         run_python,
         run_python_file,
         run_bash,
-        # Note: evaluate is NOT included - benchmark builder creates the evaluator
     ]
