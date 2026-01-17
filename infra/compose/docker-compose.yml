@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  api:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.api
+    container_name: optifiner-api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../../apps/api:/app
+    environment:
+      - PYTHONUNBUFFERED=1
+
+  web:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.web
+    container_name: optifiner-web
+    ports:
+      - "3000:3000"
+    volumes:
+      - ../../apps/web:/app
+      - /app/node_modules
+    environment:
+      - NODE_ENV=development
+
+  worker:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.worker
+    container_name: optifiner-worker
+    volumes:
+      - ../../services/worker:/app
+    environment:
+      - PYTHONUNBUFFERED=1
