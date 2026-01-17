@@ -29,6 +29,8 @@ from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 from pydantic import BaseModel, Field
 
+from worker.agent import normalize_tool_args
+
 from worker.config import ModelConfig, WorkerConfig, get_llm
 from worker.observability import AgentObserver, get_observer
 from worker.state import AgentState
@@ -356,14 +358,17 @@ def create_benchmark_builder_agent(
                 tool_args = tc.get("args", {})
                 call_id = tc.get("id", "")
                 
+                # Normalize tool arguments (e.g., path -> file_path)
+                tc["args"] = normalize_tool_args(tool_name, tool_args)
+                
                 tool_calls_info.append({
                     "name": tool_name,
-                    "args": tool_args,
+                    "args": tc["args"],
                     "id": call_id,
                 })
                 
                 if obs:
-                    obs.on_tool_call(tool_name, tool_args, call_id)
+                    obs.on_tool_call(tool_name, tc["args"], call_id)
         
         result = base_tool_node.invoke(state)
         

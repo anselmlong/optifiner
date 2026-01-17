@@ -15,6 +15,29 @@ from worker.state import AgentState
 from worker.tools import get_all_tools
 
 
+# Map of tool names to their argument aliases (alias -> canonical name)
+TOOL_ARG_ALIASES = {
+    "read_file": {"path": "file_path"},
+    "write_file": {"path": "file_path"},
+    "edit_file": {"path": "file_path"},
+    "multi_edit": {"path": "file_path"},
+    "run_python_file": {"path": "file_path"},
+}
+
+
+def normalize_tool_args(tool_name: str, args: dict) -> dict:
+    """Normalize tool arguments by converting aliases to canonical names."""
+    aliases = TOOL_ARG_ALIASES.get(tool_name, {})
+    if not aliases:
+        return args
+    
+    normalized = dict(args)
+    for alias, canonical in aliases.items():
+        if alias in normalized and canonical not in normalized:
+            normalized[canonical] = normalized.pop(alias)
+    return normalized
+
+
 def create_evolution_agent(
     config: WorkerConfig | None = None,
     agent_type: AgentType | None = None,
@@ -130,14 +153,17 @@ def create_evolution_agent(
                 tool_args = tc.get("args", {})
                 call_id = tc.get("id", "")
                 
+                # Normalize tool arguments (e.g., path -> file_path)
+                tc["args"] = normalize_tool_args(tool_name, tool_args)
+                
                 tool_calls_info.append({
                     "name": tool_name,
-                    "args": tool_args,
+                    "args": tc["args"],
                     "id": call_id,
                 })
                 
                 if obs:
-                    obs.on_tool_call(tool_name, tool_args, call_id)
+                    obs.on_tool_call(tool_name, tc["args"], call_id)
 
         # Execute tools
         result = base_tool_node.invoke(state)
