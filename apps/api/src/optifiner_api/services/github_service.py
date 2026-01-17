@@ -2,6 +2,7 @@
 
 import base64
 import json
+import logging
 import os
 import shutil
 import time
@@ -18,6 +19,8 @@ from github.InputGitTreeElement import InputGitTreeElement
 from github.InputGitAuthor import InputGitAuthor
 
 from optifiner_api.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class GitHubService:
@@ -40,11 +43,72 @@ class GitHubService:
         self._github_app_token_expires: float = 0
         self._cached_installation_id: str | None = None
         
+        # Configure git to prevent password prompts
+        self._configure_git_credentials()
+        
         # Ensure workspace directory exists and is writable
         self._ensure_workspace_writable()
         
-        # Initialize GitHub client (use App token if available, fallback to PAT)
+        # Initialize GitHub client using GitHub App authentication
         self.github = self._get_github_client()
+    
+    def _configure_git_credentials(self) -> None:
+        """Configure git to prevent password prompts.
+        
+        Sets environment variables to disable git credential prompts and
+        ensures all git operations use GitHub App authentication.
+        """
+        # Disable git terminal prompts (prevents password prompts)
+        os.environ["GIT_TERMINAL_PROMPT"] = "0"
+        
+        # Disable git askpass (prevents credential prompts)
+        # Use a helper that returns empty string
+        os.environ["GIT_ASKPASS"] = "echo"
+        
+        # Disable credential helper prompts
+        os.environ["GIT_CREDENTIAL_HELPER"] = ""
+        
+        # Disable credential manager
+        os.environ["GIT_CREDENTIAL_MANAGER"] = ""
+        
+        logger.debug(f"[GitHubService] Git credentials configured to prevent prompts")
+    
+    def _update_remote_url_with_token(self, repo: Repo, repo_path: Path) -> None:
+        """Update the remote URL to include GitHub App token to prevent password prompts.
+        
+        Args:
+            repo: GitPython Repo object
+            repo_path: Path to the repository
+        """
+        try:
+            auth_token = self._get_auth_token()
+            if not auth_token:
+                logger.debug(f"[GitHubService] No auth token available, skipping remote URL update")
+                return
+            
+            # Get current remote URL
+            origin = repo.remotes.origin
+            current_url = origin.url
+            
+            # Check if URL already has authentication
+            if "@github.com" in current_url and not current_url.startswith("git@"):
+                logger.debug(f"[GitHubService] Remote URL already authenticated")
+                return
+            
+            # Update remote URL to include token
+            if current_url.startswith("https://github.com/"):
+                # HTTPS URL without token
+                new_url = current_url.replace("https://", f"https://{auth_token}@")
+                origin.set_url(new_url, origin.url)
+                logger.debug(f"[GitHubService] Updated remote URL to use GitHub App token")
+            elif current_url.startswith("git@github.com:"):
+                # SSH URL - convert to HTTPS with token
+                ssh_path = current_url.replace("git@github.com:", "").replace(".git", "")
+                new_url = f"https://{auth_token}@github.com/{ssh_path}.git"
+                origin.set_url(new_url, origin.url)
+                logger.debug(f"[GitHubService] Converted SSH remote URL to HTTPS with token")
+        except Exception as e:
+            logger.warning(f"[GitHubService] Failed to update remote URL with token: {e}")
     
     def _ensure_workspace_writable(self) -> None:
         """Ensure workspace directory exists and is writable.
@@ -89,7 +153,9 @@ class GitHubService:
         Returns:
             JWT token string or None if App credentials not configured
         """
+        logger.debug(f"[GitHubService] _get_github_app_jwt called")
         if not settings.GITHUB_APP_ID or not settings.GITHUB_APP_PRIVATE_KEY:
+            logger.debug(f"[GitHubService] Missing credentials: GITHUB_APP_ID={settings.GITHUB_APP_ID is not None}, GITHUB_APP_PRIVATE_KEY={settings.GITHUB_APP_PRIVATE_KEY is not None}")
             return None
         
         try:
@@ -97,11 +163,38 @@ class GitHubService:
             private_key = settings.GITHUB_APP_PRIVATE_KEY
             
             # If it's a file path, read it
-            if os.path.exists(private_key):
-                with open(private_key, "r") as f:
-                    private_key = f.read()
+            # Resolve relative paths relative to project root
+            private_key_path = Path(private_key)
+            if not private_key_path.is_absolute():
+                # File is at: apps/api/src/optifiner_api/services/github_service.py
+                # Project root is 6 levels up: services -> optifiner_api -> src -> api -> apps -> project_root
+                project_root = Path(__file__).parent.parent.parent.parent.parent.parent
+                private_key_path = project_root / private_key
+            
+            # Check if it's a file path (exists as a file)
+            logger.debug(f"[GitHubService] Checking private key path: {private_key_path} (exists={private_key_path.exists()}, is_file={private_key_path.is_file() if private_key_path.exists() else False})")
+            if private_key_path.exists() and private_key_path.is_file():
+                try:
+                    logger.debug(f"[GitHubService] Reading private key from file: {private_key_path}")
+                    with open(private_key_path, "r") as f:
+                        private_key = f.read()
+                    logger.debug(f"[GitHubService] Private key read successfully (length={len(private_key)})")
+                except Exception as e:
+                    logger.error(f"[GitHubService] Error reading private key file {private_key_path}: {e}")
+                    return None
+            elif not private_key_path.exists():
+                # If path doesn't exist, assume it's PEM content directly
+                # (don't error here, let jwt.encode handle validation)
+                logger.debug(f"[GitHubService] Private key path doesn't exist, treating as PEM content")
+                pass
+            
+            # Validate that we have private key content
+            if not private_key or not private_key.strip():
+                logger.error(f"[GitHubService] Private key is empty. Path checked: {private_key_path}")
+                return None
             
             # Generate JWT token
+            logger.debug(f"[GitHubService] Generating JWT token with App ID: {settings.GITHUB_APP_ID}")
             now = int(time.time())
             payload = {
                 "iat": now - 60,  # Issued at (1 minute ago to account for clock skew)
@@ -110,9 +203,15 @@ class GitHubService:
             }
             
             token = jwt.encode(payload, private_key, algorithm="RS256")
+            logger.debug(f"[GitHubService] JWT token generated successfully")
             return token
+        except jwt.InvalidKeyError as e:
+            logger.error(f"[GitHubService] Invalid private key format: {e}")
+            logger.error(f"[GitHubService] Private key path checked: {private_key_path if 'private_key_path' in locals() else 'N/A'}")
+            return None
         except Exception as e:
-            print(f"Error generating GitHub App JWT: {e}")
+            logger.error(f"[GitHubService] Error generating GitHub App JWT: {e}")
+            logger.error(f"[GitHubService] Private key path checked: {private_key_path if 'private_key_path' in locals() else 'N/A'}")
             return None
     
     def _get_installation_id(self) -> str | None:
@@ -176,22 +275,30 @@ class GitHubService:
         Returns:
             Installation token string or None if not available
         """
+        logger.debug(f"[GitHubService] _get_installation_token called")
         # Check if we have a cached valid token
         if self._github_app_token and time.time() < self._github_app_token_expires:
+            logger.debug(f"[GitHubService] Using cached installation token")
             return self._github_app_token
         
         # Get installation ID using Client ID
+        logger.debug(f"[GitHubService] Getting installation ID")
         installation_id = self._get_installation_id()
         if not installation_id:
+            logger.debug(f"[GitHubService] Installation ID not found")
             return None
+        logger.debug(f"[GitHubService] Installation ID: {installation_id}")
         
         jwt_token = self._get_github_app_jwt()
         if not jwt_token:
+            logger.debug(f"[GitHubService] JWT token not available")
             return None
+        logger.debug(f"[GitHubService] JWT token obtained")
         
         try:
             # Get installation token from GitHub API
             url = f"https://api.github.com/app/installations/{installation_id}/access_tokens"
+            logger.debug(f"[GitHubService] Requesting installation token from: {url}")
             
             headers = {
                 "Authorization": f"Bearer {jwt_token}",
@@ -204,6 +311,7 @@ class GitHubService:
             data = response.json()
             token = data.get("token")
             expires_at = data.get("expires_at")
+            logger.debug(f"[GitHubService] Installation token received, expires_at={expires_at}")
             
             if token:
                 # Cache the token (expires in ~1 hour, cache for 50 minutes)
@@ -221,9 +329,10 @@ class GitHubService:
                 else:
                     self._github_app_token_expires = time.time() + (50 * 60)  # 50 minutes
                 
+                logger.info(f"[GitHubService] Installation token obtained and cached")
                 return token
         except Exception as e:
-            print(f"Error getting installation token: {e}")
+            logger.error(f"[GitHubService] Error getting installation token: {e}")
             return None
         
         return None
@@ -239,6 +348,50 @@ class GitHubService:
             return Github(installation_token)
         
         return None
+    
+    def _get_configuration_error(self) -> str:
+        """Get detailed error message about missing GitHub App configuration.
+        
+        Returns:
+            Error message describing what configuration is missing
+        """
+        missing = []
+        
+        if not settings.GITHUB_APP_ID:
+            missing.append("GITHUB_APP_ID")
+        
+        if not settings.GITHUB_APP_PRIVATE_KEY:
+            missing.append("GITHUB_APP_PRIVATE_KEY")
+        
+        if not settings.GITHUB_APP_CLIENT_ID:
+            missing.append("GITHUB_APP_CLIENT_ID")
+        
+        if missing:
+            return f"GitHub App not configured. Missing environment variables: {', '.join(missing)}. Please set these in your .env file or environment."
+        
+        # If all config is present but still failing, check JWT generation
+        jwt_token = self._get_github_app_jwt()
+        if not jwt_token:
+            # Try to get more specific error info
+            private_key = settings.GITHUB_APP_PRIVATE_KEY
+            private_key_path = Path(private_key)
+            if not private_key_path.is_absolute():
+                project_root = Path(__file__).parent.parent.parent.parent.parent.parent
+                private_key_path = project_root / private_key
+            
+            if private_key_path.exists() and private_key_path.is_file():
+                return f"GitHub App configuration present but JWT token generation failed. Private key file found at {private_key_path} but could not be used. Check that the file contains valid PEM format private key."
+            elif private_key_path.exists():
+                return f"GitHub App configuration present but JWT token generation failed. Path {private_key_path} exists but is not a file."
+            else:
+                return f"GitHub App configuration present but JWT token generation failed. Private key path '{private_key}' (resolved to {private_key_path}) not found. Check that GITHUB_APP_PRIVATE_KEY is either a valid file path or contains PEM content directly."
+        
+        # Check installation ID
+        installation_id = self._get_installation_id()
+        if not installation_id:
+            return "GitHub App JWT generated but installation ID not found. Check that GITHUB_APP_CLIENT_ID is correct and the app is installed."
+        
+        return "GitHub App configuration issue. Check logs for details."
     
     def _get_auth_token(self) -> str | None:
         """Get GitHub App installation token.
@@ -257,8 +410,7 @@ class GitHubService:
         """Clone a GitHub repository (supports both public and private repos).
 
         For private repositories, authentication is handled via:
-        - GitHub App: Uses installation token (preferred)
-        - Personal Access Token: Fallback if App not configured
+        - GitHub App: Uses installation token (required)
         - SSH: Uses SSH keys if configured
 
         Args:
@@ -269,21 +421,25 @@ class GitHubService:
         Returns:
             Dictionary with clone information
         """
+        logger.debug(f"[GitHubService] clone_repository called: repo_url={repo_url}, branch={branch}, target_dir={target_dir}")
         try:
             # Extract repo name from URL (before modifying for auth)
             original_url = repo_url
             if repo_url.endswith(".git"):
                 repo_url = repo_url[:-4]
             repo_name = repo_url.split("/")[-1]
+            logger.debug(f"[GitHubService] Extracted repo_name: {repo_name}")
 
             # Determine target directory
             if target_dir is None:
                 target_dir = repo_name
 
             target_path = self.workspace_root / target_dir
+            logger.debug(f"[GitHubService] Target path: {target_path}")
 
             # Remove existing directory if it exists
             if target_path.exists():
+                logger.debug(f"[GitHubService] Removing existing directory: {target_path}")
                 shutil.rmtree(target_path)
 
             # Prepare authenticated URL for private repos
@@ -292,33 +448,43 @@ class GitHubService:
             # Check if URL is already authenticated or in SSH format
             is_ssh = clone_url.startswith("git@") or clone_url.startswith("ssh://")
             is_authenticated = "@github.com" in clone_url and not is_ssh
+            logger.debug(f"[GitHubService] URL analysis: is_ssh={is_ssh}, is_authenticated={is_authenticated}")
             
             # For HTTPS URLs without authentication, add token if available
-            # Use GitHub App installation token or fallback to PAT
+            # Use GitHub App installation token
             auth_token = self._get_auth_token()
+            logger.debug(f"[GitHubService] Auth token available: {auth_token is not None}")
             if not is_ssh and not is_authenticated and "github.com" in clone_url and auth_token:
                 # If it's an HTTPS URL and we have a token, add authentication
                 if clone_url.startswith("https://"):
                     # Insert token into URL: https://github.com/owner/repo -> https://TOKEN@github.com/owner/repo
                     clone_url = clone_url.replace("https://", f"https://{auth_token}@")
+                    logger.debug(f"[GitHubService] Added auth token to HTTPS URL")
                 elif clone_url.startswith("http://"):
                     # Handle http:// URLs
                     clone_url = clone_url.replace("http://", f"http://{auth_token}@")
+                    logger.debug(f"[GitHubService] Added auth token to HTTP URL")
             
             # Try cloning with authentication
             last_error = None
             repo = None
+            logger.debug(f"[GitHubService] Attempting to clone: branch={branch}")
             
             try:
                 if branch:
+                    logger.debug(f"[GitHubService] Cloning with branch: {branch}")
                     repo = Repo.clone_from(clone_url, str(target_path), branch=branch)
                 else:
+                    logger.debug(f"[GitHubService] Cloning default branch")
                     repo = Repo.clone_from(clone_url, str(target_path))
+                logger.debug(f"[GitHubService] Clone successful")
             except Exception as e:
                 last_error = str(e)
+                logger.warning(f"[GitHubService] Clone failed: {last_error}")
                 
                 # If HTTPS with token failed and URL was HTTPS, try SSH format as fallback
                 if (clone_url.startswith("https://") or clone_url.startswith("http://")) and not is_ssh:
+                    logger.debug(f"[GitHubService] Attempting SSH fallback")
                     # Convert to SSH format: https://github.com/owner/repo -> git@github.com:owner/repo.git
                     ssh_url = clone_url
                     
@@ -341,6 +507,8 @@ class GitHubService:
                     if not ssh_url.endswith(".git"):
                         ssh_url = f"{ssh_url}.git"
                     
+                    logger.debug(f"[GitHubService] Converted to SSH URL: {ssh_url}")
+                    
                     # Try SSH clone as fallback
                     try:
                         if branch:
@@ -348,9 +516,11 @@ class GitHubService:
                         else:
                             repo = Repo.clone_from(ssh_url, str(target_path))
                         clone_url = ssh_url  # Update for logging
+                        logger.debug(f"[GitHubService] SSH clone successful")
                     except Exception as ssh_error:
                         # SSH also failed, return combined error
                         last_error = f"HTTPS failed: {last_error}; SSH fallback failed: {str(ssh_error)}"
+                        logger.error(f"[GitHubService] SSH fallback also failed: {ssh_error}")
                         raise Exception(last_error)
                 else:
                     # Not an HTTPS URL or already SSH, just raise the original error
@@ -359,17 +529,27 @@ class GitHubService:
             if repo is None:
                 raise Exception(last_error or "Failed to clone repository")
 
-            return {
+            # Update remote URL to use GitHub App token to prevent password prompts
+            try:
+                self._update_remote_url_with_token(repo, target_path)
+            except Exception as e:
+                logger.warning(f"[GitHubService] Failed to update remote URL after clone: {e}")
+
+            result = {
                 "success": True,
                 "path": str(target_path),
                 "repo_name": repo_name,
                 "branch": repo.active_branch.name if repo.active_branch else None,
                 "commit": repo.head.commit.hexsha,
             }
+            logger.info(f"[GitHubService] Clone completed successfully: {result}")
+            return result
         except Exception as e:
+            error_msg = str(e)
+            logger.error(f"[GitHubService] Clone failed with error: {error_msg}")
             return {
                 "success": False,
-                "error": str(e),
+                "error": error_msg,
             }
 
     def create_branch(
@@ -388,24 +568,39 @@ class GitHubService:
         Returns:
             Dictionary with branch creation information
         """
+        logger.debug(f"[GitHubService] create_branch called: repo_dir={repo_dir}, branch_name={branch_name}, from_branch={from_branch}")
+        
         if not self.github:
+            error = self._get_configuration_error()
+            logger.error(f"[GitHubService] GitHub client not available: {error}")
             return {
                 "success": False,
-                "error": "GitHub App not configured - cannot create branch via API",
+                "error": error,
             }
 
         try:
             repo_path = self.workspace_root / repo_dir
+            logger.debug(f"[GitHubService] Repository path: {repo_path}")
 
             if not repo_path.exists():
+                error = f"Repository directory not found: {repo_dir}"
+                logger.error(f"[GitHubService] {error}")
                 return {
                     "success": False,
-                    "error": f"Repository directory not found: {repo_dir}",
+                    "error": error,
                 }
 
             # Get repository info from local git to find owner/repo
             local_repo = Repo(str(repo_path))
+            
+            # Update remote URL to use GitHub App token to prevent password prompts
+            try:
+                self._update_remote_url_with_token(local_repo, repo_path)
+            except Exception as e:
+                logger.warning(f"[GitHubService] Failed to update remote URL: {e}")
+            
             remote_url = local_repo.remotes.origin.url
+            logger.debug(f"[GitHubService] Remote URL: {remote_url}")
             
             # Parse remote URL to get owner and repo name
             if "github.com" in remote_url:
@@ -420,23 +615,31 @@ class GitHubService:
                 if len(parts) >= 2:
                     owner = parts[0]
                     repo_name = parts[1]
+                    logger.debug(f"[GitHubService] Parsed owner={owner}, repo_name={repo_name}")
                 else:
+                    error = f"Could not parse repository owner/name from URL: {remote_url}"
+                    logger.error(f"[GitHubService] {error}")
                     return {
                         "success": False,
-                        "error": f"Could not parse repository owner/name from URL: {remote_url}",
+                        "error": error,
                     }
             else:
+                error = f"Repository remote URL is not a GitHub repository: {remote_url}"
+                logger.error(f"[GitHubService] {error}")
                 return {
                     "success": False,
-                    "error": f"Repository remote URL is not a GitHub repository: {remote_url}",
+                    "error": error,
                 }
 
             # Get GitHub repository object
+            logger.debug(f"[GitHubService] Getting GitHub repo: {owner}/{repo_name}")
             github_repo = self.github.get_repo(f"{owner}/{repo_name}")
             
             # Check if branch already exists on GitHub
             try:
+                logger.debug(f"[GitHubService] Checking if branch {branch_name} already exists")
                 existing_branch = github_repo.get_branch(branch_name)
+                logger.debug(f"[GitHubService] Branch already exists, checking out locally")
                 # Branch exists on GitHub, checkout locally and return
                 try:
                     local_repo.git.checkout(branch_name)
@@ -444,57 +647,74 @@ class GitHubService:
                     # Create local branch tracking remote
                     local_repo.git.checkout("-b", branch_name, f"origin/{branch_name}")
                 
-                return {
+                result = {
                     "success": True,
                     "branch": branch_name,
                     "message": f"Branch already exists on GitHub: {branch_name}",
                     "commit": existing_branch.commit.sha,
                 }
+                logger.info(f"[GitHubService] Branch already exists: {result}")
+                return result
             except Exception:
                 # Branch doesn't exist, create it
+                logger.debug(f"[GitHubService] Branch does not exist, will create it")
                 pass
 
             # Get source branch SHA
             if from_branch:
+                logger.debug(f"[GitHubService] Getting source branch: {from_branch}")
                 try:
                     source_branch = github_repo.get_branch(from_branch)
                     source_sha = source_branch.commit.sha
-                except Exception:
+                    logger.debug(f"[GitHubService] Source branch SHA: {source_sha}")
+                except Exception as e:
+                    error = f"Source branch '{from_branch}' not found on GitHub: {e}"
+                    logger.error(f"[GitHubService] {error}")
                     return {
                         "success": False,
-                        "error": f"Source branch '{from_branch}' not found on GitHub",
+                        "error": error,
                     }
             else:
                 # Use default branch
                 default_branch = github_repo.default_branch
+                logger.debug(f"[GitHubService] Using default branch: {default_branch}")
                 source_branch = github_repo.get_branch(default_branch)
                 source_sha = source_branch.commit.sha
                 from_branch = default_branch
+                logger.debug(f"[GitHubService] Default branch SHA: {source_sha}")
 
             # Create branch via GitHub API
+            logger.debug(f"[GitHubService] Creating branch via GitHub API: refs/heads/{branch_name} from {source_sha}")
             ref = github_repo.create_git_ref(
                 ref=f"refs/heads/{branch_name}",
                 sha=source_sha
             )
+            logger.debug(f"[GitHubService] Branch created successfully via API")
 
             # Update local repository to track the new branch
             try:
+                logger.debug(f"[GitHubService] Updating local repository to track new branch")
                 local_repo.git.fetch("origin")
                 local_repo.git.checkout("-b", branch_name, f"origin/{branch_name}")
-            except Exception:
+                logger.debug(f"[GitHubService] Local repository updated")
+            except Exception as e:
                 # If local checkout fails, that's okay - branch exists on GitHub
-                pass
+                logger.warning(f"[GitHubService] Local checkout failed (non-critical): {e}")
 
-            return {
+            result = {
                 "success": True,
                 "branch": branch_name,
                 "from_branch": from_branch,
                 "commit": source_sha,
             }
+            logger.info(f"[GitHubService] Branch created successfully: {result}")
+            return result
         except Exception as e:
+            error_msg = str(e)
+            logger.error(f"[GitHubService] create_branch failed: {error_msg}")
             return {
                 "success": False,
-                "error": str(e),
+                "error": error_msg,
             }
 
     def get_repository_info(self, owner: str, repo_name: str) -> dict[str, Any]:
@@ -510,7 +730,7 @@ class GitHubService:
         if not self.github:
             return {
                 "success": False,
-                "error": "GitHub App or token not configured",
+                "error": self._get_configuration_error(),
             }
 
         try:
@@ -618,7 +838,7 @@ class GitHubService:
         if not self.github:
             return {
                 "success": False,
-                "error": "GitHub App not configured - cannot commit via API",
+                "error": self._get_configuration_error(),
             }
 
         try:
@@ -632,6 +852,13 @@ class GitHubService:
 
             # Get repository info from local git to find owner/repo
             local_repo = Repo(str(repo_path))
+            
+            # Update remote URL to use GitHub App token to prevent password prompts
+            try:
+                self._update_remote_url_with_token(local_repo, repo_path)
+            except Exception as e:
+                logger.warning(f"[GitHubService] Failed to update remote URL: {e}")
+            
             remote_url = local_repo.remotes.origin.url
             
             # Parse remote URL to get owner and repo name
@@ -1089,6 +1316,12 @@ class GitHubService:
 
             repo = Repo(str(repo_path))
 
+            # Update remote URL to use GitHub App token to prevent password prompts
+            try:
+                self._update_remote_url_with_token(repo, repo_path)
+            except Exception as e:
+                logger.warning(f"[GitHubService] Failed to update remote URL: {e}")
+
             # Checkout the branch if not already on it
             try:
                 if repo.active_branch and repo.active_branch.name != branch:
@@ -1154,7 +1387,7 @@ class GitHubService:
         if not self.github:
             return {
                 "success": False,
-                "error": "GitHub token not configured",
+                "error": self._get_configuration_error(),
             }
 
         try:

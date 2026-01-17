@@ -27,7 +27,7 @@ export function Header({ title, subtitle, showEvolutionControls = false }: Heade
       <div className="flex items-center gap-4">
         {title && (
           <div>
-            <h1 className="text-xl font-semibold text-slate-900 dark:text-white flex items-center gap-2">
+            <h1 className="text-xl font-tech-header text-slate-900 dark:text-primary-400 flex items-center gap-2">
               {title}
               {subtitle && (
                 <Badge variant="info" size="sm" dot pulse>
@@ -43,16 +43,16 @@ export function Header({ title, subtitle, showEvolutionControls = false }: Heade
       {showEvolutionControls && (
         <div className="flex items-center gap-8">
           <div className="text-center">
-            <p className="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wider">Generation</p>
-            <p className="text-2xl font-bold text-slate-900 dark:text-white">{currentGeneration}</p>
+            <p className="stat-label">GENERATION</p>
+            <p className="stat-value font-tech-value">{currentGeneration}</p>
           </div>
           <div className="text-center">
-            <p className="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wider">Est. Cost</p>
-            <p className="text-2xl font-bold text-slate-900 dark:text-white">${totalCost.toFixed(2)}</p>
+            <p className="stat-label">EST. COST</p>
+            <p className="stat-value font-tech-value text-primary-400">${totalCost.toFixed(2)}</p>
           </div>
           <div className="text-center">
-            <p className="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wider">Efficiency</p>
-            <p className="text-2xl font-bold text-success-solid">{efficiency}%</p>
+            <p className="stat-label">EFFICIENCY</p>
+            <p className="stat-value font-tech-value text-primary-400">{efficiency}%</p>
           </div>
           <Button
             variant={isPaused ? 'primary' : 'secondary'}

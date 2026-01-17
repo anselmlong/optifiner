@@ -23,7 +23,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
     children,
     ...props
   }, ref) => {
-    const baseStyles = 'inline-flex items-center justify-center font-medium transition-all duration-150 rounded-lg focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed'
+    const baseStyles = 'inline-flex items-center justify-center font-tech-label transition-all duration-150 rounded-lg focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed'
 
     const variants = {
       primary: 'bg-primary-500 text-white hover:bg-primary-600 active:bg-primary-700 focus:ring-primary-500 shadow-sm',
