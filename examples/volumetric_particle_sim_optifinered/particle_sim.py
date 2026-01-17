@@ -677,6 +677,7 @@ class ParticleSimulation:
             self.update(dt)
             self.render()
 
+            global _frame_count, _fps_start_time, _current_fps, _total_frames_rendered, _total_time_elapsed
             _frame_count += 1
             _total_frames_rendered += 1
             _total_time_elapsed += dt
@@ -698,39 +699,10 @@ def main():
         sim.run()
     finally:
         sim.cleanup()
-
-
-if __name__ == "__main__":
-    import sys
-    run_duration = float(sys.argv[1]) if len(sys.argv) > 1 else 5.0
-    sim = ParticleSimulation()
-    start_time = time.time()
-    sim.running = True
-    try:
-        while sim.running and (time.time() - start_time < run_duration):
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    sim.running = False
-                elif event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_ESCAPE:
-                        sim.running = False
-            
-            dt = sim.clock.tick(60) / 1000.0
-            dt = min(dt, 0.1)  # Cap delta time
-            
-            sim.update(dt)
-            sim.render()
-
-            _frame_count += 1
-            _total_frames_rendered += 1
-            _total_time_elapsed += dt
-            elapsed = time.time() - _fps_start_time
-            if elapsed >= 1.0:
-                _current_fps = _frame_count / elapsed
-                _frame_count = 0
-                _fps_start_time = time.time()
-    finally:
-        sim.cleanup()
         print(f"FINAL_FPS:{get_fps()}")
         print(f"TOTAL_FRAMES:{get_total_frames_rendered()}")
         print(f"TOTAL_TIME:{get_total_time_elapsed()}")
+
+
+if __name__ == "__main__":
+    main()
