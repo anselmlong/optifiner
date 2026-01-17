@@ -85,6 +85,32 @@ class EvaluationDataStoreRequest(BaseModel):
     evaluation_data: dict = Field(..., description="Full evaluation data dictionary")
 
 
+class RepositoryCommitRequest(BaseModel):
+    """Request model for committing changes."""
+
+    commit_message: str = Field(..., description="Commit message")
+    branch: str | None = Field(None, description="Branch name (default: current branch)")
+    files: list[str] | None = Field(None, description="Specific files to commit (None = all changes)")
+    author_name: str = Field("Optifiner", description="Git author name")
+    author_email: str = Field("optifiner@example.com", description="Git author email")
+
+
+class RepositoryPushRequest(BaseModel):
+    """Request model for pushing changes to GitHub."""
+
+    branch: str | None = Field(None, description="Branch name to push (default: current branch)")
+    force: bool = Field(False, description="Whether to force push")
+
+
+class PullRequestRequest(BaseModel):
+    """Request model for creating a pull request."""
+
+    branch: str = Field(..., description="Branch name (head branch for PR)")
+    title: str = Field(..., description="Pull request title")
+    body: str | None = Field(None, description="Pull request body/description")
+    base_branch: str | None = Field(None, description="Base branch for PR (default: repository default branch)")
+
+
 class TaskStatusResponse(BaseModel):
     """Task status response model."""
 
