@@ -9,6 +9,13 @@ from pydantic import AliasChoices, BaseModel, Field
 from worker.tools.path_utils import resolve_path, virtualize_path
 
 
+def _normalize_whitespace(text: str) -> str:
+    """Normalize line endings and trailing whitespace."""
+    text = text.replace('\r\n', '\n').replace('\r', '\n')
+    lines = text.split('\n')
+    return '\n'.join(line.rstrip() for line in lines)
+
+
 class EditOperation(BaseModel):
     """A single edit operation."""
 
@@ -41,8 +48,8 @@ def _resolve_path(file_path: str) -> Path:
     return resolve_path(file_path)
 
 
-def _apply_edit(content: str, edit: EditOperation, edit_index: int) -> tuple[str, str]:
-    """Apply a single edit operation. Returns (new_content, status_message) or raises."""
+def _apply_edit(content: str, edit: EditOperation, edit_index: int) -> tuple[str, str, bool]:
+    """Apply a single edit operation. Returns (new_content, status_message, was_normalized) or raises."""
     old_string = edit.old_string
     new_string = edit.new_string
     replace_all = edit.replace_all
@@ -51,13 +58,27 @@ def _apply_edit(content: str, edit: EditOperation, edit_index: int) -> tuple[str
         raise ValueError(f"Edit {edit_index + 1}: old_string and new_string are identical")
 
     count = content.count(old_string)
+    normalized = False
 
+    # If not found, try with normalized whitespace
     if count == 0:
-        if old_string.strip() in content:
-            raise ValueError(
-                f"Edit {edit_index + 1}: old_string not found (exists with different whitespace)"
-            )
-        raise ValueError(f"Edit {edit_index + 1}: old_string not found in file")
+        norm_content = _normalize_whitespace(content)
+        norm_old = _normalize_whitespace(old_string)
+        norm_count = norm_content.count(norm_old)
+        
+        if norm_count > 0:
+            # Use normalized versions
+            normalized = True
+            content = norm_content
+            old_string = norm_old
+            new_string = _normalize_whitespace(new_string)
+            count = norm_count
+        else:
+            if old_string.strip() in content:
+                raise ValueError(
+                    f"Edit {edit_index + 1}: old_string not found (exists with different whitespace)"
+                )
+            raise ValueError(f"Edit {edit_index + 1}: old_string not found in file")
 
     if count > 1 and not replace_all:
         raise ValueError(
@@ -66,10 +87,14 @@ def _apply_edit(content: str, edit: EditOperation, edit_index: int) -> tuple[str
 
     if replace_all:
         new_content = content.replace(old_string, new_string)
-        return new_content, f"replaced {count} occurrence(s)"
+        status = f"replaced {count} occurrence(s)"
     else:
         new_content = content.replace(old_string, new_string, 1)
-        return new_content, "replaced 1 occurrence"
+        status = "replaced 1 occurrence"
+    
+    if normalized:
+        status += " (normalized)"
+    return new_content, status, normalized
 
 
 @tool(args_schema=MultiEditInput)
@@ -120,9 +145,16 @@ def multi_edit(file_path: str, edits: list[dict[str, Any]]) -> str:
     edit_ops = []
     for i, edit_dict in enumerate(edits):
         try:
+            if not isinstance(edit_dict, dict):
+                return f"Error in edit {i + 1}: expected dict, got {type(edit_dict).__name__}"
+            # Check for required fields
+            if 'old_string' not in edit_dict:
+                return f"Error in edit {i + 1}: missing 'old_string' field. Got keys: {list(edit_dict.keys())}"
+            if 'new_string' not in edit_dict:
+                return f"Error in edit {i + 1}: missing 'new_string' field. Got keys: {list(edit_dict.keys())}"
             edit_ops.append(EditOperation(**edit_dict))
         except Exception as e:
-            return f"Error in edit {i + 1} specification: {e}"
+            return f"Error in edit {i + 1} specification: {e}. Got: {edit_dict}"
 
     # Validate all edits first (dry run)
     test_content = content
@@ -130,7 +162,7 @@ def multi_edit(file_path: str, edits: list[dict[str, Any]]) -> str:
 
     for i, edit in enumerate(edit_ops):
         try:
-            test_content, status = _apply_edit(test_content, edit, i)
+            test_content, status, _ = _apply_edit(test_content, edit, i)
             edit_results.append(status)
         except ValueError as e:
             return f"Error: {e}. No changes were made."
