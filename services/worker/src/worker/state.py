@@ -23,7 +23,7 @@ class AgentState(BaseModel):
     task_type: str = Field(default="general", description="Type of task: analyze, refactor, optimize, etc.")
 
     # Codebase context
-    workspace_root: str = Field(default="/app", description="Root directory of the target codebase")
+    workspace_root: str = Field(default="", description="Root directory of the target codebase (real path)")
     current_file: str | None = Field(default=None, description="Currently focused file")
     files_read: list[str] = Field(default_factory=list, description="Files that have been read")
     files_modified: list[str] = Field(default_factory=list, description="Files that have been modified")

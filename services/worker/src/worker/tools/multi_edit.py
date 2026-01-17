@@ -1,16 +1,12 @@
 """Multi-edit tool for the evolution agent - performs multiple edits to a single file."""
 
-import os
 from pathlib import Path
 from typing import Any
 
 from langchain_core.tools import tool
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
-
-def _get_workspace_root() -> Path:
-    """Get the workspace root from environment or default."""
-    return Path(os.environ.get("WORKSPACE_ROOT", "/app"))
+from worker.tools.path_utils import resolve_path, virtualize_path
 
 
 class EditOperation(BaseModel):
@@ -32,7 +28,8 @@ class MultiEditInput(BaseModel):
     """Input schema for the multi_edit tool."""
 
     file_path: str = Field(
-        description="The path to the file to edit. Can be absolute or relative to workspace root."
+        description="The path to the file to edit. Can be absolute or relative to workspace root.",
+        validation_alias=AliasChoices("file_path", "path"),
     )
     edits: list[EditOperation] = Field(
         description="List of edit operations to perform in sequence."
@@ -40,11 +37,8 @@ class MultiEditInput(BaseModel):
 
 
 def _resolve_path(file_path: str) -> Path:
-    """Resolve the file path, making it relative to workspace if not absolute."""
-    path = Path(file_path)
-    if not path.is_absolute():
-        path = _get_workspace_root() / path
-    return path
+    """Resolve the file path using workspace-aware resolution."""
+    return resolve_path(file_path)
 
 
 def _apply_edit(content: str, edit: EditOperation, edit_index: int) -> tuple[str, str]:
@@ -94,6 +88,7 @@ def multi_edit(file_path: str, edits: list[dict[str, Any]]) -> str:
         Success message with details, or error description.
     """
     path = _resolve_path(file_path)
+    vpath = virtualize_path(path)
 
     if not path.exists():
         # Allow creating new file if first edit has empty old_string
@@ -103,20 +98,20 @@ def multi_edit(file_path: str, edits: list[dict[str, Any]]) -> str:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 content = ""
             except Exception as e:
-                return f"Error creating file {path}: {e}"
+                return f"Error creating file {vpath}: {e}"
         else:
-            return f"Error: File not found: {path}"
+            return f"Error: File not found: {vpath}"
     else:
         if not path.is_file():
-            return f"Error: Path is not a file: {path}"
+            return f"Error: Path is not a file: {vpath}"
 
         try:
             with open(path, "r", encoding="utf-8") as f:
                 content = f.read()
         except UnicodeDecodeError:
-            return f"Error: Cannot edit binary file: {path}"
+            return f"Error: Cannot edit binary file: {vpath}"
         except Exception as e:
-            return f"Error reading file {path}: {e}"
+            return f"Error reading file {vpath}: {e}"
 
     if not edits:
         return "Error: No edits provided"
@@ -145,12 +140,12 @@ def multi_edit(file_path: str, edits: list[dict[str, Any]]) -> str:
         with open(path, "w", encoding="utf-8") as f:
             f.write(test_content)
     except PermissionError:
-        return f"Error: Permission denied: {path}"
+        return f"Error: Permission denied: {vpath}"
     except Exception as e:
-        return f"Error writing file {path}: {e}"
+        return f"Error writing file {vpath}: {e}"
 
     # Build summary
-    summary_parts = [f"Successfully applied {len(edits)} edit(s) to {path}:"]
+    summary_parts = [f"Successfully applied {len(edits)} edit(s) to {vpath}:"]
     for i, result in enumerate(edit_results):
         summary_parts.append(f"  {i + 1}. {result}")
 

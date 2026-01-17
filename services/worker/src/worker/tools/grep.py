@@ -1,6 +1,5 @@
 """Grep tool for the evolution agent - powerful regex search using ripgrep."""
 
-import os
 import subprocess
 from pathlib import Path
 from typing import Literal
@@ -8,12 +7,9 @@ from typing import Literal
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
+from worker.tools.path_utils import resolve_path, virtualize_path, get_workspace_root, sanitize_output
+
 MAX_RESULTS = 500
-
-
-def _get_workspace_root() -> Path:
-    """Get the workspace root from environment or default."""
-    return Path(os.environ.get("WORKSPACE_ROOT", "/app"))
 
 
 class GrepInput(BaseModel):
@@ -53,14 +49,8 @@ class GrepInput(BaseModel):
 
 
 def _resolve_path(file_path: str | None) -> Path:
-    """Resolve the file path, defaulting to workspace root."""
-    workspace = _get_workspace_root()
-    if file_path is None:
-        return workspace
-    path = Path(file_path)
-    if not path.is_absolute():
-        path = workspace / path
-    return path
+    """Resolve the file path using workspace-aware resolution."""
+    return resolve_path(file_path)
 
 
 def _build_rg_command(
@@ -139,9 +129,10 @@ def grep(
         Search results or error message.
     """
     search_path = _resolve_path(path)
+    vpath = virtualize_path(search_path)
 
     if not search_path.exists():
-        return f"Error: Path not found: {search_path}"
+        return f"Error: Path not found: {vpath}"
 
     cmd = _build_rg_command(
         pattern=pattern,
@@ -160,7 +151,7 @@ def grep(
             capture_output=True,
             text=True,
             timeout=30,
-            cwd=str(_get_workspace_root()),
+            cwd=str(get_workspace_root()),
         )
 
         # ripgrep returns 1 for no matches (not an error)
@@ -175,6 +166,9 @@ def grep(
 
         if not output:
             return f"No matches found for pattern: {pattern}"
+
+        # Sanitize paths in output to show virtual paths
+        output = sanitize_output(output)
 
         # Count and potentially truncate results
         lines = output.split("\n")
@@ -212,8 +206,8 @@ def _python_grep(pattern: str, search_path: Path, case_insensitive: bool = False
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                 for line_num, line in enumerate(f, 1):
                     if regex.search(line):
-                        rel_path = file_path.relative_to(_get_workspace_root())
-                        matches.append(f"{rel_path}:{line_num}:{line.rstrip()}")
+                        virt_path = virtualize_path(file_path)
+                        matches.append(f"{virt_path}:{line_num}:{line.rstrip()}")
         except Exception:
             pass
 
