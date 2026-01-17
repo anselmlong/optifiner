@@ -579,10 +579,10 @@ def run_benchmark_builder(
     # Set benchmark dev mode - timeouts tell agent to retry (they can fix the benchmark)
     set_benchmark_dev_mode(True)
     
-    # Set up workspace context - both thread-local AND environment variable
-    # The env var is a fallback in case thread-local doesn't propagate through LangGraph
+    # Set up workspace context using context var and thread-local
+    # NOTE: We do NOT set os.environ["WORKSPACE_ROOT"] here to avoid race conditions
+    # when multiple agents run in parallel. The workspace module handles isolation.
     set_workspace(workspace)
-    os.environ["WORKSPACE_ROOT"] = str(workspace.workspace_root)
     
     config = WorkerConfig.from_env()
     if model_config:

@@ -4,9 +4,11 @@ This module provides workspace-aware path resolution. All tools should use
 these functions for path operations to ensure consistent behavior.
 
 The workspace root is determined in this order:
-1. Thread-local workspace (set via workspace.set_workspace())
-2. WORKSPACE_ROOT environment variable  
-3. Current working directory
+1. ContextVar workspace (primary - works with async/await and thread pools)
+2. Thread-local workspace (fallback for synchronous code)
+3. Process-level registry lookup by WORKSPACE_ROOT env var path
+4. WORKSPACE_ROOT environment variable directly
+5. Current working directory
 
 The benchmark script is always at: <workspace_root>/optifiner_benchmark.py
 """
