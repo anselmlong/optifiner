@@ -14,21 +14,11 @@ without breaking visual correctness or functionality.
 import os
 import math
 import random
-import sys
 from dataclasses import dataclass
 from typing import List, Tuple
 
 
 import pygame
-import time
-
-_frame_count = 0
-_fps_start_time = time.time()
-_current_fps = 0.0
-
-def get_fps():
-    return _current_fps
-
 
 
 # Configuration
@@ -300,6 +290,7 @@ class ParticleSimulation:
     """Main simulation class"""
     
     def __init__(self):
+
         pygame.init()
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
         pygame.display.set_caption("Volumetric Particle Simulation - Optimize Me!")
@@ -313,6 +304,9 @@ class ParticleSimulation:
         self.camera_rotation = 0.0
         self.camera_position = Vector3(0, 50, -self.renderer.camera_distance)
         self.time = 0.0
+
+
+
         
         self._init_particles()
         self._init_lights()
@@ -692,34 +686,9 @@ class ParticleSimulation:
         
         pygame.display.flip()
     
-    def run_headless_benchmark(self, frames_to_run: int) -> float:
-        """Runs the simulation for a fixed number of frames without rendering, returning average FPS."""
-        # Disable pygame display for headless run
-        os.environ['SDL_VIDEODRIVER'] = 'dummy'
-        pygame.init()
-        
-        # Re-initialize clock for accurate timing in headless mode
-        self.clock = pygame.time.Clock()
-        
-        start_time = time.time()
-        frame_count = 0
-        
-        for _ in range(frames_to_run):
-            dt = self.clock.tick(60) / 1000.0
-            dt = min(dt, 0.1) # Cap delta time
-            self.update(dt)
-            frame_count += 1
-            
-        end_time = time.time()
-        elapsed_time = end_time - start_time
-        
-        pygame.quit()
-        
-        if elapsed_time > 0:
-            return frame_count / elapsed_time
-        return 0.0
-
     def run(self) -> None:
+        """Run the simulation."""
+        while self.running:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     self.running = False
@@ -732,14 +701,6 @@ class ParticleSimulation:
             
             self.update(dt)
             self.render()
-
-            global _frame_count, _fps_start_time, _current_fps
-            _frame_count += 1
-            elapsed = time.time() - _fps_start_time
-            if elapsed >= 1.0:
-                _current_fps = _frame_count / elapsed
-                _frame_count = 0
-                _fps_start_time = time.time()
     
     def cleanup(self) -> None:
         """Clean up pygame resources"""
