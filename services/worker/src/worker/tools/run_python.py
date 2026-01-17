@@ -1,7 +1,9 @@
 """Python execution tool for the evolution agent."""
 
 import os
+import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -77,6 +79,20 @@ def _truncate_output(output: str, max_length: int = MAX_OUTPUT_LENGTH) -> str:
     omitted = len(output) - max_length
 
     return f"{head}\n\n[... {omitted} characters omitted ...]\n\n{tail}"
+
+
+def _get_python_executable() -> str:
+    """Get the Python executable to use for running scripts."""
+    # First try sys.executable (the current Python interpreter)
+    if sys.executable:
+        return sys.executable
+    # Fallback to python3, then python
+    if shutil.which("python3"):
+        return "python3"
+    if shutil.which("python"):
+        return "python"
+    # Last resort
+    return "python3"
 
 
 def _execute_python(
@@ -162,7 +178,7 @@ def run_python(
         return f"Error creating temporary file: {e}"
 
     try:
-        cmd = ["python", temp_path]
+        cmd = [_get_python_executable(), temp_path]
         return _execute_python(cmd, cwd, timeout)
     finally:
         # Clean up temp file
@@ -204,7 +220,7 @@ def run_python_file(
     if not cwd.exists():
         cwd = script_path.parent
 
-    cmd = ["python", str(script_path)]
+    cmd = [_get_python_executable(), str(script_path)]
     if args:
         cmd.extend(args)
 
