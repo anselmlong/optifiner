@@ -1,5 +1,13 @@
 """Docker-based agent execution.
 
+NOTE: This module is DEPRECATED and kept for reference only.
+All execution now runs on the host machine with workspace isolation
+in /tmp/optifiner_workspaces/. See workspace.py for the new approach.
+
+This allows us to easily run complex setups like browser-based stuff,
+visualize everything as it runs, and avoid container overhead.
+
+Original description:
 Runs agents in isolated Docker containers with workspace mounted as volume.
 """
 

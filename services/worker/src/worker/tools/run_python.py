@@ -10,13 +10,10 @@ from pathlib import Path
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
+from worker.tools.path_utils import resolve_path, virtualize_path, get_workspace_root, sanitize_output
+
 DEFAULT_TIMEOUT = 60
 MAX_OUTPUT_LENGTH = 50000
-
-
-def _get_workspace_root() -> Path:
-    """Get the workspace root from environment or default."""
-    return Path(os.environ.get("WORKSPACE_ROOT", "/app"))
 
 
 class RunPythonInput(BaseModel):
@@ -56,14 +53,8 @@ class RunPythonFileInput(BaseModel):
 
 
 def _resolve_path(file_path: str | None) -> Path:
-    """Resolve the file path, defaulting to workspace root."""
-    workspace = _get_workspace_root()
-    if file_path is None:
-        return workspace
-    path = Path(file_path)
-    if not path.is_absolute():
-        path = workspace / path
-    return path
+    """Resolve the file path using workspace-aware resolution."""
+    return resolve_path(file_path)
 
 
 def _truncate_output(output: str, max_length: int = MAX_OUTPUT_LENGTH) -> str:
@@ -102,13 +93,16 @@ def _execute_python(
 ) -> str:
     """Execute a Python command and return formatted output."""
     try:
+        # Set up environment with actual workspace root
+        env = {**os.environ, "WORKSPACE_ROOT": str(get_workspace_root())}
+        
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
             timeout=timeout,
             cwd=str(cwd),
-            env={**os.environ, "WORKSPACE_ROOT": str(_get_workspace_root())},
+            env=env,
         )
 
         # Combine stdout and stderr
@@ -124,6 +118,9 @@ def _execute_python(
 
         output = "".join(output_parts).strip()
         output = _truncate_output(output)
+        
+        # Sanitize paths in output to show virtual paths
+        output = sanitize_output(output)
 
         # Add exit code info for failures
         if result.returncode != 0:
@@ -160,9 +157,10 @@ def run_python(
         Execution output (stdout + stderr) and exit code.
     """
     cwd = _resolve_path(working_dir)
+    vcwd = virtualize_path(cwd)
 
     if not cwd.exists():
-        return f"Error: Working directory not found: {cwd}"
+        return f"Error: Working directory not found: {vcwd}"
 
     # Write code to a temporary file
     try:
@@ -209,12 +207,13 @@ def run_python_file(
         Execution output (stdout + stderr) and exit code.
     """
     script_path = _resolve_path(file_path)
+    vpath = virtualize_path(script_path)
 
     if not script_path.exists():
-        return f"Error: File not found: {script_path}"
+        return f"Error: File not found: {vpath}"
 
     if not script_path.is_file():
-        return f"Error: Path is not a file: {script_path}"
+        return f"Error: Path is not a file: {vpath}"
 
     cwd = _resolve_path(working_dir)
     if not cwd.exists():

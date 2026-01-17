@@ -1,17 +1,13 @@
 """List directory tool for the evolution agent."""
 
-import os
 from pathlib import Path
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
+from worker.tools.path_utils import resolve_path, virtualize_path, get_workspace_root
+
 MAX_ENTRIES = 500
-
-
-def _get_workspace_root() -> Path:
-    """Get the workspace root from environment or default."""
-    return Path(os.environ.get("WORKSPACE_ROOT", "/app"))
 
 
 class ListDirInput(BaseModel):
@@ -31,12 +27,8 @@ class ListDirInput(BaseModel):
 
 
 def _resolve_path(file_path: str) -> Path:
-    """Resolve the file path, making it relative to workspace if not absolute."""
-    workspace = _get_workspace_root()
-    path = Path(file_path)
-    if not path.is_absolute():
-        path = workspace / path
-    return path
+    """Resolve the file path using workspace-aware resolution."""
+    return resolve_path(file_path)
 
 
 def _format_size(size: int) -> str:
@@ -83,13 +75,14 @@ def list_dir(path: str, show_hidden: bool = False, recursive: bool = False) -> s
         Directory listing or error message.
     """
     dir_path = _resolve_path(path)
-    workspace = _get_workspace_root()
+    workspace = get_workspace_root()
+    vpath = virtualize_path(dir_path)
 
     if not dir_path.exists():
-        return f"Error: Path not found: {dir_path}"
+        return f"Error: Path not found: {vpath}"
 
     if not dir_path.is_dir():
-        return f"Error: Path is not a directory: {dir_path}. Use read_file to view file contents."
+        return f"Error: Path is not a directory: {vpath}. Use read_file to view file contents."
 
     try:
         if recursive:
@@ -109,7 +102,7 @@ def list_dir(path: str, show_hidden: bool = False, recursive: bool = False) -> s
                 entries = [e for e in entries if not e.name.startswith(".")]
 
         if not entries:
-            return f"Directory is empty: {dir_path}"
+            return f"Directory is empty: {vpath}"
 
         # Sort: directories first, then files, alphabetically within each group
         dirs = sorted([e for e in entries if e.is_dir()], key=lambda x: x.name.lower())
@@ -118,12 +111,8 @@ def list_dir(path: str, show_hidden: bool = False, recursive: bool = False) -> s
         # Format output
         result_lines = []
 
-        # Show path header
-        try:
-            rel_dir = dir_path.relative_to(workspace)
-            header = f"Contents of {rel_dir}/"
-        except ValueError:
-            header = f"Contents of {dir_path}/"
+        # Show path header - use virtual path
+        header = f"Contents of {vpath}/"
         result_lines.append(header)
         result_lines.append("=" * len(header))
 
@@ -156,6 +145,6 @@ def list_dir(path: str, show_hidden: bool = False, recursive: bool = False) -> s
         return "\n".join(result_lines)
 
     except PermissionError:
-        return f"Error: Permission denied: {dir_path}"
+        return f"Error: Permission denied: {vpath}"
     except Exception as e:
-        return f"Error listing directory {dir_path}: {e}"
+        return f"Error listing directory {vpath}: {e}"

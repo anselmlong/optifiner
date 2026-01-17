@@ -1,7 +1,7 @@
 """Evaluate tool for the evolution agent - runs benchmark evaluator and returns score.
 
-When running in Docker, this tool calls the evaluation server on the host machine.
-The EVAL_SERVER_URL environment variable determines where to send requests.
+Runs evaluator scripts on the host machine directly. The evaluator script should
+return JSON with score and optional test results.
 """
 
 import json
@@ -16,7 +16,8 @@ from pathlib import Path
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
-WORKSPACE_ROOT = Path("/app")
+from worker.tools.path_utils import get_workspace_root
+
 DEFAULT_TIMEOUT = 120
 
 # Global evaluator path - set by CLI (only used when running locally)
@@ -47,11 +48,12 @@ class EvaluateInput(BaseModel):
 
 def _resolve_path(file_path: str | None) -> Path:
     """Resolve the file path, defaulting to workspace root."""
+    workspace = get_workspace_root()
     if file_path is None:
-        return WORKSPACE_ROOT
+        return workspace
     path = Path(file_path)
     if not path.is_absolute():
-        path = WORKSPACE_ROOT / path
+        path = workspace / path
     return path
 
 
@@ -99,7 +101,7 @@ def evaluate(message: str = "") -> str:
     if not evaluator.exists():
         return f"Error: Evaluator script not found: {evaluator}"
 
-    workspace = os.environ.get("WORKSPACE_ROOT", str(WORKSPACE_ROOT))
+    workspace = str(get_workspace_root())
 
     try:
         # Determine how to run the evaluator based on extension

@@ -1,17 +1,13 @@
 """Glob tool for the evolution agent - fast file pattern matching."""
 
-import os
 from pathlib import Path
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
+from worker.tools.path_utils import resolve_path, virtualize_path, get_workspace_root
+
 MAX_RESULTS = 500
-
-
-def _get_workspace_root() -> Path:
-    """Get the workspace root from environment or default."""
-    return Path(os.environ.get("WORKSPACE_ROOT", "/app"))
 
 
 class GlobInput(BaseModel):
@@ -27,14 +23,8 @@ class GlobInput(BaseModel):
 
 
 def _resolve_path(file_path: str | None) -> Path:
-    """Resolve the file path, defaulting to workspace root."""
-    workspace = _get_workspace_root()
-    if file_path is None:
-        return workspace
-    path = Path(file_path)
-    if not path.is_absolute():
-        path = workspace / path
-    return path
+    """Resolve the file path using workspace-aware resolution."""
+    return resolve_path(file_path)
 
 
 @tool(args_schema=GlobInput)
@@ -52,13 +42,14 @@ def glob_search(pattern: str, path: str | None = None) -> str:
         List of matching file paths or error message.
     """
     search_path = _resolve_path(path)
-    workspace = _get_workspace_root()
+    workspace = get_workspace_root()
+    vpath = virtualize_path(search_path)
 
     if not search_path.exists():
-        return f"Error: Path not found: {search_path}"
+        return f"Error: Path not found: {vpath}"
 
     if not search_path.is_dir():
-        return f"Error: Path is not a directory: {search_path}"
+        return f"Error: Path is not a directory: {vpath}"
 
     # Ensure pattern is recursive if not explicitly specified
     if not pattern.startswith("**/") and "/" not in pattern:
@@ -79,14 +70,10 @@ def glob_search(pattern: str, path: str | None = None) -> str:
         # Sort by modification time (most recent first)
         files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
 
-        # Build output with relative paths
+        # Build output with virtual paths
         result_lines = []
         for f in files[:MAX_RESULTS]:
-            try:
-                rel_path = f.relative_to(workspace)
-                result_lines.append(str(rel_path))
-            except ValueError:
-                result_lines.append(str(f))
+            result_lines.append(virtualize_path(f))
 
         output = "\n".join(result_lines)
 
