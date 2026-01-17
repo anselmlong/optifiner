@@ -1126,7 +1126,7 @@ def main(
                         log_dir=log_directory,
                         baseline_data=current_baseline_data,
                         stop_event=_stop_generation if early_stop else None,
-                        compact=True,  # Enable compact logging for parallel agents
+                        compact=False,  # Enable compact logging for parallel agents
                     )
 
                 try:
