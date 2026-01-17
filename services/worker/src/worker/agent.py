@@ -235,12 +235,18 @@ def create_evolution_agent(
                 
                 # Check if this is an evaluate result (contains Score: and BENCHMARK)
                 if "Score:" in content and "BENCHMARK" in content:
-                    # Extract score and compare to baseline
+                    # Extract score and compare to baseline with minimum improvement threshold
                     match = re.search(r"Score:\s*([\d.]+)", content)
                     if match:
                         try:
                             score = float(match.group(1))
-                            if score > state.baseline_score:
+                            baseline = state.baseline_score
+                            if baseline > 0:
+                                improvement_pct = ((score - baseline) / baseline) * 100
+                                if improvement_pct >= state.min_improvement_pct:
+                                    return True
+                            elif score > baseline:
+                                # Can't calculate percentage with zero/negative baseline
                                 return True
                         except ValueError:
                             pass
@@ -381,6 +387,7 @@ def run_evolution_agent(
     baseline_data: dict | None = None,
     observer: AgentObserver | None = None,
     benchmark_timeout: int | None = None,
+    min_improvement_pct: float = 3.0,
 ) -> AgentState:
     """Run an evolution agent to completion.
 
@@ -393,6 +400,7 @@ def run_evolution_agent(
         baseline_data: Optional dict with detailed baseline metrics (fps, tests, etc.)
         observer: Optional observer for logging/tracing.
         benchmark_timeout: Timeout in seconds for benchmark execution. If None, uses thread-local value.
+        min_improvement_pct: Minimum improvement percentage to stop early (default 3.0).
 
     Returns:
         Final agent state after completion.
@@ -434,6 +442,7 @@ def run_evolution_agent(
         baseline_data=baseline_data,
         max_iterations=config.max_iterations,
         benchmark_timeout=actual_timeout,
+        min_improvement_pct=min_improvement_pct,
     )
 
     # Log initial user message
