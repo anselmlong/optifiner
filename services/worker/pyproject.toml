@@ -19,10 +19,6 @@ dependencies = [
     "rich>=13.0.0",
 ]
 
-[project.scripts]
-evolution-worker = "worker.__main__:main"
-evolution-cli = "worker.cli:main"
-
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0.0",
