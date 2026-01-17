@@ -413,6 +413,7 @@ def run_single_agent_isolated(
     baseline_data: dict | None = None,
     stop_event: threading.Event | None = None,
     compact: bool = False,
+    min_improvement_pct: float = 3.0,
 ) -> tuple[AgentResult, WorkspaceManager | None]:
     """Run a single evolution agent in an isolated workspace.
 
@@ -431,6 +432,7 @@ def run_single_agent_isolated(
         baseline_data: Optional dict with baseline evaluation data.
         stop_event: Optional threading.Event to check for early stopping.
         compact: Enable compact logging mode for parallel execution.
+        min_improvement_pct: Minimum improvement percentage to consider significant.
 
     Returns:
         Tuple of (AgentResult, workspace_manager). Workspace is kept if successful
@@ -583,6 +585,7 @@ Don't run `evaluate` until you've made changes - the baseline is already measure
             generation=0,
             baseline_score=baseline_score,
             observer=observer,
+            min_improvement_pct=min_improvement_pct,
         )
 
         # Extract the final score
@@ -1023,6 +1026,7 @@ def main(
                         log_dir=log_directory,
                         baseline_data=current_baseline_data,
                         stop_event=_stop_generation if early_stop else None,
+                        min_improvement_pct=min_improvement,
                     )
 
                     generation_results.append(result)
@@ -1128,6 +1132,7 @@ def main(
                         baseline_data=current_baseline_data,
                         stop_event=_stop_generation if early_stop else None,
                         compact=True,  # Enable compact logging for parallel agents
+                        min_improvement_pct=min_improvement,
                     )
 
                 try:
