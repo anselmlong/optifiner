@@ -29,6 +29,7 @@ def main():
     model_name = os.environ.get("MODEL_NAME", "gemini-3-flash-preview")
     task = os.environ.get("TASK", "Improve the code to get a higher benchmark score.")
     evaluator_path = os.environ.get("EVALUATOR_PATH", "")
+    verbosity = int(os.environ.get("VERBOSITY", "0"))
     
     # Parse baseline data if provided
     baseline_data = None
@@ -46,9 +47,15 @@ def main():
     if evaluator_path:
         set_evaluator(evaluator_path)
     
-    # Create quiet observer (container output should be minimal)
-    observer = AgentObserver(verbosity=0)
+    # Create observer with configured verbosity
+    # Use stderr for logs so stdout is clean for JSON result
+    from rich.console import Console
+    log_console = Console(stderr=True, force_terminal=True) if verbosity > 0 else None
+    observer = AgentObserver(verbosity=verbosity, console=log_console)
     set_observer(observer)
+    
+    if verbosity > 0:
+        print(f"[Container] Agent {agent_id} starting (verbosity={verbosity})", file=sys.stderr, flush=True)
     
     # Build config
     try:

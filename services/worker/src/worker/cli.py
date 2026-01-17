@@ -628,6 +628,8 @@ def main(
                                 model_name=model_name,
                                 console=console if verbosity >= 1 else None,
                                 baseline_data=current_baseline_data,
+                                verbosity=verbosity,
+                                stream_output=True,
                             )
                             result = AgentResult(
                                 agent_id=docker_result.get("agent_id", agent_id),
@@ -744,6 +746,8 @@ def main(
                             model_name=model_name,
                             console=None,  # No console output in parallel
                             baseline_data=current_baseline_data,
+                            verbosity=0,  # Quiet in parallel mode
+                            stream_output=False,  # No streaming in parallel
                         )
                         return AgentResult(
                             agent_id=docker_result.get("agent_id", agent_id),
