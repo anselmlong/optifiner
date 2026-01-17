@@ -188,6 +188,12 @@ class VolumetricRenderer:
         ray_ox, ray_oy, ray_oz = ray_origin.x, ray_origin.y, ray_origin.z
         ray_dx, ray_dy, ray_dz = ray_dir.x, ray_dir.y, ray_dir.z
         
+        # Pre-calculate particle influence data once per function call
+        particle_influence_data = []
+        for p in particles:
+            influence_radius = p.radius * 3
+            particle_influence_data.append((p, influence_radius, influence_radius * influence_radius))
+
         for step in range(RAYMARCH_STEPS):
             # Calculate current position along ray
             t = step * step_size
@@ -200,15 +206,14 @@ class VolumetricRenderer:
             local_color = [0.0, 0.0, 0.0]
             
             # Check contribution from each particle - O(n) per raymarch step!
-            for particle in particles:
+            for particle, influence_radius, influence_radius_sq in particle_influence_data:
                 # Quick squared distance check first (avoid sqrt)
                 dx = curr_x - particle.position.x
                 dy = curr_y - particle.position.y
                 dz = curr_z - particle.position.z
                 dist_sq = dx * dx + dy * dy + dz * dz
                 
-                influence_radius = particle.radius * 3
-                if dist_sq < influence_radius * influence_radius:
+                if dist_sq < influence_radius_sq:
                     dist = math.sqrt(dist_sq)
                     # Falloff based on distance
                     falloff = 1.0 - (dist / influence_radius)
