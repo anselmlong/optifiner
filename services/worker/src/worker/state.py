@@ -39,6 +39,7 @@ class AgentState(BaseModel):
     iteration: int = Field(default=0, description="Current iteration within this agent's run")
     max_iterations: int = Field(default=10, description="Maximum iterations allowed")
     benchmark_timeout: int = Field(default=30, description="Timeout in seconds for benchmark execution")
+    min_improvement_pct: float = Field(default=3.0, description="Minimum improvement percentage to consider significant")
 
     # Results
     success: bool = Field(default=False, description="Whether the agent completed successfully")

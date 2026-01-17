@@ -105,7 +105,7 @@ class AgentObserver:
             self._log_handle.write(json.dumps(event.to_dict()) + "\n")
             self._log_handle.flush()
     
-    def _truncate(self, text: str, max_len: int = 500) -> str:
+    def _truncate(self, text: str, max_len: int = 1500) -> str:
         """Truncate text with ellipsis if too long."""
         if len(text) <= max_len:
             return text
@@ -163,7 +163,7 @@ class AgentObserver:
         
         if self.compact:
             status = "[green]✓[/green]" if success else "[red]✗[/red]"
-            summary_preview = summary[:60].replace('\n', ' ') + "..." if len(summary) > 60 else summary.replace('\n', ' ')
+            summary_preview = summary[:200].replace('\n', ' ') + "..." if len(summary) > 200 else summary.replace('\n', ' ')
             self._compact_print(f"{status} Done ({self.current_iteration} iters){f': {summary_preview}' if summary_preview else ''}")
         elif self.verbosity >= 1:
             status = "[green]✓ Success[/green]" if success else "[red]✗ Failed[/red]"
@@ -261,12 +261,18 @@ class AgentObserver:
         self._record_event(event)
         
         if self.compact:
-            # In compact mode, only show brief info when there's no tool call (agent is done)
+            # In compact mode, show reasoning with more context
             if not tool_calls and content:
-                preview = content[:60].replace("\n", " ")
-                if len(content) > 60:
+                preview = content[:200].replace("\n", " ")
+                if len(content) > 200:
                     preview += "..."
                 self._compact_print(f"[magenta]💭 {preview}[/magenta]")
+            elif content and self.verbosity >= 1:
+                # Also show reasoning when there are tool calls, if verbosity allows
+                preview = content[:150].replace("\n", " ")
+                if len(content) > 150:
+                    preview += "..."
+                self._compact_print(f"[dim magenta]💭 {preview}[/dim magenta]")
             # Tool calls will be logged separately via on_tool_call
         elif self.verbosity >= 2:
             self.console.print()
@@ -338,8 +344,8 @@ class AgentObserver:
             path = tool_input.get("path", ".")
             return f"[dim]{tool_input['pattern']}[/dim] in {path}"
         elif tool_name == "run_bash" and "command" in tool_input:
-            cmd = tool_input["command"][:50]
-            if len(tool_input["command"]) > 50:
+            cmd = tool_input["command"][:120]
+            if len(tool_input["command"]) > 120:
                 cmd += "..."
             return f"[dim]{cmd}[/dim]"
         elif tool_name == "list_dir" and "path" in tool_input:
@@ -347,11 +353,11 @@ class AgentObserver:
         elif tool_name == "evaluate":
             return ""
         
-        # Generic compact format
+        # Generic compact format - show more args and longer values
         parts = []
-        for k, v in list(tool_input.items())[:2]:
-            v_str = str(v)[:30]
-            if len(str(v)) > 30:
+        for k, v in list(tool_input.items())[:4]:
+            v_str = str(v)[:80]
+            if len(str(v)) > 80:
                 v_str += "..."
             parts.append(f"{k}={v_str}")
         return ", ".join(parts)
@@ -419,38 +425,45 @@ class AgentObserver:
         """Format tool result compactly for parallel logging."""
         # Special handling for common tools
         if tool_name == "evaluate":
-            # Extract score if present
+            # Extract score if present - show full evaluation output
             if "Score:" in result_str:
                 import re
                 match = re.search(r"Score:\s*([\d.]+)", result_str)
                 if match:
-                    return f"[green]score={match.group(1)}[/green]"
+                    score = match.group(1)
+                    # Also try to get more context
+                    preview = result_str[:150].replace('\n', ' | ')
+                    return f"[green]score={score}[/green] {preview}"
             if "error" in result_str.lower():
-                return f"[red]{result_str[:50]}...[/red]"
-            return result_str[:40] + "..." if len(result_str) > 40 else result_str
+                return f"[red]{result_str[:150]}...[/red]"
+            return result_str[:120] + "..." if len(result_str) > 120 else result_str
         
         if tool_name in ("read_file", "list_dir", "glob"):
             lines = result_str.count('\n') + 1
             chars = len(result_str)
-            return f"[dim]{lines} lines, {chars} chars[/dim]"
+            # Also show first bit of content for context
+            first_lines = result_str[:100].replace('\n', ' | ')
+            return f"[dim]{lines} lines, {chars} chars:[/dim] {first_lines}..."
         
         if tool_name == "grep":
             matches = result_str.count('\n')
-            return f"[dim]{matches} matches[/dim]"
+            # Show some of the matches
+            preview = result_str[:150].replace('\n', ' | ')
+            return f"[dim]{matches} matches:[/dim] {preview}..."
         
         if tool_name in ("write_file", "edit_file", "multi_edit"):
             if "success" in result_str.lower() or "written" in result_str.lower():
                 return "[green]ok[/green]"
-            return result_str[:30] + "..." if len(result_str) > 30 else result_str
+            return result_str[:100] + "..." if len(result_str) > 100 else result_str
         
         if tool_name in ("run_bash", "run_python_file"):
-            if len(result_str) > 50:
-                return result_str[:50].replace('\n', ' ') + "..."
-            return result_str.replace('\n', ' ')
+            if len(result_str) > 200:
+                return result_str[:200].replace('\n', ' | ') + "..."
+            return result_str.replace('\n', ' | ')
         
-        # Generic: truncate to 50 chars
-        preview = result_str[:50].replace('\n', ' ')
-        if len(result_str) > 50:
+        # Generic: truncate to 150 chars
+        preview = result_str[:150].replace('\n', ' ')
+        if len(result_str) > 150:
             preview += "..."
         return preview
     
@@ -464,7 +477,9 @@ class AgentObserver:
         self._record_event(event)
         
         if self.compact:
-            error_preview = error[:80].replace('\n', ' ')
+            error_preview = error[:250].replace('\n', ' ')
+            if len(error) > 250:
+                error_preview += "..."
             self._compact_print(f"[red]⚠ {error_preview}[/red]")
         elif self.verbosity >= 1:
             self.console.print()
