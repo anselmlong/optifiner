@@ -13,6 +13,7 @@ from worker.observability import AgentObserver, get_observer
 from worker.prompts import get_system_prompt
 from worker.state import AgentState
 from worker.tools import get_all_tools
+from worker.tools.evaluate import _get_evaluator_timeout
 
 
 # Map of tool names to their argument aliases (alias -> canonical name)
@@ -90,6 +91,7 @@ def create_evolution_agent(
             generation=state.generation,
             baseline_score=state.baseline_score,
             baseline_data=state.baseline_data,
+            benchmark_timeout=state.benchmark_timeout,
         )
 
         # Log system prompt (only once per agent run)
@@ -264,24 +266,29 @@ def create_evolution_agent(
 
     def retry_node(state: AgentState) -> dict[str, Any]:
         """Inject a message telling the agent to keep trying."""
-        retry_message = HumanMessage(content="""You stopped without achieving an improvement. This is NOT acceptable!
+        retry_message = HumanMessage(content="""Your optimization didn't improve the score. Let's try a different approach.
 
-Your score has NOT improved above the baseline. You MUST keep trying.
+## What to Try Next
 
-INSTRUCTIONS:
-1. Your previous optimization attempt did not improve the score
-2. You MUST try a DIFFERENT optimization on a DIFFERENT function
-3. Do NOT repeat the same approach - try something new
-4. You still have iterations remaining - USE THEM
+**If you tried algorithm changes**, try data structure changes instead:
+- Replace lists with dicts/sets for O(1) lookups
+- Use NumPy arrays instead of Python lists for numerical data
 
-Think about what else could be optimized:
-- Different algorithms?
-- Different data structures?
-- Caching opportunities?
-- Loop optimizations?
-- Memory allocation improvements?
+**If you tried caching**, try vectorization instead:
+- Convert Python loops to NumPy operations
+- Batch multiple operations into single calls
 
-Pick a NEW target and try again. Do NOT give up!""")
+**If you tried small optimizations**, try architectural changes:
+- Add spatial partitioning for collision detection
+- Change from object-per-entity to arrays-of-components
+- Pre-render complex visuals into cached sprites
+
+**Common issues with failed optimizations**:
+- The change was correct but too small to measure (try a bigger bottleneck)
+- The change introduced a bug (check the evaluate error message)
+- The bottleneck was elsewhere (profile a different part of the code)
+
+Pick a DIFFERENT target and technique. You have iterations remaining.""")
         
         return {
             "messages": [retry_message],
@@ -327,6 +334,7 @@ def run_evolution_agent(
     baseline_score: float | None = None,
     baseline_data: dict | None = None,
     observer: AgentObserver | None = None,
+    benchmark_timeout: int | None = None,
 ) -> AgentState:
     """Run an evolution agent to completion.
 
@@ -338,6 +346,7 @@ def run_evolution_agent(
         baseline_score: Baseline benchmark score.
         baseline_data: Optional dict with detailed baseline metrics (fps, tests, etc.)
         observer: Optional observer for logging/tracing.
+        benchmark_timeout: Timeout in seconds for benchmark execution. If None, uses thread-local value.
 
     Returns:
         Final agent state after completion.
@@ -364,6 +373,9 @@ def run_evolution_agent(
             },
         )
 
+    # Get benchmark timeout (use provided value, or fall back to thread-local)
+    actual_timeout = benchmark_timeout if benchmark_timeout is not None else _get_evaluator_timeout()
+    
     # Initialize state
     initial_state = AgentState(
         messages=[HumanMessage(content=task)],
@@ -375,6 +387,7 @@ def run_evolution_agent(
         baseline_score=baseline_score,
         baseline_data=baseline_data,
         max_iterations=config.max_iterations,
+        benchmark_timeout=actual_timeout,
     )
 
     # Log initial user message

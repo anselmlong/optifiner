@@ -67,6 +67,8 @@ class AgentObserver:
         verbosity: int = 1,
         console: Console | None = None,
         log_file: str | None = None,
+        agent_id: str = "",
+        compact: bool = False,
     ):
         """Initialize the observer.
         
@@ -74,13 +76,18 @@ class AgentObserver:
             verbosity: Level of detail (0=quiet, 1=normal, 2=verbose, 3=debug)
             console: Rich console for output. Creates one if not provided.
             log_file: Optional file path to write events as JSON lines.
+            agent_id: Agent identifier for compact mode output prefix.
+            compact: Enable compact mode for parallel execution (1-2 lines per step).
         """
         self.verbosity = verbosity
         self.console = console or Console()
         self.log_file = log_file
+        self.agent_id = agent_id
+        self.compact = compact
         self.events: list[ObservabilityEvent] = []
         self.current_iteration = 0
         self._log_handle = None
+        self._compact_tool_buffer: list[tuple[str, str, str]] = []  # Buffer tool calls for compact output (name, args, id)
         
         if self.log_file:
             self._log_handle = open(self.log_file, "w")
@@ -104,15 +111,38 @@ class AgentObserver:
             return text
         return text[:max_len] + "..."
     
+    def _short_id(self) -> str:
+        """Get a short agent ID for compact mode prefix."""
+        if not self.agent_id:
+            return ""
+        # Extract the meaningful part (e.g., "gen0-optimizer-1" -> "opt-1")
+        parts = self.agent_id.split("-")
+        if len(parts) >= 3:
+            agent_type = parts[1][:3]  # First 3 chars of type
+            agent_num = parts[-1]
+            return f"{agent_type}-{agent_num}"
+        return self.agent_id[:8]
+    
+    def _compact_print(self, message: str):
+        """Print a compact message with agent prefix."""
+        prefix = f"[dim][{self._short_id()}][/dim] " if self.agent_id else ""
+        self.console.print(f"{prefix}{message}")
+    
     def on_agent_start(self, agent_id: str, task: str, config: dict[str, Any] | None = None):
         """Called when an agent starts execution."""
+        # Store agent_id for compact mode
+        if not self.agent_id:
+            self.agent_id = agent_id
+            
         event = ObservabilityEvent(
             event_type=EventType.AGENT_START,
             data={"agent_id": agent_id, "task": task, "config": config or {}},
         )
         self._record_event(event)
         
-        if self.verbosity >= 1:
+        if self.compact:
+            self._compact_print(f"[cyan]▶ Started[/cyan]")
+        elif self.verbosity >= 1:
             self.console.print()
             self.console.print(Panel(
                 f"[bold cyan]Agent Starting[/bold cyan]\n\n"
@@ -131,7 +161,11 @@ class AgentObserver:
         )
         self._record_event(event)
         
-        if self.verbosity >= 1:
+        if self.compact:
+            status = "[green]✓[/green]" if success else "[red]✗[/red]"
+            summary_preview = summary[:60].replace('\n', ' ') + "..." if len(summary) > 60 else summary.replace('\n', ' ')
+            self._compact_print(f"{status} Done ({self.current_iteration} iters){f': {summary_preview}' if summary_preview else ''}")
+        elif self.verbosity >= 1:
             status = "[green]✓ Success[/green]" if success else "[red]✗ Failed[/red]"
             self.console.print()
             self.console.print(Panel(
@@ -186,13 +220,16 @@ class AgentObserver:
     def on_iteration_start(self, iteration: int):
         """Called at the start of each agent iteration."""
         self.current_iteration = iteration
+        self._compact_tool_buffer = []  # Reset tool buffer for new iteration
         event = ObservabilityEvent(
             event_type=EventType.ITERATION_START,
             iteration=iteration,
         )
         self._record_event(event)
         
-        if self.verbosity >= 1:
+        if self.compact:
+            pass  # Don't print iteration start in compact mode - wait for tool calls
+        elif self.verbosity >= 1:
             self.console.print()
             self.console.print(f"[bold yellow]━━━ Iteration {iteration} ━━━[/bold yellow]")
     
@@ -223,7 +260,15 @@ class AgentObserver:
         )
         self._record_event(event)
         
-        if self.verbosity >= 2:
+        if self.compact:
+            # In compact mode, only show brief info when there's no tool call (agent is done)
+            if not tool_calls and content:
+                preview = content[:60].replace("\n", " ")
+                if len(content) > 60:
+                    preview += "..."
+                self._compact_print(f"[magenta]💭 {preview}[/magenta]")
+            # Tool calls will be logged separately via on_tool_call
+        elif self.verbosity >= 2:
             self.console.print()
             
             # Show reasoning if present
@@ -255,7 +300,13 @@ class AgentObserver:
         )
         self._record_event(event)
         
-        if self.verbosity >= 2:
+        if self.compact:
+            # Buffer tool call for combined output with result
+            args_preview = self._format_tool_args_compact(tool_name, tool_input)
+            # Remove rich formatting for cleaner compact output
+            args_clean = args_preview.replace("[dim]", "").replace("[/dim]", "")
+            self._compact_tool_buffer.append((tool_name, args_clean, call_id))
+        elif self.verbosity >= 2:
             self.console.print()
             
             # Format tool input nicely
@@ -322,7 +373,32 @@ class AgentObserver:
         )
         self._record_event(event)
         
-        if error:
+        if self.compact:
+            # Find the matching tool call in buffer
+            tool_info = None
+            for i, (t_name, t_args, t_id) in enumerate(self._compact_tool_buffer):
+                if t_id == call_id or t_name == tool_name:
+                    tool_info = (t_name, t_args)
+                    self._compact_tool_buffer.pop(i)
+                    break
+            
+            if tool_info:
+                t_name, t_args = tool_info
+            else:
+                t_name, t_args = tool_name, ""
+            
+            # Format compact output: [agent-id] iter N: tool(args) → result
+            if error:
+                result_preview = f"[red]ERR: {error[:40]}[/red]"
+            else:
+                result_preview = self._format_result_compact(tool_name, result_str)
+            
+            args_part = f"({t_args})" if t_args else ""
+            self._compact_print(
+                f"[yellow]#{self.current_iteration}[/yellow] "
+                f"[cyan]{t_name}[/cyan]{args_part} → {result_preview}"
+            )
+        elif error:
             if self.verbosity >= 1:
                 self.console.print(f"[red]  ✗ Error: {error[:200]}[/red]")
         elif self.verbosity >= 2:
@@ -339,6 +415,45 @@ class AgentObserver:
                 result_preview += "..."
             self.console.print(f"[dim]  → {result_preview}[/dim]")
     
+    def _format_result_compact(self, tool_name: str, result_str: str) -> str:
+        """Format tool result compactly for parallel logging."""
+        # Special handling for common tools
+        if tool_name == "evaluate":
+            # Extract score if present
+            if "Score:" in result_str:
+                import re
+                match = re.search(r"Score:\s*([\d.]+)", result_str)
+                if match:
+                    return f"[green]score={match.group(1)}[/green]"
+            if "error" in result_str.lower():
+                return f"[red]{result_str[:50]}...[/red]"
+            return result_str[:40] + "..." if len(result_str) > 40 else result_str
+        
+        if tool_name in ("read_file", "list_dir", "glob"):
+            lines = result_str.count('\n') + 1
+            chars = len(result_str)
+            return f"[dim]{lines} lines, {chars} chars[/dim]"
+        
+        if tool_name == "grep":
+            matches = result_str.count('\n')
+            return f"[dim]{matches} matches[/dim]"
+        
+        if tool_name in ("write_file", "edit_file", "multi_edit"):
+            if "success" in result_str.lower() or "written" in result_str.lower():
+                return "[green]ok[/green]"
+            return result_str[:30] + "..." if len(result_str) > 30 else result_str
+        
+        if tool_name in ("run_bash", "run_python_file"):
+            if len(result_str) > 50:
+                return result_str[:50].replace('\n', ' ') + "..."
+            return result_str.replace('\n', ' ')
+        
+        # Generic: truncate to 50 chars
+        preview = result_str[:50].replace('\n', ' ')
+        if len(result_str) > 50:
+            preview += "..."
+        return preview
+    
     def on_error(self, error: str, context: dict[str, Any] | None = None):
         """Called when an error occurs."""
         event = ObservabilityEvent(
@@ -348,7 +463,10 @@ class AgentObserver:
         )
         self._record_event(event)
         
-        if self.verbosity >= 1:
+        if self.compact:
+            error_preview = error[:80].replace('\n', ' ')
+            self._compact_print(f"[red]⚠ {error_preview}[/red]")
+        elif self.verbosity >= 1:
             self.console.print()
             self.console.print(Panel(
                 f"[red]{error}[/red]",
@@ -416,6 +534,8 @@ def create_observer(
     verbosity: int = 1,
     console: Console | None = None,
     log_file: str | None = None,
+    agent_id: str = "",
+    compact: bool = False,
 ) -> AgentObserver:
     """Create and set a global observer.
     
@@ -423,10 +543,18 @@ def create_observer(
         verbosity: Level of detail (0=quiet, 1=normal, 2=verbose, 3=debug)
         console: Rich console for output.
         log_file: Optional file to write events.
+        agent_id: Agent identifier for compact mode prefix.
+        compact: Enable compact mode for parallel execution.
     
     Returns:
         The created observer.
     """
-    observer = AgentObserver(verbosity=verbosity, console=console, log_file=log_file)
+    observer = AgentObserver(
+        verbosity=verbosity,
+        console=console,
+        log_file=log_file,
+        agent_id=agent_id,
+        compact=compact,
+    )
     set_observer(observer)
     return observer
