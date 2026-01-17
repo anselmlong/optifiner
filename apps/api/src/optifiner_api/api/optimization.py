@@ -1,4 +1,56 @@
-"""Optimization workflow API endpoints."""
+"""Optimization workflow API endpoints.
+
+This module provides the REST API for starting and managing optimization workflows.
+It mirrors all CLI options from worker/src/worker/cli.py for feature completeness.
+
+CLI to API Option Mapping:
+    --agents (-n)         -> agents_per_generation
+    --parallel (-p)       -> parallel
+    --generations (-g)    -> generations
+    --max-iterations (-i) -> max_iterations_per_agent
+    --task (-t)          -> user_prompt
+    --model-provider     -> models[].provider
+    --model-name         -> models[].model_name
+    --verbose (-v)       -> verbosity (0-3)
+    --quiet (-q)         -> verbosity = 0
+    --log-dir (-l)       -> log_dir
+    --early-stop         -> early_stop
+    --build-benchmark    -> build_benchmark
+    --min-improvement    -> min_improvement_pct
+
+Git operations happen on the user's repository:
+    1. Clones the specified repo
+    2. Creates optimization branch (optifiner-{workflow_id[:8]})
+    3. Commits improvements via GitHub API
+    4. Pushes to the user's repository
+
+Example CLI command:
+    python3 cli.py -p 5 -g 5 -m 10 \\
+        ../../examples/volumetric_particle_sim \\
+        --agents 5 \\
+        --max-iterations 25 \\
+        --task "Optimize this particle simulation for maximum FPS." \\
+        -vvv
+
+Equivalent API request:
+    POST /api/v1/optimization/start
+    {
+        "repo_url": "https://github.com/user/volumetric_particle_sim",
+        "parallel": 5,
+        "generations": 5,
+        "min_improvement_pct": 10.0,
+        "agents_per_generation": 5,
+        "max_iterations_per_agent": 25,
+        "user_prompt": "Optimize this particle simulation for maximum FPS.",
+        "verbosity": 3,
+        "total_cost_limit": 10.0,
+        "models": [{
+            "provider": "google",
+            "model_name": "gemini-2.0-flash-exp",
+            "api_key": "YOUR_API_KEY"
+        }]
+    }
+"""
 
 import logging
 
@@ -10,112 +62,124 @@ from optifiner_api.services.optimization_service import OptimizationService
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-# Initialize service
 optimization_service = OptimizationService()
 
 
 @router.post("/optimization/start")
-async def start_optimization_workflow(
-    request: OptimizationWorkflowRequest,
-):
-    """Start an optimization workflow.
+async def start_optimization_workflow(request: OptimizationWorkflowRequest):
+    """Start an optimization workflow with full CLI feature parity.
 
-    This endpoint receives:
-    - Git repository URL
-    - User prompt
-    - Total cost limit
-    - Models with API keys and number of instances per model
+    This endpoint mirrors all functionality from worker/src/worker/cli.py.
 
-    The workflow:
-    1. Clones the git repository
-    2. Runs baseline evaluation to get initial score
-    3. Spins up worker instances per model
-    4. Monitors and evaluates worker instances
-    5. Selects best result and commits/pushes
-    6. Iteratively improves until no improvement or cost limit reached
-
-    Args:
-        request: Optimization workflow request containing:
-            - repo_url: GitHub repository URL
-            - user_prompt: User prompt describing optimization goal
-            - total_cost_limit: Total cost limit
-            - models: List of models with provider, name, API keys, and instances
-            - branch: Optional branch to clone
-            - evaluator_path: Optional path to evaluator script
-            - max_iterations_per_agent: Max iterations per agent
-            - time_limit_seconds: Time limit per generation
+    ## Agent Configuration (CLI options):
+    - `agents_per_generation`: Number of agents per generation (CLI: --agents, -n)
+    - `parallel`: Parallel execution count (CLI: --parallel, -p)
+    - `generations`: Max evolution generations (CLI: --generations, -g)
+    - `max_iterations_per_agent`: Iterations per agent (CLI: --max-iterations, -i)
+    - `agent_types`: Agent types to cycle through (default: optimizer, refactoring, feature, analyzer, general)
+    
+    ## Optimization Settings (CLI options):
+    - `min_improvement_pct`: Noise filter threshold (CLI: --min-improvement, -m, default: 6.0%)
+    - `early_stop`: Stop on improvement (CLI: --early-stop/--no-early-stop)
+    - `user_prompt`: Task description (CLI: --task, -t)
+    
+    ## Logging Configuration (CLI options):
+    - `verbosity`: Log level 0-3 (CLI: -q/-v/-vv/-vvv)
+    - `log_dir`: Agent log directory (CLI: --log-dir, -l)
+    
+    ## Benchmark/Evaluator:
+    - `evaluator_path`: Path to evaluator script
+    - `build_benchmark`: Auto-create benchmark (CLI: --build-benchmark, -b)
+    
+    ## Git Operations:
+    All commits are made to the user's repository on a new branch:
+    1. Clones repository
+    2. Creates branch: `optifiner-{workflow_id[:8]}`
+    3. Commits improvements
+    4. Pushes to remote
 
     Returns:
-        Workflow initialization result with workflow_id and baseline score
+        - workflow_id: Unique workflow identifier
+        - baseline_score: Initial benchmark score
+        - repo_dir: Local repository directory
+        - branch: Optimization branch name
+        - status: "running"
     """
     try:
-        logger.debug(f"[API] /optimization/start called with repo_url={request.repo_url}, branch={request.branch}, models={len(request.models)}")
+        logger.info(f"[API] Starting optimization: repo={request.repo_url}, agents={request.agents_per_generation}, parallel={request.parallel}, generations={request.generations}")
         
-        # Convert models to dict format
-        models = [
-            {
-                "provider": model.provider,
-                "model_name": model.model_name,
-                "api_key": model.api_key,
-                "instances": model.instances,
-            }
-            for model in request.models
-        ]
-        
-        logger.debug(f"[API] Converted {len(models)} models to dict format")
-
-        logger.debug(f"[API] Calling optimization_service.start_optimization_workflow")
         result = await optimization_service.start_optimization_workflow(
+            # Repository
             repo_url=request.repo_url,
             branch=request.branch,
+            # Cost
             total_cost_limit=request.total_cost_limit,
-            models=models,
+            # Models
+            models=[m.model_dump() for m in request.models],
+            # Task
             user_prompt=request.user_prompt,
-            evaluator_path=request.evaluator_path,
+            # Agent config (CLI options)
+            agents_per_generation=request.agents_per_generation,
+            parallel=request.parallel,
+            generations=request.generations,
             max_iterations_per_agent=request.max_iterations_per_agent,
-            time_limit_seconds=request.time_limit_seconds,
+            agent_types=request.agent_types,
+            # Optimization settings (CLI options)
             min_improvement_pct=request.min_improvement_pct,
             early_stop=request.early_stop,
+            # Benchmark (CLI options)
+            evaluator_path=request.evaluator_path,
+            build_benchmark=request.build_benchmark,
+            # Logging (CLI options)
+            verbosity=request.verbosity,
+            log_dir=request.log_dir,
+            # Time limit
+            time_limit_seconds=request.time_limit_seconds,
         )
-        
-        logger.debug(f"[API] start_optimization_workflow returned: success={result.get('success')}, workflow_id={result.get('workflow_id')}")
 
         if not result.get("success"):
-            error_msg = result.get("error", "Failed to start workflow")
-            logger.error(f"[API] Workflow start failed: {error_msg}")
-            raise HTTPException(
-                status_code=400, detail=error_msg
-            )
+            raise HTTPException(status_code=400, detail=result.get("error"))
 
-        logger.info(f"[API] Workflow started successfully: workflow_id={result.get('workflow_id')}")
+        logger.info(f"[API] Workflow started: id={result.get('workflow_id')}, branch={result.get('branch')}")
         return result
+        
     except HTTPException:
-        # Re-raise HTTP exceptions
         raise
     except Exception as e:
-        logger.error(f"[API] Unexpected error in start_optimization_workflow: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500, detail=f"Internal server error: {str(e)}"
-        )
+        logger.error(f"[API] Error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/optimization/{workflow_id}/status", response_model=OptimizationWorkflowStatus)
+async def get_optimization_status(workflow_id: str):
+    """Get the current status of an optimization workflow.
+
+    Returns complete workflow status including:
+    - Current generation and progress
+    - Best score achieved
+    - Step snapshots with metadata
+    - Cost tracking
+    - Timing information
+    """
+    result = await optimization_service.get_workflow_status(workflow_id)
+    
+    if not result:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    
+    return result
 
 
 @router.post("/optimization/{workflow_id}/pause")
 async def pause_optimization_workflow(workflow_id: str):
     """Pause an active optimization workflow.
     
-    Args:
-        workflow_id: The ID of the workflow to pause
-        
-    Returns:
-        Status confirmation
+    The workflow can be resumed later with the /resume endpoint.
+    Current generation will complete but no new generations start.
     """
     result = await optimization_service.pause_workflow(workflow_id)
     
     if not result.get("success"):
-        raise HTTPException(
-            status_code=400, detail=result.get("error", "Failed to pause workflow")
-        )
+        raise HTTPException(status_code=400, detail=result.get("error"))
     
     return result
 
@@ -124,38 +188,12 @@ async def pause_optimization_workflow(workflow_id: str):
 async def resume_optimization_workflow(workflow_id: str):
     """Resume a paused optimization workflow.
     
-    Args:
-        workflow_id: The ID of the workflow to resume
-        
-    Returns:
-        Status confirmation
+    Continues from where the workflow was paused.
     """
     result = await optimization_service.resume_workflow(workflow_id)
     
     if not result.get("success"):
-        raise HTTPException(
-            status_code=400, detail=result.get("error", "Failed to resume workflow")
-        )
-    
-    return result
-
-
-@router.get("/optimization/{workflow_id}/status", response_model=OptimizationWorkflowStatus)
-async def get_optimization_status(workflow_id: str):
-    """Get the current status of an optimization workflow.
-    
-    Args:
-        workflow_id: The ID of the workflow
-        
-    Returns:
-        Current workflow status including progress, costs, and tree data
-    """
-    result = await optimization_service.get_workflow_status(workflow_id)
-    
-    if not result:
-        raise HTTPException(
-            status_code=404, detail="Workflow not found"
-        )
+        raise HTTPException(status_code=400, detail=result.get("error"))
     
     return result
 
@@ -164,17 +202,11 @@ async def get_optimization_status(workflow_id: str):
 async def stop_optimization_workflow(workflow_id: str):
     """Stop an optimization workflow completely.
     
-    Args:
-        workflow_id: The ID of the workflow to stop
-        
-    Returns:
-        Final status and results
+    Returns final results including best score achieved.
     """
     result = await optimization_service.stop_workflow(workflow_id)
     
     if not result.get("success"):
-        raise HTTPException(
-            status_code=400, detail=result.get("error", "Failed to stop workflow")
-        )
+        raise HTTPException(status_code=400, detail=result.get("error"))
     
     return result

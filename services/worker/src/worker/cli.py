@@ -110,7 +110,7 @@ def save_step_snapshot(
     final_score: float,
     improvement_pct: float,
     generation: int,
-    console: Console,
+    console: Console | None = None,
 ) -> Path:
     """Save a snapshot of the codebase at a specific evolution step.
     
@@ -172,7 +172,8 @@ def save_step_snapshot(
     with open(metadata_path, "w") as f:
         json.dump(metadata, f, indent=2)
     
-    console.print(f"[dim]  Saved step {step_number} snapshot to: {step_folder.name}/[/dim]")
+    if console:
+        console.print(f"[dim]  Saved step {step_number} snapshot to: {step_folder.name}/[/dim]")
     
     return step_folder
 
@@ -181,7 +182,7 @@ def save_initial_snapshot(
     source_path: Path,
     output_dir: Path,
     baseline_score: float,
-    console: Console,
+    console: Console | None = None,
 ) -> Path:
     """Save the initial (step 0) snapshot before any evolution.
     
@@ -233,7 +234,8 @@ def save_initial_snapshot(
     with open(metadata_path, "w") as f:
         json.dump(metadata, f, indent=2)
     
-    console.print(f"[dim]Saved initial snapshot to: {steps_dir.name}/step_000/[/dim]")
+    if console:
+        console.print(f"[dim]Saved initial snapshot to: {steps_dir.name}/step_000/[/dim]")
     
     return step_folder
 
@@ -390,10 +392,14 @@ def git_commit(workspace: str, message: str) -> str | None:
 
 
 def git_reset(workspace: str) -> None:
-    """Reset git workspace to last commit."""
+    """Reset git workspace to last commit.
+    
+    Note: Excludes the 'steps/' directory from git clean to preserve
+    step snapshots across evolution iterations.
+    """
     try:
         subprocess.run(["git", "checkout", "--", "."], cwd=workspace, capture_output=True)
-        subprocess.run(["git", "clean", "-fd"], cwd=workspace, capture_output=True)
+        subprocess.run(["git", "clean", "-fd", "-e", "steps/"], cwd=workspace, capture_output=True)
     except Exception:
         pass
 
@@ -1061,19 +1067,8 @@ def main(
                         state.step_count += 1
                         generation_improved = True
 
-                        commit_msg = (
-                            f"Gen {state.generation} | Agent {agent_id}: +{improvement_pct:.1f}% "
-                            f"({result.baseline_score:.2f} → {result.final_score:.2f})"
-                        )
-                        commit_hash = git_commit(str(working_path), commit_msg)
-
-                        console.print(f"\n[green]✓ Agent {agent_id} improved! "
-                                      f"Score: {result.baseline_score:.2f} → {result.final_score:.2f} "
-                                      f"(+{improvement_pct:.1f}%)[/green]")
-                        if commit_hash:
-                            console.print(f"[dim]  Committed: {commit_hash}[/dim]")
-                        
-                        # Save step snapshot
+                        # Save step snapshot BEFORE git commit so it's included in the commit
+                        # and survives subsequent git_reset calls (which run git clean -fd)
                         save_step_snapshot(
                             source_path=working_path,
                             output_dir=working_path,
@@ -1085,6 +1080,18 @@ def main(
                             generation=state.generation,
                             console=console,
                         )
+
+                        commit_msg = (
+                            f"Gen {state.generation} | Agent {agent_id}: +{improvement_pct:.1f}% "
+                            f"({result.baseline_score:.2f} → {result.final_score:.2f})"
+                        )
+                        commit_hash = git_commit(str(working_path), commit_msg)
+
+                        console.print(f"\n[green]✓ Agent {agent_id} improved! "
+                                      f"Score: {result.baseline_score:.2f} → {result.final_score:.2f} "
+                                      f"(+{improvement_pct:.1f}%)[/green]")
+                        if commit_hash:
+                            console.print(f"[dim]  Committed: {commit_hash}[/dim]")
 
                         # Update baseline data
                         new_result = run_evaluator(str(evaluator_path), str(working_path), return_full_data=True)
@@ -1183,12 +1190,8 @@ def main(
                                 state.step_count += 1
                                 generation_improved = True
 
-                                commit_msg = f"Gen {state.generation} | Agent {result.agent_id}: +{improvement_pct:.1f}%"
-                                git_commit(str(working_path), commit_msg)
-
-                                console.print(f"\n[green]✓ {result.agent_id} improved! +{improvement_pct:.1f}%[/green]")
-                                
-                                # Save step snapshot
+                                # Save step snapshot BEFORE git commit so it's included in the commit
+                                # and survives subsequent git_reset calls (which run git clean -fd)
                                 save_step_snapshot(
                                     source_path=working_path,
                                     output_dir=working_path,
@@ -1200,6 +1203,11 @@ def main(
                                     generation=state.generation,
                                     console=console,
                                 )
+
+                                commit_msg = f"Gen {state.generation} | Agent {result.agent_id}: +{improvement_pct:.1f}%"
+                                git_commit(str(working_path), commit_msg)
+
+                                console.print(f"\n[green]✓ {result.agent_id} improved! +{improvement_pct:.1f}%[/green]")
 
                                 new_result = run_evaluator(str(evaluator_path), str(working_path), return_full_data=True)
                                 if new_result[0] is not None:
