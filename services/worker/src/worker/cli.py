@@ -102,8 +102,9 @@ def run_evaluator(
         return None, f"Evaluator not found: {evaluator}"
 
     # Determine how to run the evaluator
+    # Always pass --quiet for Python evaluators to get JSON output
     if evaluator.suffix == ".py":
-        cmd = [_get_python_executable(), str(evaluator)]
+        cmd = [_get_python_executable(), str(evaluator), "--quiet"]
     elif evaluator.suffix == ".sh":
         cmd = ["bash", str(evaluator)]
     elif evaluator.suffix in (".js", ".mjs"):
@@ -452,8 +453,8 @@ Remember: Only improvements that INCREASE the score are kept!"""
 @click.option("--quiet", "-q", is_flag=True, help="Quiet mode - minimal output (overrides -v)")
 @click.option("--log-dir", "-l", type=click.Path(),
               help="Directory to save agent execution logs (JSONL format)")
-@click.option("--docker", "-d", is_flag=True, 
-              help="Run agents in Docker containers (builds image if absent)")
+@click.option("--docker/--no-docker", "-d/-D", default=True,
+              help="Run agents in Docker containers (default: enabled)")
 @click.option("--early-stop/--no-early-stop", default=True,
               help="Stop generation early when improvement found (default: enabled)")
 def main(
