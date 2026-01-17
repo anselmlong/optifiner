@@ -41,6 +41,33 @@ console = Console()
 _stop_generation = threading.Event()
 
 
+def is_significant_improvement(
+    baseline_score: float,
+    new_score: float,
+    min_improvement_pct: float = 3.0
+) -> tuple[bool, float]:
+    """Check if an improvement is statistically significant (above noise threshold).
+    
+    Small improvements (e.g., 0.01%) are likely just benchmark instability/noise.
+    This function filters out noise by requiring a minimum percentage improvement.
+    
+    Args:
+        baseline_score: The original score to compare against.
+        new_score: The new score after changes.
+        min_improvement_pct: Minimum improvement percentage required (default 3%).
+    
+    Returns:
+        Tuple of (is_significant, improvement_percent).
+    """
+    if baseline_score <= 0:
+        # Can't calculate percentage improvement with zero/negative baseline
+        return new_score > baseline_score, 0.0
+    
+    improvement_pct = ((new_score - baseline_score) / baseline_score) * 100
+    is_significant = improvement_pct >= min_improvement_pct
+    return is_significant, improvement_pct
+
+
 @dataclass
 class AgentResult:
     """Result from a single agent run."""
@@ -315,6 +342,8 @@ def run_single_agent_isolated(
     set_observer(observer)
 
     # Build config
+    # Use shorter timeout for fast models like gemini flash
+    model_timeout = 20.0 if "gemini" in model_name.lower() and "flash" in model_name.lower() else 60.0
     try:
         config = WorkerConfig(
             model=ModelConfig(
@@ -322,6 +351,8 @@ def run_single_agent_isolated(
                 model_name=model_name,
                 temperature=0.0,
                 max_tokens=8192,
+                timeout=model_timeout,
+                max_retries=3,
             ),
             agent_type=AgentType(agent_type),
             max_iterations=max_iterations,
@@ -494,11 +525,15 @@ def run_benchmark_builder_cli(
     set_observer(observer)
     
     try:
+        # Use shorter timeout for fast models like gemini flash
+        model_timeout = 20.0 if "gemini" in model_name.lower() and "flash" in model_name.lower() else 60.0
         model_config = ModelConfig(
             provider=ModelProvider(model_provider),
             model_name=model_name,
             temperature=0.0,
             max_tokens=8192,
+            timeout=model_timeout,
+            max_retries=3,
         )
         
         success, message = run_benchmark_builder(
@@ -589,6 +624,8 @@ def run_benchmark_builder_cli(
               help="Stop generation early when improvement found (default: enabled)")
 @click.option("--build-benchmark", "-b", is_flag=True,
               help="Run benchmark builder agent to create optifiner_benchmark.py")
+@click.option("--min-improvement", "-m", default=3.0, type=float,
+              help="Minimum improvement percentage to accept a change (default: 3.0%%, filters noise)")
 def main(
     repository: str,
     evaluator: str | None,
@@ -605,6 +642,7 @@ def main(
     log_dir: str | None,
     early_stop: bool,
     build_benchmark: bool,
+    min_improvement: float,
 ):
     """Run evolution agents on a repository to improve its benchmark score.
 
@@ -732,6 +770,7 @@ def main(
         sys.exit(1)
 
     console.print(f"[green]Baseline score: {baseline_score}[/green]")
+    console.print(f"[dim]Minimum improvement threshold: {min_improvement}% (filters noise)[/dim]")
     if baseline_data:
         if "fps" in baseline_data:
             console.print(f"[dim]  FPS: {baseline_data['fps']:.2f}[/dim]")
@@ -813,8 +852,11 @@ def main(
                     generation_results.append(result)
                     state.total_attempts += 1
 
-                    # Check if improved
-                    if result.success and result.final_score > state.best_score and workspace:
+                    # Check if improvement is statistically significant (above noise threshold)
+                    is_significant, improvement_pct = is_significant_improvement(
+                        state.best_score, result.final_score, min_improvement
+                    )
+                    if result.success and is_significant and workspace:
                         # Copy improved workspace back to working copy (not original!)
                         git_reset(str(working_path))
                         
@@ -838,14 +880,14 @@ def main(
                         generation_improved = True
 
                         commit_msg = (
-                            f"Gen {state.generation} | Agent {agent_id}: +{result.improvement:.2f} "
-                            f"(Score: {result.baseline_score:.2f} → {result.final_score:.2f})"
+                            f"Gen {state.generation} | Agent {agent_id}: +{improvement_pct:.1f}% "
+                            f"({result.baseline_score:.2f} → {result.final_score:.2f})"
                         )
                         commit_hash = git_commit(str(working_path), commit_msg)
 
                         console.print(f"\n[green]✓ Agent {agent_id} improved! "
                                       f"Score: {result.baseline_score:.2f} → {result.final_score:.2f} "
-                                      f"(+{result.improvement:.2f})[/green]")
+                                      f"(+{improvement_pct:.1f}%)[/green]")
                         if commit_hash:
                             console.print(f"[dim]  Committed: {commit_hash}[/dim]")
 
@@ -857,7 +899,13 @@ def main(
                         if early_stop:
                             _stop_generation.set()
                     else:
-                        status = "no improvement" if not result.error else f"error: {result.error[:50]}"
+                        if result.error:
+                            status = f"error: {result.error[:50]}"
+                        elif result.final_score > state.best_score:
+                            # Improved but below threshold
+                            status = f"improvement too small ({improvement_pct:.1f}% < {min_improvement}%)"
+                        else:
+                            status = "no improvement"
                         console.print(f"[dim]✗ Agent {agent_id}: {status}[/dim]")
 
                     # Clean up workspace if we kept it
@@ -908,7 +956,11 @@ def main(
                             generation_results.append(result)
                             state.total_attempts += 1
 
-                            if result.success and result.final_score > state.best_score and workspace:
+                            # Check if improvement is statistically significant
+                            is_significant, improvement_pct = is_significant_improvement(
+                                state.best_score, result.final_score, min_improvement
+                            )
+                            if result.success and is_significant and workspace:
                                 git_reset(str(working_path))
                                 
                                 for item in working_path.iterdir():
@@ -929,10 +981,10 @@ def main(
                                 state.total_improvements += 1
                                 generation_improved = True
 
-                                commit_msg = f"Gen {state.generation} | Agent {result.agent_id}: +{result.improvement:.2f}"
+                                commit_msg = f"Gen {state.generation} | Agent {result.agent_id}: +{improvement_pct:.1f}%"
                                 git_commit(str(working_path), commit_msg)
 
-                                console.print(f"\n[green]✓ {result.agent_id} improved! +{result.improvement:.2f}[/green]")
+                                console.print(f"\n[green]✓ {result.agent_id} improved! +{improvement_pct:.1f}%[/green]")
 
                                 new_result = run_evaluator(str(evaluator_path), str(working_path), return_full_data=True)
                                 if new_result[0] is not None:
