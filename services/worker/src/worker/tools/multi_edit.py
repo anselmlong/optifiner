@@ -97,7 +97,8 @@ def multi_edit(file_path: str, edits: list[dict[str, Any]]) -> str:
 
     if not path.exists():
         # Allow creating new file if first edit has empty old_string
-        if edits and edits[0].get("old_string", "") == "":
+        first_old = edits[0].get("old_string", "") if isinstance(edits[0], dict) else edits[0].old_string
+        if edits and first_old == "":
             try:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 content = ""
