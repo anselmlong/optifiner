@@ -1,11 +1,14 @@
 """File edit tool for the evolution agent - performs exact string replacements."""
 
+import logging
 from pathlib import Path
 
 from langchain_core.tools import tool
 from pydantic import AliasChoices, BaseModel, Field
 
 from worker.tools.path_utils import resolve_path, virtualize_path
+
+logger = logging.getLogger(__name__)
 
 
 class EditFileInput(BaseModel):
@@ -61,13 +64,24 @@ def edit_file(
 
     vpath = virtualize_path(path)
     
+    logger.debug(
+        f"edit_file called on {vpath}\n"
+        f"old_string ({len(old_string)} chars, {old_string.count(chr(10))+1} lines):\n"
+        f"---OLD_STRING_START---\n{old_string}\n---OLD_STRING_END---\n"
+        f"new_string ({len(new_string)} chars, {new_string.count(chr(10))+1} lines):\n"
+        f"---NEW_STRING_START---\n{new_string}\n---NEW_STRING_END---"
+    )
+    
     if not path.exists():
+        logger.error(f"edit_file {vpath}: File not found")
         return f"Error: File not found: {vpath}"
 
     if not path.is_file():
+        logger.error(f"edit_file {vpath}: Path is not a file")
         return f"Error: Path is not a file: {vpath}"
 
     if old_string == new_string:
+        logger.warning(f"edit_file {vpath}: old_string and new_string are identical")
         return "Error: old_string and new_string are identical. No changes needed."
 
     try:
@@ -92,13 +106,24 @@ def edit_file(
                 content = norm_content
                 old_string = norm_old
                 new_string = _normalize_whitespace(new_string)
+                logger.debug(f"edit_file {vpath}: Matched after whitespace normalization")
             else:
                 # Provide helpful context for debugging
                 if old_string.strip() in content:
+                    logger.error(
+                        f"edit_file {vpath}: old_string not found (exists with different whitespace)\n"
+                        f"old_string ({len(old_string)} chars):\n{old_string}"
+                    )
                     return f"Error: old_string not found in {vpath}. The text exists with different whitespace - check indentation and line endings."
+                logger.error(
+                    f"edit_file {vpath}: old_string not found in file\n"
+                    f"old_string ({len(old_string)} chars):\n{old_string}\n"
+                    f"File content ({len(content)} chars)"
+                )
                 return f"Error: old_string not found in {vpath}. Use read_file to verify the exact content."
 
         if count > 1 and not replace_all:
+            logger.error(f"edit_file {vpath}: old_string found {count} times (ambiguous)")
             return f"Error: old_string found {count} times in {vpath}. Use replace_all=True to replace all occurrences, or provide more context to make the match unique."
 
         # Perform replacement
@@ -126,12 +151,17 @@ def edit_file(
 
         norm_note = " (matched after whitespace normalization)" if normalized_match else ""
         if replace_all and replaced_count > 1:
+            logger.info(f"edit_file {vpath}: Replaced {replaced_count} occurrences")
             return f"Successfully replaced {replaced_count} occurrences in {vpath}{diff_msg}{norm_note}"
+        logger.info(f"edit_file {vpath}: Successfully edited{diff_msg}")
         return f"Successfully edited {vpath}{diff_msg}{norm_note}"
 
     except PermissionError:
+        logger.error(f"edit_file {vpath}: Permission denied")
         return f"Error: Permission denied: {vpath}"
     except UnicodeDecodeError:
+        logger.error(f"edit_file {vpath}: Cannot edit binary file")
         return f"Error: Cannot edit binary file: {vpath}"
     except Exception as e:
+        logger.error(f"edit_file {vpath}: Unexpected error: {e}", exc_info=True)
         return f"Error editing file {vpath}: {e}"

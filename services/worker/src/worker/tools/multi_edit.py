@@ -1,5 +1,6 @@
 """Multi-edit tool for the evolution agent - performs multiple edits to a single file."""
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -7,6 +8,8 @@ from langchain_core.tools import tool
 from pydantic import AliasChoices, BaseModel, Field
 
 from worker.tools.path_utils import resolve_path, virtualize_path
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_whitespace(text: str) -> str:
@@ -142,19 +145,48 @@ def multi_edit(file_path: str, edits: list[dict[str, Any]]) -> str:
         return "Error: No edits provided"
 
     # Convert dicts to EditOperation objects
+    logger.debug(f"multi_edit called on {vpath} with {len(edits)} edit(s)")
     edit_ops = []
     for i, edit_dict in enumerate(edits):
         try:
             if not isinstance(edit_dict, dict):
-                return f"Error in edit {i + 1}: expected dict, got {type(edit_dict).__name__}"
+                err = f"Error in edit {i + 1}: expected dict, got {type(edit_dict).__name__}"
+                logger.error(f"multi_edit {vpath}: {err}")
+                return err
             # Check for required fields
             if 'old_string' not in edit_dict:
-                return f"Error in edit {i + 1}: missing 'old_string' field. Got keys: {list(edit_dict.keys())}"
+                err = f"Error in edit {i + 1}: missing 'old_string' field. Got keys: {list(edit_dict.keys())}"
+                logger.error(f"multi_edit {vpath}: {err}")
+                return err
             if 'new_string' not in edit_dict:
-                return f"Error in edit {i + 1}: missing 'new_string' field. Got keys: {list(edit_dict.keys())}"
+                err = f"Error in edit {i + 1}: missing 'new_string' field. Got keys: {list(edit_dict.keys())}"
+                logger.error(f"multi_edit {vpath}: {err}")
+                return err
+            
+            # Log the full edit for debugging (before parsing)
+            old_str = edit_dict.get('old_string', '')
+            new_str = edit_dict.get('new_string', '')
+            logger.debug(
+                f"Edit {i + 1} - old_string ({len(old_str)} chars, {old_str.count(chr(10))+1} lines):\n"
+                f"---OLD_STRING_START---\n{old_str}\n---OLD_STRING_END---"
+            )
+            logger.debug(
+                f"Edit {i + 1} - new_string ({len(new_str)} chars, {new_str.count(chr(10))+1} lines):\n"
+                f"---NEW_STRING_START---\n{new_str}\n---NEW_STRING_END---"
+            )
+            
             edit_ops.append(EditOperation(**edit_dict))
         except Exception as e:
-            return f"Error in edit {i + 1} specification: {e}. Got: {edit_dict}"
+            # Log full details before truncating for return message
+            logger.error(
+                f"multi_edit {vpath}: Error parsing edit {i + 1}: {e}\n"
+                f"Full edit_dict:\n{edit_dict}"
+            )
+            # Truncate the edit_dict preview for return message to avoid hiding the actual error
+            preview_keys = list(edit_dict.keys())
+            old_preview = str(edit_dict.get('old_string', ''))[:50] + '...' if len(str(edit_dict.get('old_string', ''))) > 50 else str(edit_dict.get('old_string', ''))
+            new_preview = str(edit_dict.get('new_string', ''))[:50] + '...' if len(str(edit_dict.get('new_string', ''))) > 50 else str(edit_dict.get('new_string', ''))
+            return f"Error in edit {i + 1} specification: {e}. Keys: {preview_keys}, old_string preview: {repr(old_preview)}, new_string preview: {repr(new_preview)}"
 
     # Validate all edits first (dry run)
     test_content = content
@@ -164,7 +196,15 @@ def multi_edit(file_path: str, edits: list[dict[str, Any]]) -> str:
         try:
             test_content, status, _ = _apply_edit(test_content, edit, i)
             edit_results.append(status)
+            logger.debug(f"Edit {i + 1} validated: {status}")
         except ValueError as e:
+            # Log full context for debugging
+            logger.error(
+                f"multi_edit {vpath}: Edit {i + 1} failed: {e}\n"
+                f"old_string ({len(edit.old_string)} chars):\n"
+                f"---OLD_STRING_START---\n{edit.old_string}\n---OLD_STRING_END---\n"
+                f"File content length: {len(content)} chars"
+            )
             return f"Error: {e}. No changes were made."
 
     # All edits validated - apply for real
@@ -172,8 +212,10 @@ def multi_edit(file_path: str, edits: list[dict[str, Any]]) -> str:
         with open(path, "w", encoding="utf-8") as f:
             f.write(test_content)
     except PermissionError:
+        logger.error(f"multi_edit {vpath}: Permission denied")
         return f"Error: Permission denied: {vpath}"
     except Exception as e:
+        logger.error(f"multi_edit {vpath}: Write error: {e}")
         return f"Error writing file {vpath}: {e}"
 
     # Build summary
@@ -181,4 +223,5 @@ def multi_edit(file_path: str, edits: list[dict[str, Any]]) -> str:
     for i, result in enumerate(edit_results):
         summary_parts.append(f"  {i + 1}. {result}")
 
+    logger.info(f"multi_edit {vpath}: Successfully applied {len(edits)} edit(s)")
     return "\n".join(summary_parts)
