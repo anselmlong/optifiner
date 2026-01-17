@@ -7,8 +7,9 @@ from worker.tools.multi_edit import multi_edit
 from worker.tools.grep import grep
 from worker.tools.glob import glob_search
 from worker.tools.list_dir import list_dir
-from worker.tools.run_python import run_python, run_python_file
-from worker.tools.run_bash import run_bash
+# Commented out for now - running evaluator from host only
+# from worker.tools.run_python import run_python, run_python_file
+# from worker.tools.run_bash import run_bash
 from worker.tools.evaluate import evaluate, set_evaluator, get_evaluator
 
 __all__ = [
@@ -19,9 +20,9 @@ __all__ = [
     "grep",
     "glob_search",
     "list_dir",
-    "run_python",
-    "run_python_file",
-    "run_bash",
+    # "run_python",
+    # "run_python_file",
+    # "run_bash",
     "evaluate",
     "set_evaluator",
     "get_evaluator",
@@ -38,8 +39,9 @@ def get_all_tools():
         grep,
         glob_search,
         list_dir,
-        run_python,
-        run_python_file,
-        run_bash,
+        # Commented out for now - running evaluator from host only
+        # run_python,
+        # run_python_file,
+        # run_bash,
         evaluate,
     ]
