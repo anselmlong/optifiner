@@ -70,8 +70,27 @@ class AgentObserver:
         content = ""
         tool_calls = []
         
+        # Extract content - handle various formats
         if hasattr(response, 'content'):
-            content = response.content if isinstance(response.content, str) else str(response.content)
+            raw_content = response.content
+            if isinstance(raw_content, str):
+                content = raw_content
+            elif isinstance(raw_content, list):
+                # Handle list of content blocks (common in Anthropic/newer APIs)
+                text_parts = []
+                for block in raw_content:
+                    if isinstance(block, str):
+                        text_parts.append(block)
+                    elif isinstance(block, dict):
+                        if block.get('type') == 'text':
+                            text_parts.append(block.get('text', ''))
+                        elif 'text' in block:
+                            text_parts.append(block['text'])
+                    elif hasattr(block, 'text'):
+                        text_parts.append(block.text)
+                content = '\n'.join(text_parts)
+            else:
+                content = str(raw_content) if raw_content else ""
         
         if hasattr(response, 'tool_calls') and response.tool_calls:
             tool_calls = response.tool_calls
@@ -89,7 +108,7 @@ class AgentObserver:
         if self.verbose >= 1 and self.show_reasoning:
             self.console.print()
             
-            # Show reasoning content
+            # Show reasoning content if present
             if content and content.strip():
                 # Truncate long reasoning
                 display_content = content
@@ -98,6 +117,14 @@ class AgentObserver:
                 
                 self.console.print(Panel(
                     Markdown(display_content),
+                    title=f"[bold cyan]💭 Agent Reasoning[/bold cyan] │ {agent_id} iter={iteration}",
+                    border_style="cyan",
+                    padding=(0, 1),
+                ))
+            elif not tool_calls:
+                # No content and no tool calls - show empty state
+                self.console.print(Panel(
+                    "[dim italic]No reasoning text provided[/dim italic]",
                     title=f"[bold cyan]💭 Agent Reasoning[/bold cyan] │ {agent_id} iter={iteration}",
                     border_style="cyan",
                     padding=(0, 1),
@@ -146,9 +173,9 @@ class AgentObserver:
         )
         self.events.append(event)
         
-        if self.verbose >= 2 and self.show_tool_calls:
-            args_preview = str(args)[:150] + "..." if len(str(args)) > 150 else str(args)
-            self.console.print(f"  [yellow]→ {tool_name}[/yellow]: {args_preview}")
+        if self.verbose >= 1 and self.show_tool_calls:
+            args_preview = str(args)[:200] + "..." if len(str(args)) > 200 else str(args)
+            self.console.print(f"  [yellow]→ Executing {tool_name}[/yellow]: {args_preview}")
     
     def log_tool_result(self, agent_id: str, iteration: int, tool_name: str, result: Any) -> None:
         """Log a tool result."""
@@ -163,11 +190,16 @@ class AgentObserver:
         )
         self.events.append(event)
         
-        if self.verbose >= 2 and self.show_tool_results:
-            # Show truncated result
-            preview = result_str[:300] + "..." if len(result_str) > 300 else result_str
-            preview = preview.replace('\n', ' ')
-            self.console.print(f"  [green]← {tool_name}[/green]: {preview}")
+        if self.verbose >= 1 and self.show_tool_results:
+            # Show truncated result based on verbosity
+            max_len = 500 if self.verbose >= 2 else 200
+            preview = result_str[:max_len] + "..." if len(result_str) > max_len else result_str
+            # Clean up for single-line display
+            preview_lines = preview.split('\n')
+            if len(preview_lines) > 3 and self.verbose < 2:
+                preview = '\n'.join(preview_lines[:3]) + "\n..."
+            self.console.print(f"  [green]← {tool_name}[/green]:")
+            self.console.print(f"    [dim]{preview}[/dim]")
     
     def log_error(self, agent_id: str, iteration: int, error: str) -> None:
         """Log an error."""

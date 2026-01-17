@@ -404,7 +404,7 @@ def main(
         show_prompts=show_prompts,
         show_reasoning=show_reasoning,
         show_tool_calls=show_tools,
-        show_tool_results=show_tools and verbose >= 2,
+        show_tool_results=show_tools,  # Show tool results when tools are shown
         console=console,
     )
     
