@@ -1,15 +1,11 @@
 """File write tool for the evolution agent."""
 
-import os
 from pathlib import Path
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
-
-def _get_workspace_root() -> Path:
-    """Get the workspace root from environment or default."""
-    return Path(os.environ.get("WORKSPACE_ROOT", "/app"))
+from worker.tools.path_utils import resolve_path, virtualize_path
 
 
 class WriteFileInput(BaseModel):
@@ -22,11 +18,8 @@ class WriteFileInput(BaseModel):
 
 
 def _resolve_path(file_path: str) -> Path:
-    """Resolve the file path, making it relative to workspace if not absolute."""
-    path = Path(file_path)
-    if not path.is_absolute():
-        path = _get_workspace_root() / path
-    return path
+    """Resolve the file path using workspace-aware resolution."""
+    return resolve_path(file_path)
 
 
 @tool(args_schema=WriteFileInput)
@@ -56,9 +49,9 @@ def write_file(file_path: str, content: str) -> str:
         # Count lines for feedback
         line_count = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
 
-        return f"Successfully wrote {line_count} lines to {path}"
+        return f"Successfully wrote {line_count} lines to {virtualize_path(path)}"
 
     except PermissionError:
-        return f"Error: Permission denied: {path}"
+        return f"Error: Permission denied: {virtualize_path(path)}"
     except Exception as e:
-        return f"Error writing file {path}: {e}"
+        return f"Error writing file {virtualize_path(path)}: {e}"

@@ -55,6 +55,38 @@ You have access to the following tools:
 - **NEVER skip frames, reduce update frequency, or lower tick rates in ways that affect gameplay**
 - **NEVER remove error handling, logging, or debugging features**
 
+## 🛑 CRITICAL: BENCHMARK INTEGRITY - DO NOT TAMPER 🛑
+**TAMPERING WITH BENCHMARKS IS STRICTLY FORBIDDEN AND WILL RESULT IN IMMEDIATE REJECTION.**
+
+### ABSOLUTELY FORBIDDEN - DO NOT TOUCH:
+- **run_validator.py** - The benchmark script. NEVER modify it.
+- **Any test files** - Files containing tests must NOT be modified.
+- **Metrics/statistics code** - Code that measures FPS, timing, memory, etc. must NOT be changed.
+- **Exposed data points** - Any code that reports metrics to the benchmark must NOT be altered.
+- **Scoring logic** - Any code that calculates or reports scores is OFF LIMITS.
+
+### WHY THIS MATTERS:
+The benchmark is designed to measure REAL performance improvements. If you:
+- Modify the benchmark to report higher scores → CHEATING
+- Change how metrics are measured → CHEATING
+- Alter test cases to pass easier → CHEATING
+- Manipulate exposed data points → CHEATING
+
+**YOUR IMPROVEMENTS MUST BE LEGITIMATE.**
+The benchmark will catch fake improvements. Only REAL optimizations that improve actual performance count.
+
+### LEGITIMATE IMPROVEMENTS:
+✅ Optimizing algorithms to actually run faster
+✅ Reducing memory allocations for real performance gains
+✅ Better data structures that genuinely speed up operations
+✅ Caching that reduces redundant computations
+
+### ILLEGITIMATE "IMPROVEMENTS" (FORBIDDEN):
+❌ Changing how FPS is calculated
+❌ Modifying test assertions to always pass
+❌ Altering timing code to report faster times
+❌ Removing validation that might slow down the benchmark
+
 ### ✅ ALLOWED OPTIMIZATIONS:
 - **Lazy loading**: Load resources only when needed (e.g., load only what's in the player's field of view)
 - **Caching**: Store computed results to avoid redundant calculations
@@ -145,6 +177,11 @@ ANALYZER_PROMPT = """You are a Code Analyzer agent specializing in understanding
 - **PRESERVE ALL FEATURES**: Never suggest removing features, graphics, or functionality to improve performance
 - **QUALITY IS SACRED**: The user must experience IDENTICAL output after optimization
 - Ask yourself: "Will this change affect what the user sees, hears, or experiences?" If yes, DON'T DO IT.
+
+## 🛑 DO NOT TAMPER WITH BENCHMARKS
+- NEVER modify run_validator.py or any test files
+- NEVER change metrics collection, FPS calculation, or scoring code
+- Your improvements must be REAL, not manipulated statistics
 """
 
 REFACTORING_PROMPT = """You are a Refactoring agent specializing in improving code quality and performance through restructuring.
@@ -176,6 +213,11 @@ REFACTORING_PROMPT = """You are a Refactoring agent specializing in improving co
 - NEVER simplify rendering or reduce graphical fidelity
 - If refactoring changes the OUTPUT in any way, it's FORBIDDEN
 - The refactored code MUST produce byte-for-byte identical results where applicable
+
+## 🛑 DO NOT TAMPER WITH BENCHMARKS
+- NEVER modify run_validator.py or any test files
+- NEVER change metrics collection, FPS calculation, or scoring code
+- Your improvements must be REAL, not manipulated statistics
 
 ## Common Optimizations (that preserve output)
 - Replace nested loops with hash maps for lookups → same results, faster
@@ -224,6 +266,11 @@ Your features must ENHANCE the existing experience, never diminish it:
 - **Rendering**: Frustum culling to skip off-screen objects - but on-screen objects rendered at FULL quality
 - **Data processing**: Cache expensive computations - but output must be IDENTICAL to uncached version
 - **AI/Pathfinding**: Use better algorithms - but behavior must be correct, not "good enough"
+
+## 🛑 DO NOT TAMPER WITH BENCHMARKS
+- NEVER modify run_validator.py or any test files
+- NEVER change metrics collection, FPS calculation, or scoring code
+- Your improvements must be REAL, not manipulated statistics
 """
 
 OPTIMIZER_PROMPT = """You are an Optimizer agent specializing in fine-tuning code for maximum performance.
@@ -269,6 +316,11 @@ OPTIMIZER_PROMPT = """You are an Optimizer agent specializing in fine-tuning cod
 Before ANY optimization, ask: "If I show the user output before and after, would they notice ANY difference?"
 - If YES → DON'T DO IT
 - If NO → Proceed carefully
+
+## 🛑 DO NOT TAMPER WITH BENCHMARKS
+- NEVER modify run_validator.py or any test files
+- NEVER change metrics collection, FPS calculation, or scoring code
+- Your improvements must be REAL, not manipulated statistics
 """
 
 GENERAL_PROMPT = """You are a General-purpose evolution agent capable of any type of code improvement.
@@ -319,6 +371,11 @@ Before making ANY change, ask yourself:
 **"If I recorded a video of the application before and after my change, would anyone notice a difference in quality, features, or behavior?"**
 - If YES → **DO NOT MAKE THAT CHANGE**
 - If NO → Proceed carefully and verify with evaluate
+
+## 🛑 DO NOT TAMPER WITH BENCHMARKS
+- NEVER modify run_validator.py or any test files
+- NEVER change metrics collection, FPS calculation, or scoring code
+- Your improvements must be REAL, not manipulated statistics
 """
 
 

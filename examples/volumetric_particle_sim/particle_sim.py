@@ -579,12 +579,13 @@ class ParticleSimulation:
         
         pygame.display.flip()
     
-    def run(self, max_frames: int = None) -> float:
+    def run(self, max_frames: int = None, target_fps: int = 60) -> float:
         """
         Run the simulation.
         
         Args:
             max_frames: If set, stop after this many frames and return average FPS
+            target_fps: Target FPS for the simulation (0 for no limit)
             
         Returns:
             Average FPS if max_frames is set, otherwise 0
@@ -600,7 +601,12 @@ class ParticleSimulation:
                     if event.key == pygame.K_ESCAPE:
                         self.running = False
             
-            dt = self.clock.tick(60) / 1000.0
+            if target_fps > 0:
+                dt = self.clock.tick(target_fps) / 1000.0
+            else:
+                self.clock.tick()
+                dt = 1.0 / 60.0  # Use fixed dt for simulation stability when uncapped
+            
             dt = min(dt, 0.1)  # Cap delta time
             
             self.update(dt)

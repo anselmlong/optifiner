@@ -1,15 +1,11 @@
 """File edit tool for the evolution agent - performs exact string replacements."""
 
-import os
 from pathlib import Path
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
-
-def _get_workspace_root() -> Path:
-    """Get the workspace root from environment or default."""
-    return Path(os.environ.get("WORKSPACE_ROOT", "/app"))
+from worker.tools.path_utils import resolve_path, virtualize_path
 
 
 class EditFileInput(BaseModel):
@@ -29,11 +25,8 @@ class EditFileInput(BaseModel):
 
 
 def _resolve_path(file_path: str) -> Path:
-    """Resolve the file path, making it relative to workspace if not absolute."""
-    path = Path(file_path)
-    if not path.is_absolute():
-        path = _get_workspace_root() / path
-    return path
+    """Resolve the file path using workspace-aware resolution."""
+    return resolve_path(file_path)
 
 
 @tool(args_schema=EditFileInput)
@@ -56,11 +49,13 @@ def edit_file(
     """
     path = _resolve_path(file_path)
 
+    vpath = virtualize_path(path)
+    
     if not path.exists():
-        return f"Error: File not found: {path}"
+        return f"Error: File not found: {vpath}"
 
     if not path.is_file():
-        return f"Error: Path is not a file: {path}"
+        return f"Error: Path is not a file: {vpath}"
 
     if old_string == new_string:
         return "Error: old_string and new_string are identical. No changes needed."
@@ -76,11 +71,11 @@ def edit_file(
         if count == 0:
             # Provide helpful context for debugging
             if old_string.strip() in content:
-                return f"Error: old_string not found in {path}. The text exists with different whitespace - check indentation and line endings."
-            return f"Error: old_string not found in {path}. Use read_file to verify the exact content."
+                return f"Error: old_string not found in {vpath}. The text exists with different whitespace - check indentation and line endings."
+            return f"Error: old_string not found in {vpath}. Use read_file to verify the exact content."
 
         if count > 1 and not replace_all:
-            return f"Error: old_string found {count} times in {path}. Use replace_all=True to replace all occurrences, or provide more context to make the match unique."
+            return f"Error: old_string found {count} times in {vpath}. Use replace_all=True to replace all occurrences, or provide more context to make the match unique."
 
         # Perform replacement
         if replace_all:
@@ -106,12 +101,12 @@ def edit_file(
             diff_msg = f" ({line_diff} lines)"
 
         if replace_all and replaced_count > 1:
-            return f"Successfully replaced {replaced_count} occurrences in {path}{diff_msg}"
-        return f"Successfully edited {path}{diff_msg}"
+            return f"Successfully replaced {replaced_count} occurrences in {vpath}{diff_msg}"
+        return f"Successfully edited {vpath}{diff_msg}"
 
     except PermissionError:
-        return f"Error: Permission denied: {path}"
+        return f"Error: Permission denied: {vpath}"
     except UnicodeDecodeError:
-        return f"Error: Cannot edit binary file: {path}"
+        return f"Error: Cannot edit binary file: {vpath}"
     except Exception as e:
-        return f"Error editing file {path}: {e}"
+        return f"Error editing file {vpath}: {e}"

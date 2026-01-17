@@ -2,21 +2,17 @@
 
 import base64
 import mimetypes
-import os
 from pathlib import Path
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
+from worker.tools.path_utils import resolve_path, virtualize_path, sanitize_output
+
 MAX_LINES_TO_READ = 2000
 MAX_LINE_LENGTH = 2000
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
-
-
-def _get_workspace_root() -> Path:
-    """Get the workspace root from environment or default."""
-    return Path(os.environ.get("WORKSPACE_ROOT", "/app"))
 
 
 class ReadFileInput(BaseModel):
@@ -36,11 +32,8 @@ class ReadFileInput(BaseModel):
 
 
 def _resolve_path(file_path: str) -> Path:
-    """Resolve the file path, making it relative to workspace if not absolute."""
-    path = Path(file_path)
-    if not path.is_absolute():
-        path = _get_workspace_root() / path
-    return path
+    """Resolve the file path using workspace-aware resolution."""
+    return resolve_path(file_path)
 
 
 def _is_image_file(path: Path) -> bool:
@@ -164,10 +157,10 @@ def read_file(file_path: str, offset: int | None = None, limit: int | None = Non
     path = _resolve_path(file_path)
 
     if not path.exists():
-        return f"Error: File not found: {path}"
+        return f"Error: File not found: {virtualize_path(path)}"
 
     if not path.is_file():
-        return f"Error: Path is not a file: {path}. Use list_dir to view directory contents."
+        return f"Error: Path is not a file: {virtualize_path(path)}. Use list_dir to view directory contents."
 
     try:
         # Handle images
@@ -182,6 +175,6 @@ def read_file(file_path: str, offset: int | None = None, limit: int | None = Non
         return _read_text_file(path, offset, limit)
 
     except PermissionError:
-        return f"Error: Permission denied: {path}"
+        return f"Error: Permission denied: {virtualize_path(path)}"
     except Exception as e:
-        return f"Error reading file {path}: {e}"
+        return f"Error reading file {virtualize_path(path)}: {e}"

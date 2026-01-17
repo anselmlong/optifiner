@@ -4,6 +4,9 @@
 This CLI runs multiple agents on a target repository, each trying to improve
 the codebase. Improvements are measured by an evaluator script that returns
 a score.
+
+All execution happens on the host machine with workspace isolation
+(/tmp/optifiner_workspaces/) to provide safe sandboxing without containers.
 """
 
 import json
@@ -22,13 +25,12 @@ from typing import Any
 
 import click
 from rich.console import Console
-from rich.live import Live
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
-from rich.table import Table
-from rich.text import Text
 
-from worker.observability import AgentObserver, create_observer, set_observer
+from worker.observability import AgentObserver, set_observer
+from worker.workspace import WorkspaceManager, set_workspace, isolated_workspace
+from worker.evaluator import get_evaluator, evaluate as queue_evaluate
 
 # Set up console for rich output
 console = Console()
@@ -64,15 +66,12 @@ class EvolutionState:
 
 def _get_python_executable() -> str:
     """Get the Python executable to use for running scripts."""
-    # First try sys.executable (the current Python interpreter)
     if sys.executable:
         return sys.executable
-    # Fallback to python3, then python
     if shutil.which("python3"):
         return "python3"
     if shutil.which("python"):
         return "python"
-    # Last resort
     return "python3"
 
 
@@ -82,7 +81,7 @@ def run_evaluator(
     timeout: int = 120,
     return_full_data: bool = False,
 ) -> tuple[float | None, str | None] | tuple[float | None, str | None, dict | None]:
-    """Run the evaluator script and return (score, error) or (score, error, data).
+    """Run the evaluator script using the queue-based evaluator.
 
     Args:
         evaluator_path: Path to the evaluator script.
@@ -91,80 +90,40 @@ def run_evaluator(
         return_full_data: If True, return full evaluation data as third element.
 
     Returns:
-        Tuple of (score, error) or (score, error, data). If successful, error is None.
-        If failed, score is None and error contains the error message.
+        Tuple of (score, error) or (score, error, data).
     """
-    evaluator = Path(evaluator_path)
-
-    if not evaluator.exists():
-        if return_full_data:
-            return None, f"Evaluator not found: {evaluator}", None
-        return None, f"Evaluator not found: {evaluator}"
-
-    # Determine how to run the evaluator
-    # Always pass --quiet for Python evaluators to get JSON output
-    if evaluator.suffix == ".py":
-        cmd = [_get_python_executable(), str(evaluator), "--quiet"]
-    elif evaluator.suffix == ".sh":
-        cmd = ["bash", str(evaluator)]
-    elif evaluator.suffix in (".js", ".mjs"):
-        cmd = ["node", str(evaluator)]
-    else:
-        cmd = [str(evaluator)]
-
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            cwd=workspace,
-            env={**os.environ, "WORKSPACE_ROOT": workspace},
-        )
-
-        if result.returncode != 0:
-            error_output = result.stderr.strip() if result.stderr else result.stdout.strip()
-            error = f"Evaluator failed (exit {result.returncode}): {error_output[:500]}"
-            if return_full_data:
-                return None, error, None
-            return None, error
-
-        output = result.stdout.strip()
-
-        # Try to parse as JSON
-        try:
-            data = json.loads(output)
-            score = data.get("score")
-            if score is not None:
-                if return_full_data:
-                    return float(score), None, data
-                return float(score), None
-        except json.JSONDecodeError:
-            pass
-
-        # Try to extract a number
-        import re
-        numbers = re.findall(r"[-+]?\d*\.?\d+", output)
-        if numbers:
-            if return_full_data:
-                return float(numbers[0]), None, {"score": float(numbers[0]), "raw": output}
-            return float(numbers[0]), None
-
-        error = f"Could not parse score from evaluator output: {output[:200]}"
+    # Use the queue-based evaluator to prevent simultaneous evaluations
+    result = queue_evaluate(workspace, evaluator_path, timeout)
+    
+    if not result.get("success"):
+        error = result.get("error", "Unknown error")
         if return_full_data:
             return None, error, None
         return None, error
-
-    except subprocess.TimeoutExpired:
-        error = f"Evaluator timed out after {timeout} seconds"
+    
+    score = result.get("score")
+    if score is None:
+        error = "Evaluator returned no score"
         if return_full_data:
             return None, error, None
         return None, error
-    except Exception as e:
-        error = f"Error running evaluator: {e}"
-        if return_full_data:
-            return None, error, None
-        return None, error
+    
+    if return_full_data:
+        # Build data dict from result
+        data = {
+            "score": score,
+            "passed": result.get("passed"),
+            "tests_passed": result.get("tests_passed"),
+            "tests_total": result.get("tests_total"),
+            "metrics": result.get("metrics"),
+            "message": result.get("message"),
+        }
+        # Also include fps if in metrics
+        if data.get("metrics") and "fps" in data["metrics"]:
+            data["fps"] = data["metrics"]["fps"]
+        return float(score), None, data
+    
+    return float(score), None
 
 
 def copy_workspace(source: str, dest: str) -> None:
@@ -177,7 +136,6 @@ def copy_workspace(source: str, dest: str) -> None:
 def git_commit(workspace: str, message: str) -> str | None:
     """Create a git commit in the workspace. Returns commit hash or None."""
     try:
-        # Check if it's a git repo
         result = subprocess.run(
             ["git", "rev-parse", "--is-inside-work-tree"],
             cwd=workspace,
@@ -185,31 +143,26 @@ def git_commit(workspace: str, message: str) -> str | None:
             text=True,
         )
         if result.returncode != 0:
-            # Initialize git repo
             subprocess.run(["git", "init"], cwd=workspace, capture_output=True)
             subprocess.run(["git", "config", "user.email", "evolution@agent.local"], cwd=workspace, capture_output=True)
             subprocess.run(["git", "config", "user.name", "Evolution Agent"], cwd=workspace, capture_output=True)
 
-        # Stage all changes
         subprocess.run(["git", "add", "-A"], cwd=workspace, capture_output=True)
 
-        # Check if there are changes to commit
         result = subprocess.run(
             ["git", "diff", "--cached", "--quiet"],
             cwd=workspace,
             capture_output=True,
         )
         if result.returncode == 0:
-            return None  # No changes
+            return None
 
-        # Commit
         subprocess.run(
             ["git", "commit", "-m", message],
             cwd=workspace,
             capture_output=True,
         )
 
-        # Get commit hash
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"],
             cwd=workspace,
@@ -225,22 +178,14 @@ def git_commit(workspace: str, message: str) -> str | None:
 def git_reset(workspace: str) -> None:
     """Reset git workspace to last commit."""
     try:
-        subprocess.run(
-            ["git", "checkout", "--", "."],
-            cwd=workspace,
-            capture_output=True,
-        )
-        subprocess.run(
-            ["git", "clean", "-fd"],
-            cwd=workspace,
-            capture_output=True,
-        )
+        subprocess.run(["git", "checkout", "--", "."], cwd=workspace, capture_output=True)
+        subprocess.run(["git", "clean", "-fd"], cwd=workspace, capture_output=True)
     except Exception:
         pass
 
 
-def run_single_agent(
-    workspace: str,
+def run_single_agent_isolated(
+    source_workspace: str,
     evaluator_path: str,
     agent_type: str,
     agent_id: str,
@@ -253,11 +198,11 @@ def run_single_agent(
     log_dir: str | None = None,
     baseline_data: dict | None = None,
     stop_event: threading.Event | None = None,
-) -> AgentResult:
-    """Run a single evolution agent.
+) -> tuple[AgentResult, WorkspaceManager | None]:
+    """Run a single evolution agent in an isolated workspace.
 
     Args:
-        workspace: Path to the workspace (should be an isolated copy).
+        source_workspace: Path to the source workspace to copy.
         evaluator_path: Path to the evaluator script.
         agent_type: Type of agent to run.
         agent_id: Unique ID for this agent.
@@ -266,13 +211,14 @@ def run_single_agent(
         max_iterations: Maximum iterations.
         model_provider: LLM provider.
         model_name: Model name.
-        verbosity: Observability verbosity (0=quiet, 1=normal, 2=verbose, 3=debug).
+        verbosity: Observability verbosity.
         log_dir: Optional directory to write agent logs.
-        baseline_data: Optional dict with baseline evaluation data (fps, tests, etc.)
+        baseline_data: Optional dict with baseline evaluation data.
         stop_event: Optional threading.Event to check for early stopping.
 
     Returns:
-        AgentResult with the outcome.
+        Tuple of (AgentResult, workspace_manager). Workspace is kept if successful
+        so changes can be copied back.
     """
     from worker.config import AgentType, ModelConfig, ModelProvider, WorkerConfig
     from worker.agent import run_evolution_agent, extract_score_from_messages
@@ -290,15 +236,30 @@ def run_single_agent(
             final_score=baseline_score,
             error="Stopped: another agent found improvement",
             duration_seconds=time.time() - start_time,
-        )
+        ), None
 
-    # Set up environment
-    os.environ["WORKSPACE_ROOT"] = workspace
+    # Create isolated workspace
+    workspace = WorkspaceManager(workspace_id=agent_id[:8])
+    try:
+        workspace.setup(source_workspace)
+    except Exception as e:
+        return AgentResult(
+            agent_id=agent_id,
+            agent_type=agent_type,
+            success=False,
+            baseline_score=baseline_score,
+            final_score=baseline_score,
+            error=f"Workspace setup failed: {e}",
+            duration_seconds=time.time() - start_time,
+        ), None
 
-    # Configure evaluator
+    # Set the workspace context for tools
+    set_workspace(workspace)
+
+    # Configure evaluator to run in the actual workspace
     set_evaluator(evaluator_path)
 
-    # Set up observer for this agent
+    # Set up observer
     log_file = None
     if log_dir:
         Path(log_dir).mkdir(parents=True, exist_ok=True)
@@ -322,10 +283,12 @@ def run_single_agent(
             ),
             agent_type=AgentType(agent_type),
             max_iterations=max_iterations,
-            workspace_root=workspace,
+            workspace_root=str(workspace.actual_root),
         )
     except Exception as e:
         observer.close()
+        workspace.cleanup()
+        set_workspace(None)
         return AgentResult(
             agent_id=agent_id,
             agent_type=agent_type,
@@ -334,7 +297,7 @@ def run_single_agent(
             final_score=baseline_score,
             error=f"Config error: {e}",
             duration_seconds=time.time() - start_time,
-        )
+        ), None
 
     # Build baseline info string
     baseline_info = f"Current baseline score: {baseline_score}"
@@ -376,15 +339,17 @@ Remember: Only improvements that INCREASE the score are kept!"""
             observer=observer,
         )
 
-        # Try to extract the final score from messages
+        # Extract the final score
         final_score = extract_score_from_messages(state.messages)
 
         # If we couldn't extract from messages, run evaluator directly
         if final_score is None:
-            eval_result = run_evaluator(evaluator_path, workspace)
+            eval_result = run_evaluator(evaluator_path, str(workspace.actual_root))
             final_score, eval_error = eval_result[0], eval_result[1]
             if eval_error:
                 observer.close()
+                set_workspace(None)
+                workspace.cleanup()
                 return AgentResult(
                     agent_id=agent_id,
                     agent_type=agent_type,
@@ -393,7 +358,7 @@ Remember: Only improvements that INCREASE the score are kept!"""
                     final_score=baseline_score,
                     error=eval_error,
                     duration_seconds=time.time() - start_time,
-                )
+                ), None
 
         if final_score is None:
             final_score = baseline_score
@@ -401,11 +366,16 @@ Remember: Only improvements that INCREASE the score are kept!"""
         improvement = final_score - baseline_score
         success = improvement > 0
 
-        # Print execution summary if verbose
         if verbosity >= 2:
             observer.print_summary()
 
         observer.close()
+        set_workspace(None)
+
+        # Keep workspace if successful for copying back
+        if not success:
+            workspace.cleanup()
+            workspace = None
 
         return AgentResult(
             agent_id=agent_id,
@@ -416,11 +386,13 @@ Remember: Only improvements that INCREASE the score are kept!"""
             improvement=improvement,
             duration_seconds=time.time() - start_time,
             files_modified=state.files_modified if hasattr(state, 'files_modified') else [],
-        )
+        ), workspace
 
     except Exception as e:
         observer.on_error(str(e))
         observer.close()
+        set_workspace(None)
+        workspace.cleanup()
         return AgentResult(
             agent_id=agent_id,
             agent_type=agent_type,
@@ -429,13 +401,125 @@ Remember: Only improvements that INCREASE the score are kept!"""
             final_score=baseline_score,
             error=str(e),
             duration_seconds=time.time() - start_time,
+        ), None
+
+
+def run_benchmark_builder_cli(
+    repository_path: Path,
+    model_provider: str,
+    model_name: str,
+    max_iterations: int = 30,
+    verbosity: int = 1,
+) -> tuple[bool, str, Path | None]:
+    """Run the benchmark builder agent to create run_validator.py.
+    
+    Args:
+        repository_path: Path to the target repository.
+        model_provider: LLM provider.
+        model_name: Model name.
+        max_iterations: Maximum iterations for the agent.
+        verbosity: Verbosity level.
+        
+    Returns:
+        Tuple of (success, message, evaluator_path).
+    """
+    from worker.benchmark_builder import run_benchmark_builder
+    from worker.config import ModelConfig, ModelProvider
+    
+    console.print("\n[bold cyan]Running Benchmark Builder Agent...[/bold cyan]")
+    console.print(f"[dim]This agent will:[/dim]")
+    console.print(f"[dim]  1. Analyze the codebase[/dim]")
+    console.print(f"[dim]  2. Modify files to expose metrics (FPS, timing, etc.) if needed[/dim]")
+    console.print(f"[dim]  3. Create run_validator.py benchmark script[/dim]")
+    console.print(f"[dim]  4. Test and iterate until it works[/dim]")
+    console.print(f"[dim]All changes become the baseline for evolution agents.[/dim]")
+    
+    # Create workspace for benchmark builder
+    workspace = WorkspaceManager(workspace_id="benchmark-builder")
+    workspace.setup(repository_path)
+    
+    # Set up observer
+    observer = AgentObserver(
+        verbosity=verbosity,
+        console=console,
+    )
+    set_observer(observer)
+    
+    try:
+        model_config = ModelConfig(
+            provider=ModelProvider(model_provider),
+            model_name=model_name,
+            temperature=0.0,
+            max_tokens=8192,
         )
+        
+        success, message = run_benchmark_builder(
+            workspace=workspace,
+            max_iterations=max_iterations,
+            model_config=model_config,
+            observer=observer,
+        )
+        
+        if success:
+            # Copy ALL changes back to the original repo (not just run_validator.py)
+            # The benchmark builder may have modified the codebase to expose metrics
+            # These modifications become the baseline for evolution agents
+            console.print(f"[dim]Copying all modifications back to repository...[/dim]")
+            
+            modified_files = []
+            for item in workspace.actual_root.rglob("*"):
+                if item.is_file():
+                    rel_path = item.relative_to(workspace.actual_root)
+                    
+                    # Skip git internals
+                    if ".git" in rel_path.parts:
+                        continue
+                    
+                    dst_path = repository_path / rel_path
+                    src_path = item
+                    
+                    # Check if file is new or modified
+                    is_new = not dst_path.exists()
+                    is_modified = False
+                    if dst_path.exists():
+                        try:
+                            is_modified = src_path.read_bytes() != dst_path.read_bytes()
+                        except Exception:
+                            pass
+                    
+                    if is_new or is_modified:
+                        dst_path.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(src_path, dst_path)
+                        modified_files.append(str(rel_path))
+            
+            if modified_files:
+                console.print(f"[green]✓ Modified {len(modified_files)} file(s):[/green]")
+                for f in modified_files[:10]:  # Show first 10
+                    console.print(f"[dim]  - {f}[/dim]")
+                if len(modified_files) > 10:
+                    console.print(f"[dim]  ... and {len(modified_files) - 10} more[/dim]")
+            
+            validator_path = repository_path / "run_validator.py"
+            if validator_path.exists():
+                console.print(f"[green]✓ Benchmark script ready at {validator_path}[/green]")
+                return True, message, validator_path
+            else:
+                console.print(f"[red]✗ run_validator.py not created[/red]")
+                return False, "Benchmark script was not created", None
+        
+        console.print(f"[red]✗ Benchmark builder failed: {message}[/red]")
+        return False, message, None
+        
+    finally:
+        workspace.cleanup()
+        set_workspace(None)
+        observer.close()
 
 
 @click.command()
 @click.argument("repository", type=click.Path(exists=True))
-@click.option("--evaluator", "-e", required=True, type=click.Path(exists=True),
-              help="Path to evaluator script that returns a score")
+@click.option("--evaluator", "-e", type=click.Path(),
+              help="Path to evaluator script. If not provided, will run benchmark builder to create one.")
 @click.option("--agents", "-n", default=10, help="Number of agents to run (default: 10)")
 @click.option("--parallel", "-p", default=1, help="Number of agents to run in parallel (default: 1)")
 @click.option("--generations", "-g", default=1, help="Number of evolution generations (default: 1)")
@@ -449,17 +533,17 @@ Remember: Only improvements that INCREASE the score are kept!"""
               help="Model name (default: gemini-3-flash-preview)")
 @click.option("--output", "-o", type=click.Path(), help="Output file for results (JSON)")
 @click.option("--verbose", "-v", count=True, default=1,
-              help="Increase observability verbosity (-v=normal, -vv=verbose, -vvv=debug, omit for quiet)")
+              help="Increase verbosity (-v=normal, -vv=verbose, -vvv=debug, omit for quiet)")
 @click.option("--quiet", "-q", is_flag=True, help="Quiet mode - minimal output (overrides -v)")
 @click.option("--log-dir", "-l", type=click.Path(),
               help="Directory to save agent execution logs (JSONL format)")
-@click.option("--docker/--no-docker", "-d/-D", default=True,
-              help="Run agents in Docker containers (default: enabled)")
 @click.option("--early-stop/--no-early-stop", default=True,
               help="Stop generation early when improvement found (default: enabled)")
+@click.option("--build-benchmark", "-b", is_flag=True,
+              help="Run benchmark builder agent to create evaluator script")
 def main(
     repository: str,
-    evaluator: str,
+    evaluator: str | None,
     agents: int,
     parallel: int,
     generations: int,
@@ -471,8 +555,8 @@ def main(
     verbose: int,
     quiet: bool,
     log_dir: str | None,
-    docker: bool,
     early_stop: bool,
+    build_benchmark: bool,
 ):
     """Run evolution agents on a repository to improve its benchmark score.
 
@@ -486,15 +570,14 @@ def main(
     or just:
         60.5
 
+    If no evaluator is provided, use --build-benchmark to automatically
+    create one using the Benchmark Builder Agent.
+
     VERBOSITY LEVELS:
         (no flags): quiet mode - only show progress and results
         -v: normal - show iteration progress, tool calls (compact)
         -vv: verbose - show agent reasoning, full tool calls/results
         -vvv: debug - show everything including full system prompts
-
-    DOCKER MODE:
-        Use --docker to run agents in isolated Docker containers.
-        The worker image will be built automatically if not present.
     
     EARLY STOPPING:
         By default, when an agent finds an improvement, the current generation
@@ -504,26 +587,48 @@ def main(
     global _stop_generation
     
     repository_path = Path(repository).resolve()
-    evaluator_path = Path(evaluator).resolve()
-
+    
     # Determine verbosity level
     verbosity = 0 if quiet else verbose
 
     # Resolve log directory
     log_directory = str(Path(log_dir).resolve()) if log_dir else None
 
-    # Docker setup if requested
-    if docker:
-        from worker.docker_runner import build_image, image_exists, DOCKER_IMAGE_NAME
+    # Handle evaluator
+    evaluator_path: Path | None = None
+    
+    if evaluator:
+        evaluator_path = Path(evaluator).resolve()
+        if not evaluator_path.exists():
+            console.print(f"[red]Error: Evaluator not found: {evaluator_path}[/red]")
+            sys.exit(1)
+    elif build_benchmark or not (repository_path / "run_validator.py").exists():
+        # Need to build benchmark
+        if not build_benchmark:
+            console.print("[yellow]No evaluator provided and no run_validator.py found.[/yellow]")
+            console.print("[yellow]Running benchmark builder agent to create one...[/yellow]")
         
-        console.print("[bold]Docker mode enabled[/bold]")
-        if not image_exists():
-            console.print("[yellow]Building Docker image (this may take a moment)...[/yellow]")
-            if not build_image(console=console):
-                console.print("[red]Failed to build Docker image. Exiting.[/red]")
-                sys.exit(1)
-        else:
-            console.print(f"[dim]Using existing Docker image: {DOCKER_IMAGE_NAME}[/dim]")
+        success, message, created_path = run_benchmark_builder_cli(
+            repository_path,
+            model_provider,
+            model_name,
+            max_iterations=30,
+            verbosity=verbosity,
+        )
+        
+        if not success:
+            console.print(f"[red]Failed to create benchmark: {message}[/red]")
+            sys.exit(1)
+        
+        evaluator_path = created_path
+    else:
+        # Use existing run_validator.py
+        evaluator_path = repository_path / "run_validator.py"
+        console.print(f"[dim]Using existing evaluator: {evaluator_path}[/dim]")
+
+    if evaluator_path is None:
+        console.print("[red]Error: No evaluator available[/red]")
+        sys.exit(1)
 
     console.print(Panel.fit(
         f"[bold cyan]Self-Evolving Code Framework[/bold cyan]\n\n"
@@ -533,7 +638,6 @@ def main(
         f"Generations: [yellow]{generations}[/yellow]\n"
         f"Model: [blue]{model_provider}/{model_name}[/blue]\n"
         f"Verbosity: [magenta]{['quiet', 'normal', 'verbose', 'debug'][min(verbosity, 3)]}[/magenta]\n"
-        f"Docker: [{'green' if docker else 'dim'}]{docker}[/{'green' if docker else 'dim'}]\n"
         f"Early stop: [{'green' if early_stop else 'dim'}]{early_stop}[/{'green' if early_stop else 'dim'}]"
         + (f"\nLog dir: [dim]{log_directory}[/dim]" if log_directory else ""),
         title="Evolution Setup"
@@ -546,14 +650,19 @@ def main(
 
     if baseline_error:
         console.print(f"[red]Error getting baseline: {baseline_error}[/red]")
+        console.print("[yellow]Tip: Make sure your evaluator script works correctly.[/yellow]")
         sys.exit(1)
 
     console.print(f"[green]Baseline score: {baseline_score}[/green]")
     if baseline_data:
         if "fps" in baseline_data:
             console.print(f"[dim]  FPS: {baseline_data['fps']:.2f}[/dim]")
-        if "tests_passed" in baseline_data and "tests_total" in baseline_data:
+        if baseline_data.get("tests_passed") is not None and baseline_data.get("tests_total") is not None:
             console.print(f"[dim]  Tests: {baseline_data['tests_passed']}/{baseline_data['tests_total']}[/dim]")
+        if baseline_data.get("metrics"):
+            for k, v in baseline_data["metrics"].items():
+                if k not in ("fps",):
+                    console.print(f"[dim]  {k}: {v}[/dim]")
     console.print()
 
     # Initialize evolution state
@@ -578,7 +687,7 @@ def main(
     while gen < generations:
         gen += 1
         state.generation = gen
-        _stop_generation.clear()  # Reset stop flag for new generation
+        _stop_generation.clear()
         
         console.print(f"\n[bold cyan]═══ Generation {state.generation} ═══[/bold cyan]")
         console.print(f"Current best score: [green]{state.best_score}[/green]")
@@ -586,7 +695,6 @@ def main(
         generation_results: list[AgentResult] = []
         generation_improved = False
 
-        # Create progress display
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -597,9 +705,8 @@ def main(
             task_id = progress.add_task(f"[cyan]Running {agents} agents...", total=agents)
 
             if parallel == 1:
-                # Sequential execution with workspace isolation
+                # Sequential execution
                 for i in range(agents):
-                    # Check for early stop
                     if early_stop and _stop_generation.is_set():
                         console.print(f"[yellow]⚡ Early stop triggered - starting new generation[/yellow]")
                         break
@@ -609,233 +716,160 @@ def main(
 
                     progress.update(task_id, description=f"[cyan]Agent {i+1}/{agents} ({agent_type})...")
 
-                    # ALWAYS create isolated workspace copy
-                    temp_ws = Path(repository_path).parent / f".evolution_temp_{agent_id}_{uuid.uuid4().hex[:6]}"
-                    copy_workspace(str(repository_path), str(temp_ws))
+                    result, workspace = run_single_agent_isolated(
+                        source_workspace=str(repository_path),
+                        evaluator_path=str(evaluator_path),
+                        agent_type=agent_type,
+                        agent_id=agent_id,
+                        baseline_score=state.best_score,
+                        task=task,
+                        max_iterations=max_iterations,
+                        model_provider=model_provider,
+                        model_name=model_name,
+                        verbosity=verbosity,
+                        log_dir=log_directory,
+                        baseline_data=current_baseline_data,
+                        stop_event=_stop_generation if early_stop else None,
+                    )
 
-                    try:
-                        if docker:
-                            from worker.docker_runner import run_agent_in_docker
-                            docker_result = run_agent_in_docker(
-                                workspace=str(temp_ws),
-                                evaluator_path=str(evaluator_path),
-                                agent_type=agent_type,
-                                agent_id=agent_id,
-                                baseline_score=state.best_score,
-                                task=task,
-                                max_iterations=max_iterations,
-                                model_provider=model_provider,
-                                model_name=model_name,
-                                console=console if verbosity >= 1 else None,
-                                baseline_data=current_baseline_data,
-                                verbosity=verbosity,
-                                stream_output=True,
-                            )
-                            result = AgentResult(
-                                agent_id=docker_result.get("agent_id", agent_id),
-                                agent_type=docker_result.get("agent_type", agent_type),
-                                success=docker_result.get("success", False),
-                                baseline_score=docker_result.get("baseline_score", state.best_score),
-                                final_score=docker_result.get("final_score", state.best_score),
-                                improvement=docker_result.get("improvement", 0),
-                                error=docker_result.get("error"),
-                                duration_seconds=docker_result.get("duration_seconds", 0),
-                                files_modified=docker_result.get("files_modified", []),
-                            )
-                        else:
-                            result = run_single_agent(
-                                workspace=str(temp_ws),
-                                evaluator_path=str(evaluator_path),
-                                agent_type=agent_type,
-                                agent_id=agent_id,
-                                baseline_score=state.best_score,
-                                task=task,
-                                max_iterations=max_iterations,
-                                model_provider=model_provider,
-                                model_name=model_name,
-                                verbosity=verbosity,
-                                log_dir=log_directory,
-                                baseline_data=current_baseline_data,
-                                stop_event=_stop_generation if early_stop else None,
-                            )
+                    generation_results.append(result)
+                    state.total_attempts += 1
 
-                        generation_results.append(result)
-                        state.total_attempts += 1
+                    # Check if improved
+                    if result.success and result.final_score > state.best_score and workspace:
+                        # Copy improved workspace back to original
+                        git_reset(str(repository_path))
+                        
+                        # Remove original files and copy improved version
+                        for item in repository_path.iterdir():
+                            if item.name != ".git":
+                                if item.is_dir():
+                                    shutil.rmtree(item)
+                                else:
+                                    item.unlink()
+                        
+                        for item in workspace.actual_root.iterdir():
+                            if item.name != ".git":
+                                if item.is_dir():
+                                    shutil.copytree(item, repository_path / item.name)
+                                else:
+                                    shutil.copy2(item, repository_path / item.name)
 
-                        # Check if improved
-                        if result.success and result.final_score > state.best_score:
-                            # Copy improved workspace back to original
-                            git_reset(str(repository_path))
-                            # Remove original and copy improved version
-                            for item in repository_path.iterdir():
-                                if item.name != ".git":
-                                    if item.is_dir():
-                                        shutil.rmtree(item)
-                                    else:
-                                        item.unlink()
-                            for item in temp_ws.iterdir():
-                                if item.name != ".git":
-                                    if item.is_dir():
-                                        shutil.copytree(item, repository_path / item.name)
-                                    else:
-                                        shutil.copy2(item, repository_path / item.name)
+                        state.best_score = result.final_score
+                        state.total_improvements += 1
+                        generation_improved = True
 
-                            state.best_score = result.final_score
-                            state.total_improvements += 1
-                            generation_improved = True
+                        commit_msg = (
+                            f"Gen {state.generation} | Agent {agent_id}: +{result.improvement:.2f} "
+                            f"(Score: {result.baseline_score:.2f} → {result.final_score:.2f})"
+                        )
+                        commit_hash = git_commit(str(repository_path), commit_msg)
 
-                            # Commit the improvement
-                            commit_msg = (
-                                f"Gen {state.generation} | Agent {agent_id}: +{result.improvement:.2f} "
-                                f"(Score: {result.baseline_score:.2f} → {result.final_score:.2f})"
-                            )
-                            commit_hash = git_commit(str(repository_path), commit_msg)
+                        console.print(f"\n[green]✓ Agent {agent_id} improved! "
+                                      f"Score: {result.baseline_score:.2f} → {result.final_score:.2f} "
+                                      f"(+{result.improvement:.2f})[/green]")
+                        if commit_hash:
+                            console.print(f"[dim]  Committed: {commit_hash}[/dim]")
 
-                            console.print(f"\n[green]✓ Agent {agent_id} improved! "
-                                          f"Score: {result.baseline_score:.2f} → {result.final_score:.2f} "
-                                          f"(+{result.improvement:.2f})[/green]")
-                            if commit_hash:
-                                console.print(f"[dim]  Committed: {commit_hash}[/dim]")
+                        # Update baseline data
+                        new_result = run_evaluator(str(evaluator_path), str(repository_path), return_full_data=True)
+                        if new_result[0] is not None:
+                            current_baseline_data = new_result[2]
 
-                            # Update baseline data for next agents
-                            new_result = run_evaluator(str(evaluator_path), str(repository_path), return_full_data=True)
-                            if new_result[0] is not None:
-                                current_baseline_data = new_result[2]
+                        if early_stop:
+                            _stop_generation.set()
+                    else:
+                        status = "no improvement" if not result.error else f"error: {result.error[:50]}"
+                        console.print(f"[dim]✗ Agent {agent_id}: {status}[/dim]")
 
-                            # Signal early stop if enabled
-                            if early_stop:
-                                _stop_generation.set()
-                        else:
-                            status = "no improvement" if not result.error else f"error: {result.error[:50]}"
-                            console.print(f"[dim]✗ Agent {agent_id}: {status}[/dim]")
-
-                    finally:
-                        # Clean up temp workspace
-                        try:
-                            shutil.rmtree(temp_ws)
-                        except Exception:
-                            pass
+                    # Clean up workspace if we kept it
+                    if workspace:
+                        workspace.cleanup()
 
                     progress.update(task_id, advance=1)
 
             else:
-                # Parallel execution (each agent gets its own workspace copy)
-                temp_workspaces: list[str] = []
-                futures_map: dict[Future, tuple[int, str]] = {}
-
-                def run_agent_in_copy(i: int) -> tuple[AgentResult, str]:
+                # Parallel execution
+                def run_agent_parallel(i: int) -> tuple[AgentResult, WorkspaceManager | None]:
                     agent_type = agent_types[i % len(agent_types)]
                     agent_id = f"gen{state.generation}-{agent_type}-{i+1}"
-
-                    # Create temp workspace
-                    temp_ws = Path(repository_path).parent / f".evolution_temp_{agent_id}_{uuid.uuid4().hex[:6]}"
-                    copy_workspace(str(repository_path), str(temp_ws))
-                    temp_workspaces.append(str(temp_ws))
-
-                    if docker:
-                        from worker.docker_runner import run_agent_in_docker
-                        docker_result = run_agent_in_docker(
-                            workspace=str(temp_ws),
-                            evaluator_path=str(evaluator_path),
-                            agent_type=agent_type,
-                            agent_id=agent_id,
-                            baseline_score=state.best_score,
-                            task=task,
-                            max_iterations=max_iterations,
-                            model_provider=model_provider,
-                            model_name=model_name,
-                            console=None,  # No console output in parallel
-                            baseline_data=current_baseline_data,
-                            verbosity=0,  # Quiet in parallel mode
-                            stream_output=False,  # No streaming in parallel
-                        )
-                        return AgentResult(
-                            agent_id=docker_result.get("agent_id", agent_id),
-                            agent_type=docker_result.get("agent_type", agent_type),
-                            success=docker_result.get("success", False),
-                            baseline_score=docker_result.get("baseline_score", state.best_score),
-                            final_score=docker_result.get("final_score", state.best_score),
-                            improvement=docker_result.get("improvement", 0),
-                            error=docker_result.get("error"),
-                            duration_seconds=docker_result.get("duration_seconds", 0),
-                            files_modified=docker_result.get("files_modified", []),
-                        ), str(temp_ws)
-                    else:
-                        return run_single_agent(
-                            workspace=str(temp_ws),
-                            evaluator_path=str(evaluator_path),
-                            agent_type=agent_type,
-                            agent_id=agent_id,
-                            baseline_score=state.best_score,
-                            task=task,
-                            max_iterations=max_iterations,
-                            model_provider=model_provider,
-                            model_name=model_name,
-                            verbosity=0,  # Quiet in parallel mode
-                            log_dir=log_directory,
-                            baseline_data=current_baseline_data,
-                            stop_event=_stop_generation if early_stop else None,
-                        ), str(temp_ws)
+                    
+                    return run_single_agent_isolated(
+                        source_workspace=str(repository_path),
+                        evaluator_path=str(evaluator_path),
+                        agent_type=agent_type,
+                        agent_id=agent_id,
+                        baseline_score=state.best_score,
+                        task=task,
+                        max_iterations=max_iterations,
+                        model_provider=model_provider,
+                        model_name=model_name,
+                        verbosity=0,  # Quiet in parallel
+                        log_dir=log_directory,
+                        baseline_data=current_baseline_data,
+                        stop_event=_stop_generation if early_stop else None,
+                    )
 
                 try:
                     with ThreadPoolExecutor(max_workers=parallel) as executor:
-                        futures = {executor.submit(run_agent_in_copy, i): i for i in range(agents)}
+                        futures = {executor.submit(run_agent_parallel, i): i for i in range(agents)}
 
                         for future in as_completed(futures):
-                            # Check for early stop
                             if early_stop and _stop_generation.is_set() and generation_improved:
-                                # Cancel remaining futures
                                 for f in futures:
                                     f.cancel()
                                 console.print(f"[yellow]⚡ Early stop - cancelling remaining agents[/yellow]")
                                 break
 
                             try:
-                                result, temp_ws = future.result()
-                            except Exception as e:
+                                result, workspace = future.result()
+                            except Exception:
                                 progress.update(task_id, advance=1)
                                 continue
-                                
+
                             generation_results.append(result)
                             state.total_attempts += 1
 
-                            if result.success and result.final_score > state.best_score:
-                                # Copy improved workspace back
+                            if result.success and result.final_score > state.best_score and workspace:
                                 git_reset(str(repository_path))
-                                shutil.rmtree(str(repository_path))
-                                shutil.copytree(temp_ws, str(repository_path), symlinks=True)
+                                
+                                for item in repository_path.iterdir():
+                                    if item.name != ".git":
+                                        if item.is_dir():
+                                            shutil.rmtree(item)
+                                        else:
+                                            item.unlink()
+                                
+                                for item in workspace.actual_root.iterdir():
+                                    if item.name != ".git":
+                                        if item.is_dir():
+                                            shutil.copytree(item, repository_path / item.name)
+                                        else:
+                                            shutil.copy2(item, repository_path / item.name)
 
                                 state.best_score = result.final_score
                                 state.total_improvements += 1
                                 generation_improved = True
 
-                                commit_msg = (
-                                    f"Gen {state.generation} | Agent {result.agent_id}: "
-                                    f"+{result.improvement:.2f}"
-                                )
+                                commit_msg = f"Gen {state.generation} | Agent {result.agent_id}: +{result.improvement:.2f}"
                                 git_commit(str(repository_path), commit_msg)
 
-                                console.print(f"\n[green]✓ {result.agent_id} improved! "
-                                              f"+{result.improvement:.2f}[/green]")
+                                console.print(f"\n[green]✓ {result.agent_id} improved! +{result.improvement:.2f}[/green]")
 
-                                # Update baseline data
                                 new_result = run_evaluator(str(evaluator_path), str(repository_path), return_full_data=True)
                                 if new_result[0] is not None:
                                     current_baseline_data = new_result[2]
 
-                                # Signal early stop
                                 if early_stop:
                                     _stop_generation.set()
 
+                            if workspace:
+                                workspace.cleanup()
+
                             progress.update(task_id, advance=1)
 
-                finally:
-                    # Clean up temp workspaces
-                    for temp_ws in temp_workspaces:
-                        try:
-                            shutil.rmtree(temp_ws)
-                        except Exception:
-                            pass
+                except Exception as e:
+                    console.print(f"[red]Error in parallel execution: {e}[/red]")
 
         # Generation summary
         successful = [r for r in generation_results if r.success]
@@ -843,7 +877,6 @@ def main(
         console.print(f"  Successful improvements: [green]{len(successful)}/{len(generation_results)}[/green]")
         console.print(f"  Best score: [cyan]{state.best_score}[/cyan]")
 
-        # Record history
         state.history.append({
             "generation": state.generation,
             "best_score": state.best_score,
@@ -862,19 +895,18 @@ def main(
             ],
         })
 
-        # If early stop triggered with improvement, add bonus generation
         if early_stop and generation_improved and gen < generations:
             console.print(f"[cyan]Starting new generation with improved codebase...[/cyan]")
-            # Continue to next iteration with new baseline
 
     # Final summary
     console.print("\n" + "═" * 50)
+    improvement_pct = ((state.best_score - state.baseline_score) / state.baseline_score * 100) if state.baseline_score > 0 else 0
     console.print(Panel.fit(
         f"[bold]Evolution Complete![/bold]\n\n"
         f"Initial score: [yellow]{state.baseline_score}[/yellow]\n"
         f"Final score: [green]{state.best_score}[/green]\n"
         f"Total improvement: [cyan]+{state.best_score - state.baseline_score:.2f}[/cyan] "
-        f"([cyan]+{((state.best_score - state.baseline_score) / state.baseline_score * 100):.1f}%[/cyan])\n\n"
+        f"([cyan]+{improvement_pct:.1f}%[/cyan])\n\n"
         f"Successful improvements: {state.total_improvements}/{state.total_attempts}",
         title="Results"
     ))
@@ -887,12 +919,11 @@ def main(
             "baseline_score": state.baseline_score,
             "final_score": state.best_score,
             "improvement": state.best_score - state.baseline_score,
-            "improvement_percent": (state.best_score - state.baseline_score) / state.baseline_score * 100,
+            "improvement_percent": improvement_pct,
             "total_improvements": state.total_improvements,
             "total_attempts": state.total_attempts,
             "generations": state.history,
             "timestamp": datetime.now().isoformat(),
-            "docker": docker,
             "early_stop": early_stop,
         }
         with open(output, "w") as f:
