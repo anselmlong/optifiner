@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, HTTPException
 
-from optifiner_api.models import OptimizationWorkflowRequest
+from optifiner_api.models import OptimizationWorkflowRequest, OptimizationWorkflowStatus
 from optifiner_api.services.optimization_service import OptimizationService
 
 router = APIRouter()
@@ -72,4 +72,84 @@ async def start_optimization_workflow(
             status_code=400, detail=result.get("error", "Failed to start workflow")
         )
 
+    return result
+
+
+@router.post("/optimization/{workflow_id}/pause")
+async def pause_optimization_workflow(workflow_id: str):
+    """Pause an active optimization workflow.
+    
+    Args:
+        workflow_id: The ID of the workflow to pause
+        
+    Returns:
+        Status confirmation
+    """
+    result = await optimization_service.pause_workflow(workflow_id)
+    
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=400, detail=result.get("error", "Failed to pause workflow")
+        )
+    
+    return result
+
+
+@router.post("/optimization/{workflow_id}/resume")
+async def resume_optimization_workflow(workflow_id: str):
+    """Resume a paused optimization workflow.
+    
+    Args:
+        workflow_id: The ID of the workflow to resume
+        
+    Returns:
+        Status confirmation
+    """
+    result = await optimization_service.resume_workflow(workflow_id)
+    
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=400, detail=result.get("error", "Failed to resume workflow")
+        )
+    
+    return result
+
+
+@router.get("/optimization/{workflow_id}/status", response_model=OptimizationWorkflowStatus)
+async def get_optimization_status(workflow_id: str):
+    """Get the current status of an optimization workflow.
+    
+    Args:
+        workflow_id: The ID of the workflow
+        
+    Returns:
+        Current workflow status including progress, costs, and tree data
+    """
+    result = await optimization_service.get_workflow_status(workflow_id)
+    
+    if not result:
+        raise HTTPException(
+            status_code=404, detail="Workflow not found"
+        )
+    
+    return result
+
+
+@router.post("/optimization/{workflow_id}/stop")
+async def stop_optimization_workflow(workflow_id: str):
+    """Stop an optimization workflow completely.
+    
+    Args:
+        workflow_id: The ID of the workflow to stop
+        
+    Returns:
+        Final status and results
+    """
+    result = await optimization_service.stop_workflow(workflow_id)
+    
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=400, detail=result.get("error", "Failed to stop workflow")
+        )
+    
     return result

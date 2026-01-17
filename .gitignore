@@ -119,3 +119,7 @@ benchmarks/generated/
 
 # Model cache
 .model_cache/
+
+# Python bytecode
+__pycache__/
+*.py[cod]

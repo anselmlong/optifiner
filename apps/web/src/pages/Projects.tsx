@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import {
   faPlus,
@@ -119,9 +119,11 @@ export function Projects() {
               ))}
             </div>
           </div>
-          <Button icon={faPlus} variant="primary">
-            New Project
-          </Button>
+          <Link to="/projects/new">
+            <Button icon={faPlus} variant="primary">
+              New Project
+            </Button>
+          </Link>
         </div>
 
         {/* Projects Grid */}

@@ -124,6 +124,7 @@ class TaskStatusResponse(BaseModel):
 
 class ModelConfig(BaseModel):
     """Model configuration for optimization workflow."""
+    model_config = {"protected_namespaces": ()}
 
     provider: str = Field(..., description="Model provider (anthropic, google, openai)")
     model_name: str = Field(..., description="Model name")
@@ -146,6 +147,7 @@ class OptimizationWorkflowRequest(BaseModel):
 
 class GraphNode(BaseModel):
     """Node in the evolution graph."""
+    model_config = {"protected_namespaces": ()}
 
     id: str = Field(..., description="Node ID (instance_id or 'baseline')")
     type: str = Field(..., description="Node type: baseline, in_progress, accepted, or rejected")
@@ -158,14 +160,11 @@ class GraphNode(BaseModel):
 
 class GraphEdge(BaseModel):
     """Edge in the evolution graph."""
+    model_config = {"populate_by_name": True}
 
     from_node: str = Field(..., description="Source node ID", alias="from")
     to_node: str = Field(..., description="Target node ID", alias="to")
     generation: int = Field(..., description="Generation when edge was created")
-
-    class Config:
-        populate_by_name = True
-        allow_population_by_field_name = True
 
 
 class GraphData(BaseModel):
@@ -177,6 +176,7 @@ class GraphData(BaseModel):
 
 class WorkerInstanceStatus(BaseModel):
     """Status of a worker instance."""
+    model_config = {"protected_namespaces": ()}
 
     instance_id: str
     model_provider: str

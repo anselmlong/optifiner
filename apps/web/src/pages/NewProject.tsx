@@ -10,7 +10,9 @@ import {
   faCode,
   faRobot,
   faFlask,
-  faPlay
+  faPlay,
+  faPlus,
+  faTrash
 } from '@fortawesome/free-solid-svg-icons'
 import { faGithub as faGithubBrand } from '@fortawesome/free-brands-svg-icons'
 import { Header } from '../components/layout/Header'
@@ -31,31 +33,126 @@ const steps = [
 export function NewProject() {
   const navigate = useNavigate()
   const [currentStep, setCurrentStep] = useState(1)
+  const [isCreating, setIsCreating] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  // Model configuration type
+  type ModelConfigItem = {
+    id: string
+    model: string
+    apiKey: string
+    agentCount: number
+  }
+
+  const [modelConfigs, setModelConfigs] = useState<ModelConfigItem[]>([
+    { id: '1', model: 'claude-sonnet', apiKey: '', agentCount: 5 }
+  ])
+
   const [formData, setFormData] = useState({
     name: '',
     description: '',
     sourceType: 'github' as 'github' | 'upload' | 'local',
     repository: '',
     branch: 'main',
-    agentCount: 5,
-    model: 'claude-sonnet',
     mutationRate: 'balanced' as 'conservative' | 'balanced' | 'aggressive',
     targetFitness: 0.9,
+    maxCost: 10,
     autoGenerateBenchmarks: true,
     benchmarkTimeout: 30
   })
 
+  const totalAgents = modelConfigs.reduce((sum, config) => sum + config.agentCount, 0)
+
+  const addModelConfig = () => {
+    setModelConfigs([...modelConfigs, {
+      id: Date.now().toString(),
+      model: 'gpt-4o',
+      apiKey: '',
+      agentCount: 3
+    }])
+  }
+
+  const removeModelConfig = (id: string) => {
+    if (modelConfigs.length > 1) {
+      setModelConfigs(modelConfigs.filter(c => c.id !== id))
+    }
+  }
+
+  const updateModelConfig = (id: string, updates: Partial<ModelConfigItem>) => {
+    setModelConfigs(modelConfigs.map(c => c.id === id ? { ...c, ...updates } : c))
+  }
+
+  // Validation for each step
+  const canProceed = () => {
+    switch (currentStep) {
+      case 1: // Source step - need name and repository
+        return formData.name.trim() !== '' && 
+               (formData.sourceType !== 'github' || formData.repository.trim() !== '')
+      case 2: // Agents step - need at least one model with API key and agents
+        return modelConfigs.every(c => c.apiKey.trim() !== '' && c.agentCount > 0)
+      case 3: // Benchmarks step - no required fields
+        return true
+      default:
+        return true
+    }
+  }
+
   const handleNext = () => {
-    if (currentStep < 4) setCurrentStep(currentStep + 1)
+    if (currentStep < 4 && canProceed()) setCurrentStep(currentStep + 1)
   }
 
   const handleBack = () => {
     if (currentStep > 1) setCurrentStep(currentStep - 1)
   }
 
-  const handleCreate = () => {
-    // Create project logic would go here
-    navigate('/projects')
+  const handleCreate = async () => {
+    setIsCreating(true)
+    setError(null)
+
+    // Map model selection to provider/model_name
+    const modelMapping: Record<string, { provider: string; model_name: string }> = {
+      'claude-sonnet': { provider: 'anthropic', model_name: 'claude-sonnet-4-20250514' },
+      'gpt-4o': { provider: 'openai', model_name: 'gpt-4o' },
+      'deepseek-coder': { provider: 'deepseek', model_name: 'deepseek-coder' }
+    }
+
+    // Build models array from all configurations
+    const models = modelConfigs.map(config => {
+      const mapping = modelMapping[config.model] || modelMapping['claude-sonnet']
+      return {
+        provider: mapping.provider,
+        model_name: mapping.model_name,
+        api_key: config.apiKey,
+        instances: config.agentCount
+      }
+    })
+
+    try {
+      const response = await fetch('/api/v1/optimization/start', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          repo_url: formData.repository,
+          branch: formData.branch || 'main',
+          total_cost_limit: formData.maxCost,
+          user_prompt: formData.description || `Optimize ${formData.name}`,
+          models
+        })
+      })
+
+      const result = await response.json()
+
+      if (!response.ok) {
+        throw new Error(result.detail || 'Failed to create project')
+      }
+
+      // Navigate to the evolution monitor for this workflow
+      navigate(`/evolution/${result.workflow_id}`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create project')
+      setIsCreating(false)
+    }
   }
 
   return (
@@ -122,17 +219,20 @@ export function NewProject() {
                   <div className="grid grid-cols-3 gap-3">
                     {[
                       { id: 'github', icon: faGithubBrand, title: 'GitHub', description: 'Import from repository' },
-                      { id: 'upload', icon: faUpload, title: 'Upload', description: 'Upload a ZIP file' },
-                      { id: 'local', icon: faFolder, title: 'Local Path', description: 'From local filesystem' }
+                      { id: 'upload', icon: faUpload, title: 'Upload', description: 'Upload a ZIP file', disabled: true },
+                      { id: 'local', icon: faFolder, title: 'Local Path', description: 'From local filesystem', disabled: true }
                     ].map((option) => (
                       <button
                         key={option.id}
-                        onClick={() => setFormData({ ...formData, sourceType: option.id as typeof formData.sourceType })}
+                        onClick={() => !option.disabled && setFormData({ ...formData, sourceType: option.id as typeof formData.sourceType })}
                         className={`p-4 rounded-xl border-2 text-left transition-all ${
                           formData.sourceType === option.id
                             ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20'
+                            : option.disabled
+                            ? 'border-slate-200 dark:border-slate-700 opacity-50 cursor-not-allowed'
                             : 'border-slate-200 dark:border-slate-700 hover:border-primary-300'
                         }`}
+                        disabled={option.disabled}
                       >
                         <FontAwesomeIcon icon={option.icon} className={`text-2xl mb-2 ${
                           formData.sourceType === option.id ? 'text-primary-500' : 'text-slate-400'
@@ -177,25 +277,90 @@ export function NewProject() {
                 <CardTitle>Agent Configuration</CardTitle>
               </CardHeader>
               <div className="space-y-6">
-                <Select
-                  label="Primary Model"
-                  value={formData.model}
-                  onChange={(e) => setFormData({ ...formData, model: e.target.value })}
-                  options={[
-                    { value: 'claude-sonnet', label: 'Claude Sonnet 4.5 (Recommended)' },
-                    { value: 'gpt-4o', label: 'GPT-4o' },
-                    { value: 'deepseek-coder', label: 'DeepSeek Coder (Budget)' }
-                  ]}
-                />
+                {/* Total agents summary */}
+                <div className="p-4 rounded-lg bg-slate-50 dark:bg-slate-800/50 flex items-center justify-between">
+                  <div>
+                    <p className="text-sm text-slate-500">Total Agents</p>
+                    <p className="text-2xl font-bold text-slate-900 dark:text-white">{totalAgents}</p>
+                  </div>
+                  <div className="text-sm text-slate-500">
+                    {modelConfigs.map((c, i) => (
+                      <span key={c.id}>
+                        {i > 0 && ' + '}
+                        {c.agentCount}
+                      </span>
+                    ))}
+                    {modelConfigs.length > 1 && ` = ${totalAgents}`}
+                  </div>
+                </div>
 
-                <Slider
-                  label="Agent Pool Size"
-                  value={formData.agentCount}
-                  onChange={(value) => setFormData({ ...formData, agentCount: value })}
-                  min={1}
-                  max={20}
-                  valueSuffix=" agents"
-                />
+                {/* Model configurations */}
+                <div className="space-y-4">
+                  <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
+                    Model Configurations
+                  </label>
+                  
+                  {modelConfigs.map((config, index) => (
+                    <div key={config.id} className="p-4 rounded-xl border border-slate-200 dark:border-slate-700 space-y-4">
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm font-medium text-slate-600 dark:text-slate-400">
+                          Model {index + 1}
+                        </span>
+                        {modelConfigs.length > 1 && (
+                          <button
+                            onClick={() => removeModelConfig(config.id)}
+                            className="p-1.5 text-slate-400 hover:text-error-solid transition-colors"
+                          >
+                            <FontAwesomeIcon icon={faTrash} />
+                          </button>
+                        )}
+                      </div>
+                      
+                      <div className="grid grid-cols-2 gap-4">
+                        <Select
+                          label="Model"
+                          value={config.model}
+                          onChange={(e) => updateModelConfig(config.id, { model: e.target.value })}
+                          options={[
+                            { value: 'claude-sonnet', label: 'Claude Sonnet 4.5' },
+                            { value: 'gpt-4o', label: 'GPT-4o' },
+                            { value: 'deepseek-coder', label: 'DeepSeek Coder' }
+                          ]}
+                        />
+                        <div>
+                          <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5">
+                            Agents
+                          </label>
+                          <input
+                            type="number"
+                            min={1}
+                            max={20}
+                            value={config.agentCount}
+                            onChange={(e) => updateModelConfig(config.id, { agentCount: Math.max(1, parseInt(e.target.value) || 1) })}
+                            className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500"
+                          />
+                        </div>
+                      </div>
+                      
+                      <Input
+                        label="API Key"
+                        type="password"
+                        placeholder={`Enter ${config.model === 'claude-sonnet' ? 'Anthropic' : config.model === 'gpt-4o' ? 'OpenAI' : 'DeepSeek'} API key`}
+                        value={config.apiKey}
+                        onChange={(e) => updateModelConfig(config.id, { apiKey: e.target.value })}
+                      />
+                    </div>
+                  ))}
+
+                  <Button
+                    variant="secondary"
+                    icon={faPlus}
+                    onClick={addModelConfig}
+                    className="w-full"
+                  >
+                    Add Another Model
+                  </Button>
+                </div>
 
                 <div>
                   <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-3">
@@ -223,9 +388,19 @@ export function NewProject() {
                   </div>
                 </div>
 
+                <Slider
+                  label="Maximum Cost Limit"
+                  value={formData.maxCost}
+                  onChange={(value) => setFormData({ ...formData, maxCost: value })}
+                  min={1}
+                  max={100}
+                  valuePrefix="$"
+                />
+
                 <div className="p-4 rounded-lg bg-info-bg dark:bg-info-bg-dark border border-info-border dark:border-info-border-dark">
                   <p className="text-sm text-info-text dark:text-info-text-dark">
-                    <strong>Estimated Cost:</strong> ~$0.50-2.00 per generation with current settings
+                    <strong>Estimated Cost:</strong> ~$0.50-2.00 per generation with current settings. 
+                    Total budget: ${formData.maxCost}
                   </p>
                 </div>
               </div>
@@ -247,12 +422,12 @@ export function NewProject() {
                 />
 
                 <Slider
-                  label="Target Fitness Score"
-                  value={formData.targetFitness * 100}
-                  onChange={(value) => setFormData({ ...formData, targetFitness: value / 100 })}
-                  min={50}
+                  label="Maximum Budget"
+                  value={formData.maxCost}
+                  onChange={(value) => setFormData({ ...formData, maxCost: value })}
+                  min={1}
                   max={100}
-                  valueSuffix="%"
+                  valuePrefix="$"
                 />
 
                 <Slider
@@ -295,16 +470,25 @@ export function NewProject() {
                     <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">Source</p>
                     <p className="font-medium text-slate-900 dark:text-white capitalize">{formData.sourceType}</p>
                   </div>
-                  <div className="p-4 rounded-lg bg-slate-50 dark:bg-slate-800/50">
-                    <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">Model</p>
-                    <p className="font-medium text-slate-900 dark:text-white">
-                      {formData.model === 'claude-sonnet' ? 'Claude Sonnet 4.5' :
-                       formData.model === 'gpt-4o' ? 'GPT-4o' : 'DeepSeek Coder'}
-                    </p>
-                  </div>
-                  <div className="p-4 rounded-lg bg-slate-50 dark:bg-slate-800/50">
-                    <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">Agent Pool</p>
-                    <p className="font-medium text-slate-900 dark:text-white">{formData.agentCount} agents</p>
+                  <div className="p-4 rounded-lg bg-slate-50 dark:bg-slate-800/50 col-span-2">
+                    <p className="text-xs text-slate-500 uppercase tracking-wider mb-2">Models & Agents</p>
+                    <div className="space-y-2">
+                      {modelConfigs.map((config, i) => (
+                        <div key={config.id} className="flex items-center justify-between text-sm">
+                          <span className="text-slate-600 dark:text-slate-400">
+                            {config.model === 'claude-sonnet' ? 'Claude Sonnet 4.5' :
+                             config.model === 'gpt-4o' ? 'GPT-4o' : 'DeepSeek Coder'}
+                          </span>
+                          <span className="font-medium text-slate-900 dark:text-white">
+                            {config.agentCount} agent{config.agentCount !== 1 ? 's' : ''}
+                          </span>
+                        </div>
+                      ))}
+                      <div className="pt-2 border-t border-slate-200 dark:border-slate-700 flex items-center justify-between">
+                        <span className="font-medium text-slate-700 dark:text-slate-300">Total</span>
+                        <span className="font-bold text-slate-900 dark:text-white">{totalAgents} agents</span>
+                      </div>
+                    </div>
                   </div>
                   <div className="p-4 rounded-lg bg-slate-50 dark:bg-slate-800/50">
                     <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">Mutation Strategy</p>
@@ -314,7 +498,19 @@ export function NewProject() {
                     <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">Target Fitness</p>
                     <p className="font-medium text-slate-900 dark:text-white">{(formData.targetFitness * 100).toFixed(0)}%</p>
                   </div>
+                  <div className="p-4 rounded-lg bg-slate-50 dark:bg-slate-800/50">
+                    <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">Cost Limit</p>
+                    <p className="font-medium text-slate-900 dark:text-white">${formData.maxCost}</p>
+                  </div>
                 </div>
+
+                {error && (
+                  <div className="p-4 rounded-lg bg-error-bg dark:bg-error-bg-dark border border-error-border dark:border-error-border-dark">
+                    <p className="text-sm text-error-text dark:text-error-text-dark">
+                      <strong>Error:</strong> {error}
+                    </p>
+                  </div>
+                )}
 
                 <div className="p-4 rounded-lg bg-success-bg dark:bg-success-bg-dark border border-success-border dark:border-success-border-dark">
                   <div className="flex items-center gap-2 mb-2">
@@ -339,11 +535,23 @@ export function NewProject() {
               {currentStep === 1 ? 'Cancel' : 'Back'}
             </Button>
             {currentStep < 4 ? (
-              <Button variant="primary" icon={faArrowRight} iconPosition="right" onClick={handleNext}>
+              <Button 
+                variant="primary" 
+                icon={faArrowRight} 
+                iconPosition="right" 
+                onClick={handleNext}
+                disabled={!canProceed()}
+              >
                 Continue
               </Button>
             ) : (
-              <Button variant="primary" icon={faPlay} onClick={handleCreate}>
+              <Button 
+                variant="primary" 
+                icon={faPlay} 
+                onClick={handleCreate}
+                loading={isCreating}
+                disabled={!formData.repository || !modelConfigs.every(c => c.apiKey.trim() !== '')}
+              >
                 Create & Start Evolution
               </Button>
             )}
