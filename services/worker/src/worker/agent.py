@@ -65,6 +65,7 @@ def create_evolution_agent(
             workspace_root=state.workspace_root,
             generation=state.generation,
             baseline_score=state.baseline_score,
+            baseline_data=state.baseline_data,
         )
 
         # Log system prompt (only once per agent run)
@@ -211,6 +212,7 @@ def run_evolution_agent(
     agent_id: str = "",
     generation: int = 0,
     baseline_score: float | None = None,
+    baseline_data: dict | None = None,
     observer: AgentObserver | None = None,
 ) -> AgentState:
     """Run an evolution agent to completion.
@@ -221,6 +223,7 @@ def run_evolution_agent(
         agent_id: Unique identifier for this agent.
         generation: Current evolution generation.
         baseline_score: Baseline benchmark score.
+        baseline_data: Optional dict with detailed baseline metrics (fps, tests, etc.)
         observer: Optional observer for logging/tracing.
 
     Returns:
@@ -257,6 +260,7 @@ def run_evolution_agent(
         agent_id=agent_id,
         generation=generation,
         baseline_score=baseline_score,
+        baseline_data=baseline_data,
         max_iterations=config.max_iterations,
     )
 
@@ -265,8 +269,10 @@ def run_evolution_agent(
         obs.on_user_message(task)
 
     # Run the agent
+    # Set recursion_limit high enough to handle max_iterations (each iteration = 2 steps: agent + tools)
+    recursion_limit = max(100, config.max_iterations * 3)
     try:
-        final_state = agent.invoke(initial_state)
+        final_state = agent.invoke(initial_state, config={"recursion_limit": recursion_limit})
         result = AgentState(**final_state)
         
         # Log agent end

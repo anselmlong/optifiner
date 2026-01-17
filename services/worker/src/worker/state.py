@@ -31,6 +31,7 @@ class AgentState(BaseModel):
     # Evolution context
     generation: int = Field(default=0, description="Current evolution generation")
     baseline_score: float | None = Field(default=None, description="Baseline benchmark score")
+    baseline_data: dict | None = Field(default=None, description="Detailed baseline metrics (fps, tests, etc.)")
     current_score: float | None = Field(default=None, description="Current benchmark score after changes")
 
     # Agent tracking
