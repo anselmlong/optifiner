@@ -9,6 +9,41 @@ export interface ApiResponse<T> {
   error?: string
 }
 
+// =============================================================================
+// Health Check API
+// =============================================================================
+
+export interface HealthStatus {
+  status: string
+  version?: string
+}
+
+export async function checkHealth(): Promise<ApiResponse<HealthStatus>> {
+  try {
+    const response = await fetch('/health')
+    const data = await response.json()
+    if (!response.ok) {
+      return { error: data.detail || 'Health check failed' }
+    }
+    return { data }
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : 'API not reachable' }
+  }
+}
+
+export async function getApiInfo(): Promise<ApiResponse<{ name: string; version: string }>> {
+  try {
+    const response = await fetch('/')
+    const data = await response.json()
+    if (!response.ok) {
+      return { error: data.detail || 'Failed to get API info' }
+    }
+    return { data }
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : 'API not reachable' }
+  }
+}
+
 async function fetchApi<T>(
   endpoint: string,
   options: RequestInit = {}
@@ -25,7 +60,16 @@ async function fetchApi<T>(
     const data = await response.json()
 
     if (!response.ok) {
-      return { error: data.detail || 'Request failed' }
+      // Handle FastAPI/Pydantic validation errors (array of error objects)
+      if (Array.isArray(data.detail)) {
+        const errors = data.detail.map((err: { loc?: string[]; msg?: string }) => {
+          const field = err.loc?.slice(1).join('.') || 'unknown'
+          return `${field}: ${err.msg}`
+        }).join('; ')
+        return { error: errors || 'Validation failed' }
+      }
+      // Handle string error messages
+      return { error: data.detail || data.error || data.message || 'Request failed' }
     }
 
     return { data }
@@ -112,6 +156,18 @@ export async function updateProject(
 
 export async function deleteProject(projectId: string): Promise<ApiResponse<{ success: boolean }>> {
   return fetchApi<{ success: boolean }>(`/projects/${projectId}`, { method: 'DELETE' })
+}
+
+export async function getProjectWorkflows(
+  projectId: string,
+  params?: { skip?: number; limit?: number }
+): Promise<ApiResponse<WorkflowsResponse>> {
+  const query = new URLSearchParams()
+  if (params?.skip) query.append('skip', params.skip.toString())
+  if (params?.limit) query.append('limit', params.limit.toString())
+
+  const queryString = query.toString()
+  return fetchApi<WorkflowsResponse>(`/projects/${projectId}/workflows${queryString ? `?${queryString}` : ''}`)
 }
 
 // =============================================================================
@@ -320,4 +376,43 @@ export interface DashboardStats {
 
 export async function getDashboardStats(): Promise<ApiResponse<DashboardStats>> {
   return fetchApi<DashboardStats>('/stats/dashboard')
+}
+
+// =============================================================================
+// WebSocket Message Types (used by websocket.ts and store)
+// =============================================================================
+
+export interface StatusUpdate {
+  status: string
+  baseline_score?: number
+  final_score?: number
+  improvement?: number
+  improvement_percent?: number
+  error?: string
+}
+
+export interface AgentUpdate {
+  instance_id: string
+  status: string
+  agent_type?: string
+  score?: number
+  success?: boolean
+  error?: string
+}
+
+export interface StepUpdate {
+  step: number
+  generation: number
+  agent_id: string
+  baseline_score: number
+  final_score: number
+  improvement_percent: number
+}
+
+export interface LogUpdate {
+  level: string
+  message: string
+  agent_name?: string
+  details?: string
+  timestamp: string
 }

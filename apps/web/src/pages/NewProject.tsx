@@ -22,6 +22,7 @@ import { Input } from '../components/ui/Input'
 import { Select } from '../components/ui/Select'
 import { Toggle } from '../components/ui/Toggle'
 import { Slider } from '../components/ui/Slider'
+import { useStore } from '../store'
 
 const steps = [
   { id: 1, title: 'Source', icon: faCode },
@@ -32,6 +33,7 @@ const steps = [
 
 export function NewProject() {
   const navigate = useNavigate()
+  const { startWorkflow, connectWorkflowWs } = useStore()
   const [currentStep, setCurrentStep] = useState(1)
   const [isCreating, setIsCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -133,28 +135,24 @@ export function NewProject() {
     })
 
     try {
-      const response = await fetch('/api/v1/optimization/start', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          repo_url: formData.repository,
-          branch: formData.branch || 'main',
-          total_cost_limit: formData.maxCost,
-          user_prompt: formData.description || `Optimize ${formData.name}`,
-          models,
-          parallel: formData.parallelAgents,
-          generations: formData.generations,
-          early_stop: true,
-        })
+      // Use store method instead of direct fetch
+      const result = await startWorkflow({
+        repo_url: formData.repository,
+        branch: formData.branch || 'main',
+        total_cost_limit: formData.maxCost,
+        user_prompt: formData.description || `Optimize ${formData.name}`,
+        models,
+        parallel: formData.parallelAgents,
+        generations: formData.generations,
+        early_stop: true,
       })
 
-      const result = await response.json()
-
-      if (!response.ok) {
-        throw new Error(result.detail || 'Failed to create project')
+      if (!result) {
+        throw new Error('Failed to start workflow')
       }
+
+      // Connect WebSocket for real-time updates
+      connectWorkflowWs(result.workflow_id)
 
       // Navigate to the evolution monitor for this workflow
       navigate(`/projects/${result.workflow_id}`)

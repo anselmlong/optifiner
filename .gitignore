@@ -123,3 +123,4 @@ benchmarks/generated/
 # Python bytecode
 __pycache__/
 *.py[cod]
+.claude/settings.local.json
