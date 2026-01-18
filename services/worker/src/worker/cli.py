@@ -326,17 +326,17 @@ def run_evaluator(
     
     if return_full_data:
         # Build data dict from result
+        # Note: score IS the primary metric (FPS, throughput, etc.) 
+        # Additional metrics are in the "metrics" dict
         data = {
             "score": score,
+            "metric_name": result.get("metric_name"),
             "passed": result.get("passed"),
             "tests_passed": result.get("tests_passed"),
             "tests_total": result.get("tests_total"),
             "metrics": result.get("metrics"),
             "message": result.get("message"),
         }
-        # Also include fps if in metrics
-        if data.get("metrics") and "fps" in data["metrics"]:
-            data["fps"] = data["metrics"]["fps"]
         return float(score), None, data
     
     return float(score), None
@@ -462,8 +462,9 @@ def run_single_agent_isolated(
             duration_seconds=time.time() - start_time,
         ), None
 
-    # Create isolated workspace
-    workspace = WorkspaceManager(workspace_id=agent_id[:8])
+    # Create isolated workspace - use full agent_id to ensure uniqueness
+    # Previously used agent_id[:8] which caused all agents to share workspace!
+    workspace = WorkspaceManager(workspace_id=agent_id.replace("-", "_")[:32])
     try:
         workspace.setup(source_workspace)
     except Exception as e:
@@ -547,16 +548,19 @@ def run_single_agent_isolated(
             duration_seconds=time.time() - start_time,
         ), None
 
-    # Build baseline info string
+    # Build baseline info string - use score as the primary metric
+    # Score IS the metric (FPS, throughput, etc.) so don't show them separately
     baseline_info = f"Current baseline score: {baseline_score}"
     if baseline_data:
-        if "fps" in baseline_data:
-            baseline_info += f"\nBaseline FPS: {baseline_data['fps']:.2f}"
         if "tests_passed" in baseline_data and "tests_total" in baseline_data:
             baseline_info += f"\nBaseline tests: {baseline_data['tests_passed']}/{baseline_data['tests_total']} passed"
         if "metrics" in baseline_data:
-            metrics_str = ", ".join(f"{k}={v}" for k, v in baseline_data["metrics"].items())
-            baseline_info += f"\nBaseline metrics: {metrics_str}"
+            # Filter out the primary metric from additional metrics display to avoid confusion
+            # The score already represents the primary metric
+            additional_metrics = {k: v for k, v in baseline_data["metrics"].items()}
+            if additional_metrics:
+                metrics_str = ", ".join(f"{k}={v}" for k, v in additional_metrics.items())
+                baseline_info += f"\nBaseline metrics: {metrics_str}"
 
     # Run the agent
     try:
@@ -954,14 +958,12 @@ def main(
     console.print(f"[green]Baseline score: {baseline_score}[/green]")
     console.print(f"[dim]Minimum improvement threshold: {min_improvement}% (filters noise)[/dim]")
     if baseline_data:
-        if "fps" in baseline_data:
-            console.print(f"[dim]  FPS: {baseline_data['fps']:.2f}[/dim]")
         if baseline_data.get("tests_passed") is not None and baseline_data.get("tests_total") is not None:
             console.print(f"[dim]  Tests: {baseline_data['tests_passed']}/{baseline_data['tests_total']}[/dim]")
         if baseline_data.get("metrics"):
+            # Show all metrics - score already represents the primary metric
             for k, v in baseline_data["metrics"].items():
-                if k not in ("fps",):
-                    console.print(f"[dim]  {k}: {v}[/dim]")
+                console.print(f"[dim]  {k}: {v}[/dim]")
     console.print()
 
     # Initialize evolution state
