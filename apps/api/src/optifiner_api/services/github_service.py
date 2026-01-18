@@ -56,25 +56,53 @@ class GitHubService:
     def _update_remote_url_with_token(self, repo: Repo, repo_path: Path) -> None:
         """Update the remote URL to include GitHub App token."""
         try:
-            auth_token = self._get_auth_token()
-            if not auth_token:
-                return
-            
             origin = repo.remotes.origin
             current_url = origin.url
             
-            # Check if URL already has authentication
-            if "@github.com" in current_url and not current_url.startswith("git@"):
+            # Extract owner from URL to get the correct installation token
+            owner = None
+            if "github.com" in current_url:
+                if current_url.startswith("git@"):
+                    repo_path_part = current_url.split(":")[-1].replace(".git", "")
+                else:
+                    # Handle both https://github.com/... and https://x-access-token:...@github.com/...
+                    repo_path_part = current_url.split("github.com/")[-1].replace(".git", "")
+                
+                parts = repo_path_part.split("/")
+                if len(parts) >= 2:
+                    owner = parts[0]
+            
+            # Get token for the specific owner's installation
+            auth_token = self._get_installation_token(owner)
+            if not auth_token:
+                logger.warning(f"[GitHubService] Could not get auth token for owner '{owner}'")
                 return
             
-            # Update remote URL to include token
-            if current_url.startswith("https://github.com/"):
-                new_url = current_url.replace("https://", f"https://{auth_token}@")
-                origin.set_url(new_url, origin.url)
-            elif current_url.startswith("git@github.com:"):
+            # Build the authenticated URL
+            if current_url.startswith("git@github.com:"):
+                # Convert SSH to HTTPS with token
                 ssh_path = current_url.replace("git@github.com:", "").replace(".git", "")
-                new_url = f"https://{auth_token}@github.com/{ssh_path}.git"
-                origin.set_url(new_url, origin.url)
+                new_url = f"https://x-access-token:{auth_token}@github.com/{ssh_path}.git"
+            elif "github.com" in current_url:
+                # Handle HTTPS URLs (with or without existing token)
+                # Strip any existing authentication
+                if "@github.com" in current_url:
+                    # URL has auth - extract the path part
+                    path_part = current_url.split("github.com/")[-1]
+                    new_url = f"https://x-access-token:{auth_token}@github.com/{path_part}"
+                else:
+                    # Plain HTTPS URL
+                    new_url = current_url.replace("https://github.com/", f"https://x-access-token:{auth_token}@github.com/")
+                    new_url = new_url.replace("http://github.com/", f"http://x-access-token:{auth_token}@github.com/")
+            else:
+                return
+            
+            # Ensure URL ends with .git
+            if not new_url.endswith(".git"):
+                new_url = f"{new_url}.git"
+            
+            origin.set_url(new_url, origin.url)
+            logger.debug(f"[GitHubService] Updated remote URL for owner '{owner}'")
         except Exception as e:
             logger.warning(f"[GitHubService] Failed to update remote URL with token: {e}")
     
@@ -134,9 +162,15 @@ class GitHubService:
             logger.error(f"[GitHubService] Error generating GitHub App JWT: {e}")
             return None
     
-    def _get_installation_id(self) -> str | None:
-        """Get installation ID for GitHub App."""
-        if self._cached_installation_id:
+    def _get_installation_id(self, owner: str | None = None) -> str | None:
+        """Get installation ID for GitHub App.
+        
+        Args:
+            owner: Optional owner/account to find installation for. If not provided,
+                   returns the first available installation.
+        """
+        # Only use cache if no specific owner requested
+        if not owner and self._cached_installation_id:
             return self._cached_installation_id
         
         if not settings.GITHUB_APP_CLIENT_ID:
@@ -158,13 +192,36 @@ class GitHubService:
             
             installations = response.json()
             if not installations:
+                logger.warning("[GitHubService] No installations found for GitHub App")
                 return None
             
+            # Log all installations for debugging
+            logger.info(f"[GitHubService] Found {len(installations)} installation(s):")
+            for inst in installations:
+                account = inst.get("account", {})
+                logger.info(f"  - Installation {inst.get('id')}: {account.get('login')} ({account.get('type')})")
+            
+            # If owner specified, find matching installation
+            if owner:
+                for inst in installations:
+                    account = inst.get("account", {})
+                    if account.get("login", "").lower() == owner.lower():
+                        installation_id = str(inst.get("id"))
+                        logger.info(f"[GitHubService] Using installation {installation_id} for owner '{owner}'")
+                        return installation_id
+                
+                logger.warning(f"[GitHubService] No installation found for owner '{owner}'")
+                # Fall back to first installation
+            
+            # Use first installation
             installation = installations[0]
             installation_id = str(installation.get("id"))
+            account_login = installation.get("account", {}).get("login", "unknown")
             
             if installation_id:
-                self._cached_installation_id = installation_id
+                logger.info(f"[GitHubService] Using installation {installation_id} (account: {account_login})")
+                if not owner:
+                    self._cached_installation_id = installation_id
                 return installation_id
                 
         except Exception as e:
@@ -173,12 +230,17 @@ class GitHubService:
         
         return None
     
-    def _get_installation_token(self) -> str | None:
-        """Get installation access token for GitHub App."""
-        if self._github_app_token and time.time() < self._github_app_token_expires:
+    def _get_installation_token(self, owner: str | None = None) -> str | None:
+        """Get installation access token for GitHub App.
+        
+        Args:
+            owner: Optional owner to get installation token for.
+        """
+        # Only use cache if no specific owner requested
+        if not owner and self._github_app_token and time.time() < self._github_app_token_expires:
             return self._github_app_token
         
-        installation_id = self._get_installation_id()
+        installation_id = self._get_installation_id(owner)
         if not installation_id:
             return None
         
@@ -201,16 +263,18 @@ class GitHubService:
             expires_at = data.get("expires_at")
             
             if token:
-                self._github_app_token = token
-                if expires_at:
-                    try:
-                        exp_str = expires_at.replace("Z", "+00:00")
-                        exp_time = datetime.fromisoformat(exp_str)
-                        self._github_app_token_expires = exp_time.timestamp() - 600
-                    except Exception:
+                # Only cache if not owner-specific
+                if not owner:
+                    self._github_app_token = token
+                    if expires_at:
+                        try:
+                            exp_str = expires_at.replace("Z", "+00:00")
+                            exp_time = datetime.fromisoformat(exp_str)
+                            self._github_app_token_expires = exp_time.timestamp() - 600
+                        except Exception:
+                            self._github_app_token_expires = time.time() + (50 * 60)
+                    else:
                         self._github_app_token_expires = time.time() + (50 * 60)
-                else:
-                    self._github_app_token_expires = time.time() + (50 * 60)
                 
                 return token
         except Exception as e:
@@ -219,9 +283,13 @@ class GitHubService:
         
         return None
     
-    def _get_github_client(self) -> Github | None:
-        """Get GitHub client using GitHub App installation token."""
-        installation_token = self._get_installation_token()
+    def _get_github_client(self, owner: str | None = None) -> Github | None:
+        """Get GitHub client using GitHub App installation token.
+        
+        Args:
+            owner: Optional owner to get client for specific installation.
+        """
+        installation_token = self._get_installation_token(owner)
         if installation_token:
             return Github(installation_token)
         return None
@@ -271,10 +339,11 @@ class GitHubService:
             
             auth_token = self._get_auth_token()
             if not is_ssh and not is_authenticated and "github.com" in clone_url and auth_token:
+                # GitHub App installation tokens require x-access-token as username
                 if clone_url.startswith("https://"):
-                    clone_url = clone_url.replace("https://", f"https://{auth_token}@")
+                    clone_url = clone_url.replace("https://", f"https://x-access-token:{auth_token}@")
                 elif clone_url.startswith("http://"):
-                    clone_url = clone_url.replace("http://", f"http://{auth_token}@")
+                    clone_url = clone_url.replace("http://", f"http://x-access-token:{auth_token}@")
             
             repo = None
             try:
@@ -365,7 +434,28 @@ class GitHubService:
             else:
                 return {"success": False, "error": f"Not a GitHub repository: {remote_url}"}
 
-            github_repo = self.github.get_repo(f"{owner}/{repo_name}")
+            logger.info(f"[GitHubService] Accessing repository: {owner}/{repo_name}")
+            
+            # Get GitHub client for the specific owner's installation
+            github_client = self._get_github_client(owner)
+            if not github_client:
+                return {
+                    "success": False, 
+                    "error": f"Could not get GitHub client for owner '{owner}'. "
+                             f"Ensure the GitHub App is installed on the '{owner}' account."
+                }
+            
+            try:
+                github_repo = github_client.get_repo(f"{owner}/{repo_name}")
+            except Exception as e:
+                error_msg = str(e)
+                if "404" in error_msg:
+                    return {
+                        "success": False, 
+                        "error": f"Repository '{owner}/{repo_name}' not found or GitHub App does not have access. "
+                                 f"Ensure the GitHub App is installed on the '{owner}' account and has access to '{repo_name}'."
+                    }
+                raise
             
             try:
                 existing_branch = github_repo.get_branch(branch_name)
@@ -429,6 +519,7 @@ class GitHubService:
         """Commit and push changes using git (fast method).
         
         Uses git commit + git push instead of GitHub API for speed.
+        Commits are made as the GitHub App bot user.
         """
         try:
             repo_path = self.workspace_root / repo_dir
@@ -437,11 +528,19 @@ class GitHubService:
 
             local_repo = Repo(str(repo_path))
             
-            # Update remote URL with token for push
-            try:
-                self._update_remote_url_with_token(local_repo, repo_path)
-            except Exception as e:
-                logger.warning(f"[GitHubService] Failed to update remote URL: {e}")
+            # Extract owner from remote URL for authentication
+            remote_url = local_repo.remotes.origin.url
+            owner = None
+            if "github.com" in remote_url:
+                if remote_url.startswith("git@"):
+                    repo_path_part = remote_url.split(":")[-1].replace(".git", "")
+                else:
+                    repo_path_part = remote_url.split("github.com/")[-1].replace(".git", "")
+                parts = repo_path_part.split("/")
+                if len(parts) >= 2:
+                    owner = parts[0]
+            
+            logger.info(f"[GitHubService] Committing changes for owner '{owner}'")
 
             # Make sure we're on the right branch
             try:
@@ -474,22 +573,44 @@ class GitHubService:
             if not local_repo.index.diff("HEAD") and not local_repo.untracked_files:
                 return {"success": False, "error": "No changes to commit"}
 
-            # Configure git user if not set
-            try:
-                local_repo.config_reader().get_value("user", "email")
-            except Exception:
-                local_repo.config_writer().set_value("user", "email", "optifiner[bot]@users.noreply.github.com").release()
-                local_repo.config_writer().set_value("user", "name", "optifiner[bot]").release()
+            # Always configure git user as GitHub App bot for commits
+            with local_repo.config_writer() as config:
+                config.set_value("user", "email", "optifiner[bot]@users.noreply.github.com")
+                config.set_value("user", "name", "optifiner[bot]")
 
             # Commit
             commit = local_repo.index.commit(commit_message)
             commit_hash = commit.hexsha
+            logger.info(f"[GitHubService] Created commit {commit_hash[:8]} as optifiner[bot]")
 
-            # Push
+            # Get installation token for push
+            auth_token = self._get_installation_token(owner)
+            if not auth_token:
+                return {
+                    "success": False, 
+                    "error": f"Could not get auth token for owner '{owner}'",
+                    "commit_hash": commit_hash
+                }
+
+            # Build authenticated push URL
+            if remote_url.startswith("git@github.com:"):
+                path_part = remote_url.replace("git@github.com:", "").replace(".git", "")
+                push_url = f"https://x-access-token:{auth_token}@github.com/{path_part}.git"
+            elif "github.com" in remote_url:
+                # Strip any existing auth and rebuild
+                if "@github.com" in remote_url:
+                    path_part = remote_url.split("github.com/")[-1]
+                else:
+                    path_part = remote_url.replace("https://github.com/", "").replace("http://github.com/", "")
+                if not path_part.endswith(".git"):
+                    path_part = f"{path_part}.git"
+                push_url = f"https://x-access-token:{auth_token}@github.com/{path_part}"
+            else:
+                return {"success": False, "error": f"Not a GitHub URL: {remote_url}", "commit_hash": commit_hash}
+
+            # Push using authenticated URL directly
             try:
-                origin = local_repo.remotes.origin
-                # Use --set-upstream to handle case where branch doesn't exist on remote
-                local_repo.git.push("--set-upstream", "origin", branch)
+                local_repo.git.push(push_url, f"HEAD:{branch}", "--set-upstream")
                 logger.info(f"[GitHubService] Pushed commit {commit_hash[:8]} to {branch}")
             except Exception as e:
                 return {"success": False, "error": f"Push failed: {e}", "commit_hash": commit_hash}
@@ -524,7 +645,18 @@ class GitHubService:
             return {"success": False, "error": self._get_configuration_error()}
 
         try:
-            repo: Repository = self.github.get_repo(f"{owner}/{repo_name}")
+            logger.info(f"[GitHubService] Getting info for repository: {owner}/{repo_name}")
+            
+            # Get GitHub client for the specific owner's installation
+            github_client = self._get_github_client(owner)
+            if not github_client:
+                return {
+                    "success": False, 
+                    "error": f"Could not get GitHub client for owner '{owner}'. "
+                             f"Ensure the GitHub App is installed on the '{owner}' account."
+                }
+            
+            repo: Repository = github_client.get_repo(f"{owner}/{repo_name}")
             return {
                 "success": True,
                 "name": repo.name,
@@ -537,7 +669,14 @@ class GitHubService:
                 "url": repo.html_url,
             }
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            error_msg = str(e)
+            if "404" in error_msg:
+                return {
+                    "success": False, 
+                    "error": f"Repository '{owner}/{repo_name}' not found or GitHub App does not have access. "
+                             f"Ensure the GitHub App is installed on the '{owner}' account and has access to '{repo_name}'."
+                }
+            return {"success": False, "error": error_msg}
 
     def update_repository(self, repo_dir: str) -> dict[str, Any]:
         """Update (pull) an existing repository."""
@@ -547,7 +686,43 @@ class GitHubService:
                 return {"success": False, "error": f"Repository not found: {repo_dir}"}
 
             repo = Repo(str(repo_path))
-            repo.remotes.origin.pull()
+            remote_url = repo.remotes.origin.url
+            
+            # Extract owner from remote URL for authentication
+            owner = None
+            if "github.com" in remote_url:
+                if remote_url.startswith("git@"):
+                    repo_path_part = remote_url.split(":")[-1].replace(".git", "")
+                else:
+                    repo_path_part = remote_url.split("github.com/")[-1].replace(".git", "")
+                parts = repo_path_part.split("/")
+                if len(parts) >= 2:
+                    owner = parts[0]
+            
+            # Get installation token for pull
+            auth_token = self._get_installation_token(owner)
+            if not auth_token:
+                return {"success": False, "error": f"Could not get auth token for owner '{owner}'"}
+
+            # Build authenticated fetch URL
+            if remote_url.startswith("git@github.com:"):
+                path_part = remote_url.replace("git@github.com:", "").replace(".git", "")
+                fetch_url = f"https://x-access-token:{auth_token}@github.com/{path_part}.git"
+            elif "github.com" in remote_url:
+                if "@github.com" in remote_url:
+                    path_part = remote_url.split("github.com/")[-1]
+                else:
+                    path_part = remote_url.replace("https://github.com/", "").replace("http://github.com/", "")
+                if not path_part.endswith(".git"):
+                    path_part = f"{path_part}.git"
+                fetch_url = f"https://x-access-token:{auth_token}@github.com/{path_part}"
+            else:
+                return {"success": False, "error": f"Not a GitHub URL: {remote_url}"}
+
+            # Fetch and merge using authenticated URL
+            current_branch = repo.active_branch.name if repo.active_branch else "main"
+            repo.git.fetch(fetch_url, current_branch)
+            repo.git.merge(f"FETCH_HEAD")
 
             return {
                 "success": True,
@@ -604,15 +779,43 @@ class GitHubService:
             if "github.com" not in remote_url:
                 return {"success": False, "error": "Not a GitHub repository"}
 
+            # Parse owner/repo from remote URL (handles token-embedded URLs)
             if remote_url.startswith("git@"):
-                parts = remote_url.replace("git@github.com:", "").replace(".git", "").split("/")
+                repo_path_part = remote_url.replace("git@github.com:", "").replace(".git", "")
             else:
-                parts = remote_url.replace(".git", "").split("/")
+                repo_path_part = remote_url.split("github.com/")[-1].replace(".git", "")
+                if "@" in repo_path_part:
+                    repo_path_part = repo_path_part.split("@")[-1]
 
-            owner = parts[-2]
-            repo_name = parts[-1]
+            parts = repo_path_part.split("/")
+            if len(parts) < 2:
+                return {"success": False, "error": f"Could not parse owner/repo from URL: {remote_url}"}
+            
+            owner = parts[0]
+            repo_name = parts[1]
 
-            github_repo = self.github.get_repo(f"{owner}/{repo_name}")
+            logger.info(f"[GitHubService] Creating PR for repository: {owner}/{repo_name}")
+            
+            # Get GitHub client for the specific owner's installation
+            github_client = self._get_github_client(owner)
+            if not github_client:
+                return {
+                    "success": False, 
+                    "error": f"Could not get GitHub client for owner '{owner}'. "
+                             f"Ensure the GitHub App is installed on the '{owner}' account."
+                }
+            
+            try:
+                github_repo = github_client.get_repo(f"{owner}/{repo_name}")
+            except Exception as e:
+                error_msg = str(e)
+                if "404" in error_msg:
+                    return {
+                        "success": False, 
+                        "error": f"Repository '{owner}/{repo_name}' not found or GitHub App does not have access. "
+                                 f"Ensure the GitHub App is installed on the '{owner}' account and has access to '{repo_name}'."
+                    }
+                raise
 
             if not base_branch:
                 base_branch = github_repo.default_branch
