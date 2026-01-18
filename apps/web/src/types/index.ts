@@ -12,6 +12,10 @@ export interface Project {
   updatedAt: string;
   repository?: string;
   targetFitness?: number;
+  // Local project fields
+  isLocal?: boolean;
+  localPath?: string;
+  hasBenchmark?: boolean;
 }
 
 export interface Agent {

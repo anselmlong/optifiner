@@ -45,6 +45,28 @@ export interface StatusUpdate {
   error?: string
 }
 
+export interface GraphNode {
+  id: string
+  type: string
+  generation: number
+  score: number
+  agent_id?: string
+  status: 'accepted' | 'rejected' | 'processing' | 'analyzing'
+  label: string
+  description: string
+  commit_hash?: string
+}
+
+export interface GraphEdge {
+  source: string
+  target: string
+}
+
+export interface GraphUpdate {
+  nodes: GraphNode[]
+  edges: GraphEdge[]
+}
+
 class WebSocketClient {
   private socket: WebSocket | null = null
   private url: string

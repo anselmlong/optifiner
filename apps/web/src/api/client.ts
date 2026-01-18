@@ -117,6 +117,34 @@ export async function getProjects(params?: {
   return fetchApi<ProjectsResponse>(`/projects${queryString ? `?${queryString}` : ''}`)
 }
 
+export interface LocalProject {
+  id: string
+  name: string
+  description: string
+  directory: string
+  path: string
+  has_benchmark: boolean
+  status: 'local'
+  repository_url: string | null
+  repository_branch: string | null
+  target_fitness: number
+  cost_limit: number
+  current_fitness: number
+  total_cost_spent: number
+  current_generation: number
+  created_at: string | null
+  updated_at: string | null
+}
+
+export interface LocalProjectsResponse {
+  projects: LocalProject[]
+  total: number
+}
+
+export async function getLocalProjects(): Promise<ApiResponse<LocalProjectsResponse>> {
+  return fetchApi<LocalProjectsResponse>('/projects/local')
+}
+
 export async function getProject(projectId: string): Promise<ApiResponse<Project>> {
   return fetchApi<Project>(`/projects/${projectId}`)
 }

@@ -10,7 +10,7 @@ from typing import Any
 
 import jwt
 import requests
-from git import Repo
+from git import Actor, Repo
 from github import Github
 from github.Repository import Repository
 
@@ -573,15 +573,24 @@ class GitHubService:
             if not local_repo.index.diff("HEAD") and not local_repo.untracked_files:
                 return {"success": False, "error": "No changes to commit"}
 
-            # Always configure git user as GitHub App bot for commits
+            # GitHub App bot user credentials
+            BOT_NAME = "optifiner[bot]"
+            BOT_EMAIL = "optifiner[bot]@users.noreply.github.com"
+            
+            # Configure git user as GitHub App bot for commits
             with local_repo.config_writer() as config:
-                config.set_value("user", "email", "optifiner[bot]@users.noreply.github.com")
-                config.set_value("user", "name", "optifiner[bot]")
+                config.set_value("user", "email", BOT_EMAIL)
+                config.set_value("user", "name", BOT_NAME)
 
-            # Commit
-            commit = local_repo.index.commit(commit_message)
+            # Commit with explicit author and committer to ensure bot attribution
+            bot_actor = Actor(BOT_NAME, BOT_EMAIL)
+            commit = local_repo.index.commit(
+                commit_message,
+                author=bot_actor,
+                committer=bot_actor,
+            )
             commit_hash = commit.hexsha
-            logger.info(f"[GitHubService] Created commit {commit_hash[:8]} as optifiner[bot]")
+            logger.info(f"[GitHubService] Created commit {commit_hash[:8]} as {BOT_NAME}")
 
             # Get installation token for push
             auth_token = self._get_installation_token(owner)
