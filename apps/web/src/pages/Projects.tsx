@@ -38,7 +38,6 @@ export function Projects() {
     pauseLoading,
     resumeLoading,
     fetchProjectWorkflows,
-    projectWorkflows,
     updateProject,
   } = useStore()
   const [searchQuery, setSearchQuery] = useState('')
