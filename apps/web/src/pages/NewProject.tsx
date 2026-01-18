@@ -517,7 +517,7 @@ export function NewProject() {
                   <div className="p-4 rounded-lg bg-slate-50 dark:bg-slate-800/50 col-span-2">
                     <p className="text-xs text-slate-500 uppercase tracking-wider mb-2">Models & Agents</p>
                     <div className="space-y-2">
-                      {modelConfigs.map((config, i) => {
+                      {modelConfigs.map((config) => {
                         const modelLabels: Record<string, string> = {
                           'claude-opus-4.5': 'Claude Opus 4.5',
                           'claude-sonnet-4.5': 'Claude Sonnet 4.5',

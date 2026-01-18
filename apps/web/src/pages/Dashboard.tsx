@@ -50,6 +50,13 @@ export function Dashboard() {
     <div className="min-h-screen">
       <Header title="Evolution Dashboard" subtitle="Darwin-Alpha-9 • Online" />
 
+      {/* Demo Disclaimer Banner */}
+      <div className="bg-yellow-50 dark:bg-yellow-950/30 border-b border-yellow-200 dark:border-yellow-900 px-6 py-3">
+        <p className="text-sm text-yellow-800 dark:text-yellow-200">
+          <span className="font-semibold">Demo Version:</span> Some buttons and features might not work as expected.
+        </p>
+      </div>
+
       <div className="p-6 space-y-6">
         {/* Description */}
         <p className="text-slate-600 dark:text-slate-400 max-w-2xl">

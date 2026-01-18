@@ -12,7 +12,6 @@ import {
   faShieldAlt,
   faLink,
   faCodeCompare,
-  faCopy,
   faArrowLeft
 } from '@fortawesome/free-solid-svg-icons'
 import { Button } from '../components/ui/Button'
@@ -75,8 +74,7 @@ I have refactored this to use a Map for frequency counting, reducing complexity 
 export function CodeAnalysis() {
   const { projectId, nodeId } = useParams<{ projectId: string; nodeId: string }>()
   const navigate = useNavigate()
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const [activeTab, setActiveTab] = useState<'base' | 'mutation'>('mutation')
+  const [_activeTab, setActiveTab] = useState<'base' | 'mutation'>('mutation')
 
   return (
     <div className="h-screen flex flex-col overflow-hidden bg-slate-50 dark:bg-slate-900">
@@ -88,7 +86,7 @@ export function CodeAnalysis() {
         <div className="h-6 w-px bg-slate-200 dark:bg-slate-700 mx-4" />
         <div className="flex items-center gap-2">
           <span className="text-slate-500 text-sm">Analyzing Node:</span>
-          <Badge variant="blue" size="sm" icon={faCodeBranch}>{nodeId}</Badge>
+          <Badge variant="info" size="sm" icon={faCodeBranch}>{nodeId}</Badge>
         </div>
       </header>
 

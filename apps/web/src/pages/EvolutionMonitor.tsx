@@ -6,19 +6,15 @@ import {
   faExpand,
   faSearch,
   faCodeBranch,
-  faFlask,
   faMemory,
   faGaugeHigh,
   faArrowLeft,
   faPlay,
   faPause,
   faSpinner,
-  faColumns,
   faChevronRight,
-  faChevronLeft,
   faStop
 } from '@fortawesome/free-solid-svg-icons'
-import { Header } from '../components/layout/Header'
 import { Card } from '../components/ui/Card'
 import { Button } from '../components/ui/Button'
 import { Badge } from '../components/ui/Badge'
@@ -150,8 +146,8 @@ function EvolutionTree({ data, onNodeClick }: { data: TreeNodeData, onNodeClick:
       .attr("stroke-width", 2)
       .attr("stroke-opacity", 0.4)
       .attr("d", d3.linkVertical()
-        .x(d => d.x!)
-        .y(d => d.y!) as any
+        .x((d: any) => d.x!)
+        .y((d: any) => d.y!) as any
       )
       
     // Nodes
@@ -159,9 +155,9 @@ function EvolutionTree({ data, onNodeClick }: { data: TreeNodeData, onNodeClick:
       .data(root.descendants())
       .join("g")
       .attr("className", "node")
-      .attr("transform", d => `translate(${d.x},${d.y})`)
+      .attr("transform", (d: any) => `translate(${d.x},${d.y})`)
       // Add click handler for nodes
-      .on("click", (event, d) => {
+      .on("click", (_event, d) => {
         if (d.data.status === 'accepted' || d.data.status === 'rejected') {
           onNodeClick(d.data)
         }
@@ -231,11 +227,10 @@ export function EvolutionMonitor() {
   const { 
     agents, 
     logs, 
-    projects, 
-    isPaused, 
+    projects,
+    isPaused,
     togglePause,
     currentWorkflow,
-    workflowLoading,
     fetchWorkflow,
     connectWorkflowWs,
     disconnectWorkflowWs,

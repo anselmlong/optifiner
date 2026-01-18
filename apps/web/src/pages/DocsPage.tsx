@@ -1,6 +1,6 @@
 import { useParams, useNavigate } from 'react-router-dom'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
-import { faArrowLeft, faExternalLinkAlt } from '@fortawesome/free-solid-svg-icons'
+import { faArrowLeft } from '@fortawesome/free-solid-svg-icons'
 import { Header } from '../components/layout/Header'
 import { Card } from '../components/ui/Card'
 import { useEffect, useState } from 'react'

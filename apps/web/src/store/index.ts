@@ -189,7 +189,7 @@ export const useStore = create<AppState>((set, get) => ({
       
       switch (message.type) {
         case 'status':
-          const statusData = message.data as api.StatusUpdate
+          const statusData = message.data as unknown as api.StatusUpdate
           set({
             isPaused: statusData.status === 'paused',
             currentWorkflow: state.currentWorkflow ? {
@@ -203,7 +203,7 @@ export const useStore = create<AppState>((set, get) => ({
           break
           
         case 'agent_update':
-          const agentData = message.data as api.AgentUpdate
+          const agentData = message.data as unknown as api.AgentUpdate
           // Update agents list
           const updatedAgents = state.agents.map(agent => 
             agent.id === agentData.instance_id 
@@ -214,7 +214,7 @@ export const useStore = create<AppState>((set, get) => ({
           break
           
         case 'step':
-          const stepData = message.data as api.StepUpdate
+          const stepData = message.data as unknown as api.StepUpdate
           // Add to logs
           state.addLog({
             timestamp: new Date().toLocaleTimeString('en-US', { hour12: false }),
@@ -239,7 +239,7 @@ export const useStore = create<AppState>((set, get) => ({
           break
           
         case 'log':
-          const logData = message.data as api.LogUpdate
+          const logData = message.data as unknown as api.LogUpdate
           state.addLog({
             timestamp: logData.timestamp,
             level: logData.level as LogEntry['level'],
