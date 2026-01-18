@@ -6,7 +6,9 @@ It mirrors all CLI options from worker/src/worker/cli.py for feature completenes
 Uses PostgreSQL for persistence and WebSockets for real-time updates.
 """
 
+import json
 import logging
+from pathlib import Path
 from typing import Optional
 from uuid import UUID
 
@@ -203,6 +205,68 @@ async def list_projects(
             }
     except Exception as e:
         logger.error(f"[API] Error listing projects: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/local")
+async def list_local_projects():
+    """List projects from the local workspace directory.
+    
+    Scans the apps/workspace directory for projects with metadata.json files.
+    """
+    try:
+        # Get the workspace directory path relative to the API
+        workspace_dir = Path(__file__).parent.parent.parent.parent / "workspace"
+        
+        if not workspace_dir.exists():
+            return {"projects": [], "total": 0}
+        
+        local_projects = []
+        for project_dir in workspace_dir.iterdir():
+            if not project_dir.is_dir():
+                continue
+            
+            # Check for metadata.json
+            metadata_file = project_dir / "metadata.json"
+            if metadata_file.exists():
+                try:
+                    with open(metadata_file, "r") as f:
+                        metadata = json.load(f)
+                except (json.JSONDecodeError, IOError):
+                    metadata = {}
+            else:
+                metadata = {}
+            
+            # Check if optifiner_benchmark.py exists
+            has_benchmark = (project_dir / "optifiner_benchmark.py").exists()
+            
+            # Build project info
+            project_info = {
+                "id": f"local:{project_dir.name}",
+                "name": metadata.get("name", project_dir.name),
+                "description": metadata.get("description", "Local workspace project"),
+                "directory": project_dir.name,
+                "path": str(project_dir),
+                "has_benchmark": has_benchmark,
+                "status": "local",
+                "repository_url": None,
+                "repository_branch": None,
+                "target_fitness": 0.95,
+                "cost_limit": 50.0,
+                "current_fitness": 0.0,
+                "total_cost_spent": 0.0,
+                "current_generation": 0,
+                "created_at": None,
+                "updated_at": None,
+            }
+            local_projects.append(project_info)
+        
+        return {
+            "projects": local_projects,
+            "total": len(local_projects),
+        }
+    except Exception as e:
+        logger.error(f"[API] Error listing local projects: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

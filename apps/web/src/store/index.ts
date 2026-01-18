@@ -1,7 +1,53 @@
 import { create } from 'zustand'
 import type { Project, Agent, EvolutionNode, LogEntry, Settings, Metric } from '../types'
 import * as api from '../api'
-import { getWorkflowSocket, getGlobalSocket, disconnectWorkflowSocket, type WebSocketMessage } from '../api/websocket'
+import { getWorkflowSocket, getGlobalSocket, disconnectWorkflowSocket, type WebSocketMessage, type GraphUpdate, type GraphNode } from '../api/websocket'
+
+// Helper function to convert flat graph data to nested tree structure
+function graphToTree(graphData: GraphUpdate): EvolutionNode | null {
+  if (!graphData.nodes || graphData.nodes.length === 0) return null
+  
+  // Build a map of nodes by id
+  const nodeMap = new Map<string, EvolutionNode>()
+  
+  for (const node of graphData.nodes) {
+    nodeMap.set(node.id, {
+      id: node.id,
+      generation: node.generation,
+      agentId: node.agent_id || 'system',
+      agentName: node.agent_id || 'System',
+      status: node.status,
+      fitness: node.score,
+      fitnessChange: 0,
+      description: node.description,
+      commitHash: node.commit_hash,
+      children: [],
+      timestamp: new Date().toISOString(),
+    })
+  }
+  
+  // Build tree by connecting edges
+  let rootNode: EvolutionNode | null = null
+  
+  for (const edge of graphData.edges) {
+    const parent = nodeMap.get(edge.source)
+    const child = nodeMap.get(edge.target)
+    if (parent && child) {
+      parent.children.push(child)
+    }
+  }
+  
+  // Find root node (node with no incoming edges)
+  const childIds = new Set(graphData.edges.map(e => e.target))
+  for (const node of graphData.nodes) {
+    if (!childIds.has(node.id)) {
+      rootNode = nodeMap.get(node.id) || null
+      break
+    }
+  }
+  
+  return rootNode
+}
 
 interface AppState {
   // API Status
@@ -64,9 +110,12 @@ interface AppState {
 
   // Agents (from workflow)
   agents: Agent[]
+  activeAgentCount: number
+  clearAgents: () => void
 
   // Evolution
   evolutionTree: EvolutionNode | null
+  graphData: GraphUpdate | null
   currentGeneration: number
   isPaused: boolean
   togglePause: () => void
@@ -141,15 +190,20 @@ export const useStore = create<AppState>((set, get) => ({
 
   fetchProjects: async () => {
     set({ projectsLoading: true, projectsError: null })
-    const response = await api.getProjects()
     
-    if (response.error) {
-      set({ projectsError: response.error, projectsLoading: false })
+    // Fetch both database projects and local workspace projects in parallel
+    const [dbResponse, localResponse] = await Promise.all([
+      api.getProjects(),
+      api.getLocalProjects(),
+    ])
+    
+    if (dbResponse.error && localResponse.error) {
+      set({ projectsError: dbResponse.error, projectsLoading: false })
       return
     }
     
     // Transform API projects to store format
-    const projects: Project[] = (response.data?.projects || []).map(p => ({
+    const dbProjects: Project[] = (dbResponse.data?.projects || []).map(p => ({
       id: p.id,
       name: p.name,
       description: p.description || '',
@@ -165,7 +219,30 @@ export const useStore = create<AppState>((set, get) => ({
       targetFitness: p.target_fitness,
     }))
     
-    set({ projects, projectsLoading: false })
+    // Transform local projects to store format
+    const localProjects: Project[] = (localResponse.data?.projects || []).map(p => ({
+      id: p.id,
+      name: p.name,
+      description: p.description || '',
+      status: 'active' as const, // Local projects are always ready to run
+      generation: 0,
+      fitness: 0,
+      totalAgents: 0,
+      activeAgents: 0,
+      costSpent: 0,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      repository: p.path, // Use local path as repository
+      targetFitness: p.target_fitness,
+      isLocal: true, // Mark as local project
+      localPath: p.path,
+      hasBenchmark: p.has_benchmark,
+    }))
+    
+    // Merge both lists (database projects first, then local)
+    const allProjects = [...dbProjects, ...localProjects]
+    
+    set({ projects: allProjects, projectsLoading: false })
   },
   
   setCurrentProject: (project) => set({ currentProject: project }),
@@ -262,6 +339,8 @@ export const useStore = create<AppState>((set, get) => ({
       switch (message.type) {
         case 'status':
           const statusData = message.data as unknown as api.StatusUpdate
+          // Clear agents when workflow completes or stops
+          const shouldClearAgents = ['completed', 'stopped', 'failed'].includes(statusData.status)
           set({
             isPaused: statusData.status === 'paused',
             currentWorkflow: state.currentWorkflow ? {
@@ -271,18 +350,45 @@ export const useStore = create<AppState>((set, get) => ({
               improvement: statusData.improvement ?? state.currentWorkflow.improvement,
               improvement_percent: statusData.improvement_percent ?? state.currentWorkflow.improvement_percent,
             } : null,
+            ...(shouldClearAgents ? { agents: [], activeAgentCount: 0 } : {}),
           })
           break
           
         case 'agent_update':
           const agentData = message.data as unknown as api.AgentUpdate
-          // Update agents list
-          const updatedAgents = state.agents.map(agent => 
-            agent.id === agentData.instance_id 
-              ? { ...agent, status: agentData.status as Agent['status'] }
-              : agent
-          )
-          set({ agents: updatedAgents })
+          // Check if agent exists in list
+          const existingAgent = state.agents.find(a => a.id === agentData.instance_id)
+          
+          let newAgentsList: Agent[]
+          if (existingAgent) {
+            // Update existing agent
+            newAgentsList = state.agents.map(agent => 
+              agent.id === agentData.instance_id 
+                ? { ...agent, status: agentData.status as Agent['status'] }
+                : agent
+            )
+          } else {
+            // Add new agent
+            const newAgent: Agent = {
+              id: agentData.instance_id,
+              name: agentData.instance_id,
+              type: (agentData.agent_type as Agent['type']) || 'optimizer',
+              status: agentData.status as Agent['status'],
+              currentTask: agentData.status === 'running' ? 'Optimizing...' : undefined,
+              mutationsProposed: 0,
+              mutationsAccepted: 0,
+              successRate: 0,
+            }
+            newAgentsList = [...state.agents, newAgent]
+          }
+          
+          // Calculate active count (pending or running agents)
+          const activeCount = newAgentsList.filter(
+            a => a.status === 'analyzing' || a.status === 'mutating' || 
+                 (a.status as string) === 'pending' || (a.status as string) === 'running'
+          ).length
+          
+          set({ agents: newAgentsList, activeAgentCount: activeCount })
           break
           
         case 'step':
@@ -331,6 +437,15 @@ export const useStore = create<AppState>((set, get) => ({
             agentId: 'system',
             agentName: 'System',
             message: `Starting generation ${genData.generation}`,
+          })
+          break
+          
+        case 'graph_update':
+          const graphUpdateData = message.data as unknown as GraphUpdate
+          const tree = graphToTree(graphUpdateData)
+          set({ 
+            graphData: graphUpdateData,
+            evolutionTree: tree,
           })
           break
       }
@@ -489,9 +604,12 @@ export const useStore = create<AppState>((set, get) => ({
 
   // Agents - populated from workflow data
   agents: [],
+  activeAgentCount: 0,
+  clearAgents: () => set({ agents: [], activeAgentCount: 0 }),
 
   // Evolution
   evolutionTree: null,
+  graphData: null,
   currentGeneration: 0,
   isPaused: false,
   togglePause: () => set((state) => ({ isPaused: !state.isPaused })),

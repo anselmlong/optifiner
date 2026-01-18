@@ -491,7 +491,21 @@ class OptimizationService:
         # Start workflow execution in background
         asyncio.create_task(self._execute_workflow(workflow_id))
 
-        # Send initial WebSocket update
+        # Initial graph data with baseline node
+        initial_graph_data = {
+            "nodes": [{
+                "id": "baseline",
+                "type": "baseline",
+                "generation": 0,
+                "score": baseline_score,
+                "status": "accepted",
+                "label": "Baseline",
+                "description": f"Initial score: {baseline_score:.2f}",
+            }],
+            "edges": [],
+        }
+
+        # Send initial WebSocket updates
         await self.ws_manager.send_status_update(
             str(workflow_id),
             "running",
@@ -499,6 +513,12 @@ class OptimizationService:
                 "baseline_score": baseline_score,
                 "branch": optimization_branch,
             },
+        )
+        
+        # Send initial graph for visualization
+        await self.ws_manager.send_graph_update(
+            str(workflow_id),
+            initial_graph_data,
         )
 
         return {
@@ -616,6 +636,52 @@ class OptimizationService:
                         except Exception:
                             pass  # Ignore cleanup errors
 
+                # Add rejected nodes for all completed instances that weren't selected
+                # Determine parent node ID for rejected nodes
+                parent_for_rejected = "baseline" if step_count == 0 else f"gen{generation - 1}-step{step_count}"
+                rejected_nodes = []
+                rejected_edges = []
+                
+                for idx, inst in enumerate(completed):
+                    # Skip the best instance - it will be added as accepted
+                    if best and inst.get("instance_id") == best.get("instance_id"):
+                        continue
+                    
+                    result = inst.get("worker_result", {})
+                    agent_score = result.get("score", 0)
+                    agent_id = inst.get("instance_id", f"agent-{idx}")
+                    
+                    # Calculate improvement percentage for this rejected attempt
+                    if current_best_score > 0:
+                        rej_pct = ((agent_score - current_best_score) / current_best_score) * 100
+                    else:
+                        rej_pct = 0
+                    
+                    rejected_node = {
+                        "id": f"gen{generation}-rejected-{idx}",
+                        "type": "attempt",
+                        "generation": generation,
+                        "score": agent_score,
+                        "agent_id": agent_id,
+                        "status": "rejected",
+                        "label": f"Agent {idx + 1}",
+                        "description": f"Score: {agent_score:.2f} ({rej_pct:+.1f}%)" if agent_score else "Failed to evaluate",
+                    }
+                    rejected_nodes.append(rejected_node)
+                    rejected_edges.append({"source": parent_for_rejected, "target": rejected_node["id"]})
+                
+                # Update graph with rejected nodes
+                if rejected_nodes:
+                    async with get_db_context() as db:
+                        workflow_record = await crud.get_workflow(db, workflow_id)
+                        graph_data = workflow_record.graph_data or {"nodes": [], "edges": []}
+                        graph_data["nodes"].extend(rejected_nodes)
+                        graph_data["edges"].extend(rejected_edges)
+                        await crud.update_workflow(db, workflow_id, graph_data=graph_data)
+                    
+                    # Send graph update with rejected nodes
+                    await self.ws_manager.send_graph_update(str(workflow_id), graph_data)
+
                 if not best:
                     if verbosity >= 1:
                         logger.info(f"[OptimizationService] No significant improvement in generation {generation}")
@@ -659,7 +725,24 @@ class OptimizationService:
                     else:
                         logger.warning(f"[OptimizationService] Commit failed: {error_msg}")
 
-                # Create step in database
+                # Create step in database and update graph
+                node_id = f"gen{generation}-step{step_count}"
+                parent_id = "baseline" if step_count == 1 else f"gen{generation - 1}-step{step_count - 1}"
+                
+                # Build new node for graph
+                new_node = {
+                    "id": node_id,
+                    "type": "improvement",
+                    "generation": generation,
+                    "score": current_best_score,
+                    "agent_id": best["instance_id"],
+                    "status": "accepted",
+                    "label": f"Gen {generation}",
+                    "description": f"+{improvement_pct:.1f}% ({old_score:.2f} → {current_best_score:.2f})",
+                    "commit_hash": commit_hash,
+                }
+                new_edge = {"source": parent_id, "target": node_id}
+                
                 async with get_db_context() as db:
                     await crud.create_workflow_step(
                         db,
@@ -674,15 +757,22 @@ class OptimizationService:
                         commit_hash=commit_hash,
                     )
                     
+                    # Get current graph data and update it
+                    workflow_record = await crud.get_workflow(db, workflow_id)
+                    graph_data = workflow_record.graph_data or {"nodes": [], "edges": []}
+                    graph_data["nodes"].append(new_node)
+                    graph_data["edges"].append(new_edge)
+                    
                     await crud.update_workflow(
                         db, workflow_id,
                         current_best_score=current_best_score,
                         step_count=step_count,
                         total_improvements=total_improvements,
                         generation=generation,
+                        graph_data=graph_data,
                     )
 
-                # Send WebSocket update
+                # Send WebSocket updates
                 await self.ws_manager.send_step_update(
                     str(workflow_id),
                     {
@@ -693,6 +783,12 @@ class OptimizationService:
                         "final_score": current_best_score,
                         "improvement_percent": improvement_pct,
                     },
+                )
+                
+                # Send graph update for real-time tree visualization
+                await self.ws_manager.send_graph_update(
+                    str(workflow_id),
+                    graph_data,
                 )
 
                 await self.ws_manager.send_log(

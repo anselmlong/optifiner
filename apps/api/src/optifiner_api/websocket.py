@@ -61,14 +61,17 @@ class ConnectionManager:
         async with self._lock:
             connections = self.workflow_connections.get(workflow_id_str, [])
             if not connections:
+                logger.debug(f"[WS] No connections for workflow {workflow_id_str[:8]}..., skipping broadcast")
                 return
+            
+            logger.info(f"[WS] Broadcasting to {len(connections)} connection(s) for workflow {workflow_id_str[:8]}...")
             
             dead_connections = []
             for websocket in connections:
                 try:
                     await websocket.send_json(message)
                 except Exception as e:
-                    logger.warning(f"Failed to send to websocket: {e}")
+                    logger.warning(f"[WS] Failed to send to websocket: {e}")
                     dead_connections.append(websocket)
             
             # Clean up dead connections
@@ -79,12 +82,18 @@ class ConnectionManager:
     async def broadcast_global(self, message: dict[str, Any]) -> None:
         """Broadcast a message to all global connections."""
         async with self._lock:
+            if not self.global_connections:
+                logger.debug(f"[WS] No global connections, skipping global broadcast")
+                return
+                
+            logger.debug(f"[WS] Broadcasting to {len(self.global_connections)} global connection(s)")
+            
             dead_connections = []
             for websocket in self.global_connections:
                 try:
                     await websocket.send_json(message)
                 except Exception as e:
-                    logger.warning(f"Failed to send to websocket: {e}")
+                    logger.warning(f"[WS] Failed to send to global websocket: {e}")
                     dead_connections.append(websocket)
             
             # Clean up dead connections
@@ -104,6 +113,7 @@ class ConnectionManager:
             "workflow_id": workflow_id,
             "data": data,
         }
+        logger.info(f"[WS] Sending {event_type} update for workflow {workflow_id[:8]}...: {data}")
         await self.broadcast_to_workflow(workflow_id, message)
         # Also send to global for dashboard
         await self.broadcast_global(message)
@@ -114,6 +124,7 @@ class ConnectionManager:
         agent_data: dict[str, Any],
     ) -> None:
         """Send an agent update event."""
+        logger.debug(f"[WS] Agent update: {agent_data.get('instance_id')} -> {agent_data.get('status')}")
         await self.send_workflow_update(
             workflow_id,
             "agent_update",
@@ -138,6 +149,7 @@ class ConnectionManager:
             "details": details,
             "timestamp": datetime.utcnow().strftime("%H:%M:%S"),
         }
+        logger.debug(f"[WS] Log ({level}): {message[:50]}{'...' if len(message) > 50 else ''}")
         await self.send_workflow_update(workflow_id, "log", log_data)
 
     async def send_step_update(
@@ -146,6 +158,7 @@ class ConnectionManager:
         step_data: dict[str, Any],
     ) -> None:
         """Send a step/improvement update."""
+        logger.info(f"[WS] Step update: gen={step_data.get('generation')}, score={step_data.get('final_score')}, +{step_data.get('improvement_percent', 0):.1f}%")
         await self.send_workflow_update(workflow_id, "step", step_data)
 
     async def send_status_update(
@@ -158,7 +171,17 @@ class ConnectionManager:
         data = {"status": status}
         if extra_data:
             data.update(extra_data)
+        logger.info(f"[WS] Status update: {status}" + (f" (extra: {extra_data})" if extra_data else ""))
         await self.send_workflow_update(workflow_id, "status", data)
+
+    async def send_graph_update(
+        self,
+        workflow_id: str,
+        graph_data: dict[str, Any],
+    ) -> None:
+        """Send a graph/tree update for visualization."""
+        logger.info(f"[WS] Graph update: {len(graph_data.get('nodes', []))} nodes, {len(graph_data.get('edges', []))} edges")
+        await self.send_workflow_update(workflow_id, "graph_update", graph_data)
 
 
 # Global connection manager instance

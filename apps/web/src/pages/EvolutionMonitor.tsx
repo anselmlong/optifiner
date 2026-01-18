@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import * as d3 from 'd3'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
@@ -23,6 +23,20 @@ import { RunConfigModal } from '../components/ui/RunConfigModal'
 import { useStore } from '../store'
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts'
 import * as api from '../api'
+import type { EvolutionNode } from '../types'
+
+// Helper to convert EvolutionNode from store to TreeNodeData for rendering
+function evolutionNodeToTreeNode(node: EvolutionNode): TreeNodeData {
+  return {
+    id: node.id,
+    label: node.generation === 0 ? 'Baseline' : `Gen ${node.generation}`,
+    description: node.description,
+    status: node.status as TreeNodeData['status'],
+    fitness: node.fitness,
+    agentName: node.agentName !== 'System' ? node.agentName : undefined,
+    children: node.children.map(evolutionNodeToTreeNode),
+  }
+}
 
 interface TreeNodeData {
   id: string
@@ -34,75 +48,14 @@ interface TreeNodeData {
   children: TreeNodeData[]
 }
 
-// Mock evolution tree data
-const evolutionTreeData: TreeNodeData = {
-  id: 'root',
-  label: 'v1.0.0 (Root)',
-  description: 'Initial Commit. Basic setup.',
-  status: 'accepted',
-  fitness: 0.42,
-  children: [
-    {
-      id: 'gen1-1',
-      label: 'Feature Add',
-      description: '',
-      status: 'accepted',
-      fitness: 0.48,
-      children: [
-        {
-          id: 'gen2-1',
-          label: 'Optimized A* Path',
-          description: 'Improved heuristic calculation for faster convergence.',
-          status: 'accepted',
-          fitness: 0.58,
-          children: [
-            {
-              id: 'gen3-1',
-              label: 'Vectorization',
-              description: 'Replaced loop vector_ops.',
-              status: 'accepted',
-              fitness: 0.72,
-              children: []
-            },
-            {
-              id: 'gen3-2',
-              label: 'Refactored',
-              description: 'Split main.cpp services_foo.',
-              status: 'rejected',
-              fitness: 0.55,
-              children: []
-            }
-          ]
-        },
-        {
-          id: 'gen2-2',
-          label: 'Testing',
-          description: 'Testing: New algo module',
-          status: 'analyzing',
-          fitness: 0.52,
-          agentName: 'Agent 03',
-          children: []
-        }
-      ]
-    },
-    {
-      id: 'gen1-2',
-      label: 'Syntax Fix',
-      description: '',
-      status: 'accepted',
-      fitness: 0.45,
-      children: [
-        {
-          id: 'gen2-3',
-          label: 'Fixed Typo',
-          description: 'Corrected variable loop.',
-          status: 'accepted',
-          fitness: 0.62,
-          children: []
-        }
-      ]
-    }
-  ]
+// Default placeholder tree when no data is available
+const defaultTreeData: TreeNodeData = {
+  id: 'placeholder',
+  label: 'Waiting...',
+  description: 'Start an optimization to see the evolution tree',
+  status: 'processing',
+  fitness: 0,
+  children: []
 }
 
 function EvolutionTree({ data, onNodeClick }: { data: TreeNodeData, onNodeClick: (node: TreeNodeData) => void }) {
@@ -226,14 +179,17 @@ export function EvolutionMonitor() {
   const navigate = useNavigate()
   const {
     agents,
+    activeAgentCount,
     logs,
     projects,
     isPaused,
     currentWorkflow,
+    evolutionTree,
     fetchWorkflow,
     connectWorkflowWs,
     disconnectWorkflowWs,
     clearLogs,
+    clearAgents,
     // Workflow control from store
     pauseWorkflow,
     resumeWorkflow,
@@ -314,6 +270,14 @@ export function EvolutionMonitor() {
 
   const project = projects.find(p => p.id === projectId)
 
+  // Convert evolution tree from store to tree node data for rendering
+  const treeData = useMemo(() => {
+    if (evolutionTree) {
+      return evolutionNodeToTreeNode(evolutionTree)
+    }
+    return defaultTreeData
+  }, [evolutionTree])
+
   const handleNodeClick = (node: TreeNodeData) => {
     // Navigate to code analysis for completed nodes
     navigate(`/projects/${projectId}/analysis/${node.id}`)
@@ -327,6 +291,7 @@ export function EvolutionMonitor() {
   }) => {
     setIsStarting(true)
     clearLogs()
+    clearAgents()
     
     try {
       const response = await api.startWorkflow({
@@ -516,7 +481,7 @@ export function EvolutionMonitor() {
               {/* Tree Visualization */}
               <div className="flex-1 w-full relative min-h-0 bg-slate-50 dark:bg-slate-900/50">
                 <EvolutionTree 
-                  data={evolutionTreeData} 
+                  data={treeData} 
                   onNodeClick={handleNodeClick}
                 />
               </div>
@@ -617,32 +582,43 @@ export function EvolutionMonitor() {
                           <FontAwesomeIcon icon={faCodeBranch} className="text-primary-500" />
                           <span className="text-sm font-semibold text-slate-900 dark:text-white">ACTIVE AGENTS</span>
                         </div>
-                        <Badge variant="success" size="sm">12 ACTIVE</Badge>
+                        <Badge variant={activeAgentCount > 0 ? "success" : "default"} size="sm">
+                          {activeAgentCount} ACTIVE
+                        </Badge>
                       </div>
 
                       <div className="space-y-3">
-                        {agents.map((agent, index) => (
-                          <div key={agent.id} className="flex items-center gap-3 p-2 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700/50">
-                            <StatusDot status={agent.status} size="md" />
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2">
-                                <span className="text-sm font-medium text-slate-900 dark:text-white">{agent.name}</span>
-                                <Badge
-                                  variant={
-                                    agent.status === 'mutating' ? 'mutating' :
-                                    agent.status === 'analyzing' ? 'info' :
-                                    'default'
-                                  }
-                                  size="sm"
-                                >
-                                  {agent.status === 'mutating' ? 'MUTATING' : agent.status.toUpperCase()}
-                                </Badge>
-                              </div>
-                              <p className="text-xs text-slate-500 truncate">{agent.currentFile || agent.currentTask}</p>
-                            </div>
-                            <span className="text-xs text-slate-400">#{index + 10}</span>
+                        {agents.length === 0 ? (
+                          <div className="text-center py-8 text-slate-400">
+                            <p className="text-sm">No agents running</p>
+                            <p className="text-xs mt-1">Start an optimization to see agents</p>
                           </div>
-                        ))}
+                        ) : (
+                          agents.map((agent, index) => (
+                            <div key={agent.id} className="flex items-center gap-3 p-2 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700/50">
+                              <StatusDot status={agent.status} size="md" />
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-sm font-medium text-slate-900 dark:text-white">{agent.name}</span>
+                                  <Badge
+                                    variant={
+                                      agent.status === 'mutating' ? 'mutating' :
+                                      agent.status === 'analyzing' ? 'info' :
+                                      (agent.status as string) === 'running' ? 'success' :
+                                      (agent.status as string) === 'pending' ? 'warning' :
+                                      'default'
+                                    }
+                                    size="sm"
+                                  >
+                                    {agent.status === 'mutating' ? 'MUTATING' : agent.status.toUpperCase()}
+                                  </Badge>
+                                </div>
+                                <p className="text-xs text-slate-500 truncate">{agent.currentFile || agent.currentTask}</p>
+                              </div>
+                              <span className="text-xs text-slate-400">#{index + 1}</span>
+                            </div>
+                          ))
+                        )}
                       </div>
                     </Card>
                   )}

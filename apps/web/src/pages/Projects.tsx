@@ -10,7 +10,10 @@ import {
   faEllipsisV,
   faChartLine,
   faFolder,
-  faSpinner
+  faSpinner,
+  faHardDrive,
+  faCheck,
+  faExclamationTriangle
 } from '@fortawesome/free-solid-svg-icons'
 import { faGithub as faGithubBrand } from '@fortawesome/free-brands-svg-icons'
 import { Header } from '../components/layout/Header'
@@ -39,7 +42,7 @@ export function Projects() {
     updateProject,
   } = useStore()
   const [searchQuery, setSearchQuery] = useState('')
-  const [filter, setFilter] = useState<'all' | 'active' | 'paused' | 'completed'>('all')
+  const [filter, setFilter] = useState<'all' | 'active' | 'paused' | 'completed' | 'local'>('all')
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
   const [projectToDelete, setProjectToDelete] = useState<string | null>(null)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
@@ -52,15 +55,18 @@ export function Projects() {
   const filteredProjects = projects.filter(project => {
     const matchesSearch = project.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
                           project.description?.toLowerCase().includes(searchQuery.toLowerCase())
-    const matchesFilter = filter === 'all' || project.status === filter
+    const matchesFilter = filter === 'all' || 
+                          (filter === 'local' && project.isLocal) ||
+                          (!project.isLocal && project.status === filter)
     return matchesSearch && matchesFilter
   })
 
   const stats = {
     total: projects.length,
-    active: projects.filter(p => p.status === 'active').length,
+    active: projects.filter(p => p.status === 'active' && !p.isLocal).length,
     paused: projects.filter(p => p.status === 'paused').length,
-    completed: projects.filter(p => p.status === 'completed').length
+    completed: projects.filter(p => p.status === 'completed').length,
+    local: projects.filter(p => p.isLocal).length,
   }
 
   const handleDeleteClick = (projectId: string) => {
@@ -114,7 +120,7 @@ export function Projects() {
 
       <div className="p-6 space-y-6">
         {/* Stats */}
-        <div className="grid grid-cols-4 gap-4">
+        <div className="grid grid-cols-5 gap-4">
           <Card className="cursor-pointer hover:border-primary-300 dark:hover:border-primary-700 transition-colors" onClick={() => setFilter('all')}>
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-lg bg-slate-100 dark:bg-slate-700 flex items-center justify-center">
@@ -122,7 +128,18 @@ export function Projects() {
               </div>
               <div>
                 <p className="text-2xl font-bold text-slate-900 dark:text-white">{stats.total}</p>
-                <p className="text-sm text-slate-500">Total Projects</p>
+                <p className="text-sm text-slate-500">Total</p>
+              </div>
+            </div>
+          </Card>
+          <Card className="cursor-pointer hover:border-amber-300 dark:hover:border-amber-700 transition-colors" onClick={() => setFilter('local')}>
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-lg bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center">
+                <FontAwesomeIcon icon={faHardDrive} className="text-amber-500" />
+              </div>
+              <div>
+                <p className="text-2xl font-bold text-slate-900 dark:text-white">{stats.local}</p>
+                <p className="text-sm text-slate-500">Local</p>
               </div>
             </div>
           </Card>
@@ -173,13 +190,15 @@ export function Projects() {
               />
             </div>
             <div className="flex items-center gap-2">
-              {(['all', 'active', 'paused', 'completed'] as const).map((f) => (
+              {(['all', 'local', 'active', 'paused', 'completed'] as const).map((f) => (
                 <button
                   key={f}
                   onClick={() => setFilter(f)}
                   className={`px-3 py-1.5 text-sm font-medium rounded-lg transition-colors ${
                     filter === f
-                      ? 'bg-primary-100 dark:bg-primary-900/30 text-primary-600 dark:text-primary-400'
+                      ? f === 'local' 
+                        ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400'
+                        : 'bg-primary-100 dark:bg-primary-900/30 text-primary-600 dark:text-primary-400'
                       : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
                   }`}
                 >
@@ -201,21 +220,51 @@ export function Projects() {
             <Card key={project.id} className="hover:border-primary-300 dark:hover:border-primary-700 transition-all hover:shadow-md">
               <div className="flex items-start justify-between mb-4">
                 <div className="flex items-start gap-3">
-                  <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-primary-400 to-primary-600 flex items-center justify-center text-white font-bold">
-                    {project.name.split(' ').map(w => w[0]).join('').slice(0, 2)}
+                  <div className={`w-12 h-12 rounded-xl flex items-center justify-center text-white font-bold ${
+                    project.isLocal 
+                      ? 'bg-gradient-to-br from-amber-400 to-amber-600' 
+                      : 'bg-gradient-to-br from-primary-400 to-primary-600'
+                  }`}>
+                    {project.isLocal ? (
+                      <FontAwesomeIcon icon={faHardDrive} className="text-lg" />
+                    ) : (
+                      project.name.split(' ').map(w => w[0]).join('').slice(0, 2)
+                    )}
                   </div>
                   <div>
-                    <h3 className="font-semibold text-slate-900 dark:text-white">{project.name}</h3>
+                    <div className="flex items-center gap-2">
+                      <h3 className="font-semibold text-slate-900 dark:text-white">{project.name}</h3>
+                      {project.isLocal && (
+                        <span className="text-xs px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400">
+                          Local
+                        </span>
+                      )}
+                    </div>
                     <p className="text-sm text-slate-500">{project.description}</p>
+                    {project.isLocal && (
+                      <div className="flex items-center gap-1 mt-1 text-xs">
+                        {project.hasBenchmark ? (
+                          <span className="text-green-600 dark:text-green-400 flex items-center gap-1">
+                            <FontAwesomeIcon icon={faCheck} className="text-[10px]" />
+                            Benchmark ready
+                          </span>
+                        ) : (
+                          <span className="text-amber-600 dark:text-amber-400 flex items-center gap-1">
+                            <FontAwesomeIcon icon={faExclamationTriangle} className="text-[10px]" />
+                            No benchmark
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
                   <Badge
-                    variant={project.status === 'active' ? 'success' : project.status === 'paused' ? 'warning' : 'default'}
+                    variant={project.isLocal ? 'warning' : project.status === 'active' ? 'success' : project.status === 'paused' ? 'warning' : 'default'}
                     dot
-                    pulse={project.status === 'active'}
+                    pulse={!project.isLocal && project.status === 'active'}
                   >
-                    {project.status}
+                    {project.isLocal ? 'ready' : project.status}
                   </Badge>
                   <button className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500">
                     <FontAwesomeIcon icon={faEllipsisV} />
@@ -265,40 +314,54 @@ export function Projects() {
                 </div>
               </div>
 
-              {/* Repository */}
-              {project.repository && (
+              {/* Repository / Local Path */}
+              {(project.repository || project.localPath) && (
                 <div className="flex items-center gap-2 pt-3 border-t border-slate-100 dark:border-slate-700">
-                  <FontAwesomeIcon icon={faGithubBrand} className="text-slate-400" />
-                  <span className="text-sm text-slate-500">{project.repository}</span>
+                  <FontAwesomeIcon icon={project.isLocal ? faFolder : faGithubBrand} className="text-slate-400" />
+                  <span className="text-sm text-slate-500 truncate">
+                    {project.isLocal ? project.localPath : project.repository}
+                  </span>
                 </div>
               )}
 
               {/* Actions */}
               <div className="flex items-center gap-2 mt-4 pt-3 border-t border-slate-100 dark:border-slate-700">
-                <Link to={`/projects/${project.id}`} className="flex-1">
-                  <Button variant="secondary" size="sm" className="w-full" icon={faChartLine}>
-                    Monitor
-                  </Button>
-                </Link>
-                {project.status !== 'completed' && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    icon={project.status === 'active' ? faPause : faPlay}
-                    onClick={() => handlePauseResume(project.id, project.status)}
-                    disabled={actionLoading !== null || pauseLoading || resumeLoading}
-                    loading={actionLoading === project.id || ((pauseLoading || resumeLoading) && actionLoading === project.id)}
-                  >
-                    {project.status === 'active' ? 'Pause' : 'Resume'}
-                  </Button>
+                {project.isLocal ? (
+                  <>
+                    <Link to={`/projects/${project.id}`} className="flex-1">
+                      <Button variant="primary" size="sm" className="w-full" icon={faPlay}>
+                        Run Optimization
+                      </Button>
+                    </Link>
+                  </>
+                ) : (
+                  <>
+                    <Link to={`/projects/${project.id}`} className="flex-1">
+                      <Button variant="secondary" size="sm" className="w-full" icon={faChartLine}>
+                        Monitor
+                      </Button>
+                    </Link>
+                    {project.status !== 'completed' && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        icon={project.status === 'active' ? faPause : faPlay}
+                        onClick={() => handlePauseResume(project.id, project.status)}
+                        disabled={actionLoading !== null || pauseLoading || resumeLoading}
+                        loading={actionLoading === project.id || ((pauseLoading || resumeLoading) && actionLoading === project.id)}
+                      >
+                        {project.status === 'active' ? 'Pause' : 'Resume'}
+                      </Button>
+                    )}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      icon={faTrash}
+                      onClick={() => handleDeleteClick(project.id)}
+                      className="text-error-solid hover:bg-error-bg dark:hover:bg-error-bg-dark"
+                    />
+                  </>
                 )}
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  icon={faTrash}
-                  onClick={() => handleDeleteClick(project.id)}
-                  className="text-error-solid hover:bg-error-bg dark:hover:bg-error-bg-dark"
-                />
               </div>
             </Card>
           ))}
