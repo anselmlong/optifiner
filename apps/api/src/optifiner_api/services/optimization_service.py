@@ -586,6 +586,36 @@ class OptimizationService:
                 # Select best instance
                 best = self._select_best_instance(completed, current_best_score, min_improvement_pct)
 
+                # Copy best instance's changes back to source workspace
+                if best:
+                    best_result = best.get("worker_result", {})
+                    workspace_manager = best_result.get("_workspace_manager")
+                    if workspace_manager:
+                        try:
+                            for item in workspace_manager.actual_root.iterdir():
+                                if item.name != ".git":
+                                    dest = repo_path / item.name
+                                    if item.is_dir():
+                                        if dest.exists():
+                                            shutil.rmtree(dest)
+                                        shutil.copytree(item, dest)
+                                    else:
+                                        shutil.copy2(item, dest)
+                            if verbosity >= 2:
+                                logger.debug(f"[OptimizationService] Copied best agent's changes to {repo_path}")
+                        except Exception as e:
+                            logger.error(f"[OptimizationService] Failed to copy best agent's changes: {e}")
+
+                # Clean up ALL agent workspaces (including non-completed ones)
+                for inst in instances:
+                    result = inst.get("worker_result", {})
+                    wm = result.get("_workspace_manager")
+                    if wm:
+                        try:
+                            wm.cleanup()
+                        except Exception:
+                            pass  # Ignore cleanup errors
+
                 if not best:
                     if verbosity >= 1:
                         logger.info(f"[OptimizationService] No significant improvement in generation {generation}")
@@ -618,10 +648,16 @@ class OptimizationService:
                 commit_hash = None
                 if commit_result.get("success"):
                     commit_hash = commit_result.get("commit_hash")
-                    self.github_service.push_changes(
-                        repo_dir=workflow_data["repo_dir"],
-                        branch=workflow_data["branch"],
-                    )
+                    if verbosity >= 1:
+                        logger.info(f"[OptimizationService] Committed and pushed: {commit_hash[:8] if commit_hash else 'unknown'} to {workflow_data['branch']}")
+                else:
+                    # commit_changes includes push, so if it failed check the error
+                    error_msg = commit_result.get('error', 'Unknown error')
+                    commit_hash = commit_result.get("commit_hash")  # May have committed but failed to push
+                    if commit_hash:
+                        logger.warning(f"[OptimizationService] Committed {commit_hash[:8]} but push failed: {error_msg}")
+                    else:
+                        logger.warning(f"[OptimizationService] Commit failed: {error_msg}")
 
                 # Create step in database
                 async with get_db_context() as db:
@@ -761,14 +797,18 @@ Please review the changes and run your tests before merging.
         parallel = workflow_data.get("parallel", 1)
 
         # Distribute agents across models
+        # Priority: use explicit model instances if they sum to agents_per_generation,
+        # otherwise distribute agents_per_generation evenly across models
         model_instances = []
         total_from_models = sum(m.get("instances", 0) for m in models)
         
-        if total_from_models > 0:
+        if total_from_models >= total_agents:
+            # Model configs fully specify agent distribution
             for model in models:
                 for _ in range(model.get("instances", 0)):
                     model_instances.append(model)
         else:
+            # Distribute total_agents evenly across models (ignoring model.instances)
             per_model = max(1, total_agents // len(models)) if models else 0
             for idx, model in enumerate(models):
                 count = per_model + (1 if idx < (total_agents - per_model * len(models)) else 0)
@@ -973,21 +1013,12 @@ Please review the changes and run your tests before merging.
                 "error": agent_result.error,
             }
 
-            # Copy back changes if successful
-            if workspace_manager and agent_result.success:
-                try:
-                    for item in workspace_manager.actual_root.iterdir():
-                        if item.name != ".git":
-                            dest = Path(source_workspace) / item.name
-                            if item.is_dir():
-                                if dest.exists():
-                                    shutil.rmtree(dest)
-                                shutil.copytree(item, dest)
-                            else:
-                                shutil.copy2(item, dest)
-                    workspace_manager.cleanup()
-                except Exception as e:
-                    result["copy_error"] = str(e)
+            # Keep workspace alive for now - copy-back happens after best selection
+            # to avoid race conditions where a less-improved agent overwrites a better one.
+            # Store workspace_manager reference; cleanup happens in _select_best_instance.
+            if workspace_manager:
+                result["_workspace_manager"] = workspace_manager
+                result["_workspace_path"] = str(workspace_manager.actual_root)
 
             return result
 
