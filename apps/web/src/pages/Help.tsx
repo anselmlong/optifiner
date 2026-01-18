@@ -7,8 +7,6 @@ import {
   faRobot,
   faChartLine,
   faCog,
-  faExternalLinkAlt,
-  faSearch,
   faPlayCircle,
   faFileAlt,
   faComments
@@ -16,7 +14,6 @@ import {
 import { faGithub, faDiscord } from '@fortawesome/free-brands-svg-icons'
 import { Header } from '../components/layout/Header'
 import { Card, CardHeader, CardTitle } from '../components/ui/Card'
-import { Input } from '../components/ui/Input'
 
 const quickLinks = [
   { icon: faRocket, title: 'Getting Started', description: 'Learn the basics of Optifiner', href: '/docs/getting-started' },

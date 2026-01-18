@@ -14,7 +14,7 @@ import {
 import { useStore } from '../../store'
 
 const mainNavItems = [
-  { to: '/', icon: faChartLine, label: 'Dashboard' },
+  { to: '/dashboard', icon: faChartLine, label: 'Dashboard' },
   { to: '/projects', icon: faFolderOpen, label: 'Projects' },
   { to: '/analytics', icon: faChartPie, label: 'Analytics' },
   { to: '/history', icon: faHistory, label: 'History' },
