@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import type { Project, Agent, EvolutionNode, LogEntry, Settings, Metric } from '../types'
 import * as api from '../api'
-import { getWorkflowSocket, getGlobalSocket, disconnectWorkflowSocket, type WebSocketMessage, type GraphUpdate, type GraphNode } from '../api/websocket'
+import { getWorkflowSocket, getGlobalSocket, disconnectWorkflowSocket, type WebSocketMessage, type GraphUpdate } from '../api/websocket'
 
 // Helper function to convert flat graph data to nested tree structure
 function graphToTree(graphData: GraphUpdate): EvolutionNode | null {
