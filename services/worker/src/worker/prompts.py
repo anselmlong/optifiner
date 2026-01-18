@@ -527,16 +527,16 @@ def get_system_prompt(
     agent_prompt = agent_prompts.get(agent_type, GENERAL_PROMPT)
 
     # Build baseline details string
+    # Note: score IS the primary metric (FPS, throughput, etc.) - don't show it separately
     baseline_details = ""
     if baseline_data:
         details_parts = []
         if "metric_name" in baseline_data:
             details_parts.append(f"- Metric: {baseline_data['metric_name']}")
-        if "fps" in baseline_data:
-            details_parts.append(f"- Baseline FPS: {baseline_data['fps']:.2f}")
         if "tests_passed" in baseline_data and "tests_total" in baseline_data:
             details_parts.append(f"- Tests: {baseline_data['tests_passed']}/{baseline_data['tests_total']} passed")
         if "metrics" in baseline_data:
+            # Show all metrics for additional context
             for k, v in baseline_data["metrics"].items():
                 details_parts.append(f"- {k}: {v}")
         if details_parts:
