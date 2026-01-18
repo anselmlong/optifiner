@@ -157,7 +157,7 @@ export function NewProject() {
       }
 
       // Navigate to the evolution monitor for this workflow
-      navigate(`/evolution/${result.workflow_id}`)
+      navigate(`/projects/${result.workflow_id}`)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create project')
       setIsCreating(false)
