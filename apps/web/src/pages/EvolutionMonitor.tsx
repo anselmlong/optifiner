@@ -224,17 +224,23 @@ function EvolutionTree({ data, onNodeClick }: { data: TreeNodeData, onNodeClick:
 export function EvolutionMonitor() {
   const { projectId } = useParams<{ projectId: string }>()
   const navigate = useNavigate()
-  const { 
-    agents, 
-    logs, 
+  const {
+    agents,
+    logs,
     projects,
     isPaused,
-    togglePause,
     currentWorkflow,
     fetchWorkflow,
     connectWorkflowWs,
     disconnectWorkflowWs,
     clearLogs,
+    // Workflow control from store
+    pauseWorkflow,
+    resumeWorkflow,
+    stopWorkflow,
+    pauseLoading,
+    resumeLoading,
+    stopLoading,
   } = useStore()
 
   // Console resize state
@@ -358,40 +364,34 @@ export function EvolutionMonitor() {
     }
   }
 
-  // Handle pause/resume
+  // Handle pause/resume using store methods
   const handlePauseResume = async () => {
     if (!workflowId) return
-    
-    try {
-      if (isPaused) {
-        const response = await api.resumeWorkflow(workflowId)
-        if (response.data?.success) {
-          togglePause()
-        }
-      } else {
-        const response = await api.pauseWorkflow(workflowId)
-        if (response.data?.success) {
-          togglePause()
-        }
+
+    if (isPaused) {
+      const success = await resumeWorkflow(workflowId)
+      if (!success) {
+        console.error('Failed to resume workflow')
       }
-    } catch (error) {
-      console.error('Error toggling pause:', error)
+    } else {
+      const success = await pauseWorkflow(workflowId)
+      if (!success) {
+        console.error('Failed to pause workflow')
+      }
     }
   }
 
-  // Handle stop
+  // Handle stop using store method
   const handleStop = async () => {
     if (!workflowId) return
-    
-    try {
-      const response = await api.stopWorkflow(workflowId)
-      if (response.data?.success) {
-        setIsRunning(false)
-        // Refresh workflow data
-        fetchWorkflow(workflowId)
-      }
-    } catch (error) {
-      console.error('Error stopping workflow:', error)
+
+    const success = await stopWorkflow(workflowId)
+    if (success) {
+      setIsRunning(false)
+      // Refresh workflow data
+      fetchWorkflow(workflowId)
+    } else {
+      console.error('Failed to stop workflow')
     }
   }
 
@@ -446,17 +446,21 @@ export function EvolutionMonitor() {
         <div className="flex items-center gap-3">
           {isRunning ? (
             <>
-              <Button 
+              <Button
                 variant={isPaused ? 'primary' : 'secondary'}
                 icon={isPaused ? faPlay : faPause}
                 onClick={handlePauseResume}
+                disabled={pauseLoading || resumeLoading}
+                loading={pauseLoading || resumeLoading}
               >
                 {isPaused ? 'Resume' : 'Pause'}
               </Button>
-              <Button 
+              <Button
                 variant="ghost"
                 icon={faStop}
                 onClick={handleStop}
+                disabled={stopLoading}
+                loading={stopLoading}
                 className="text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20"
               >
                 Stop

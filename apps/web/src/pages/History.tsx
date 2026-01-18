@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import {
   faHistory,
@@ -11,69 +11,96 @@ import {
   faClock,
   faRobot,
   faChevronDown,
-  faChevronRight
+  faChevronRight,
+  faSpinner
 } from '@fortawesome/free-solid-svg-icons'
 import { Header } from '../components/layout/Header'
 import { Card } from '../components/ui/Card'
 import { Button } from '../components/ui/Button'
 import { Badge } from '../components/ui/Badge'
 import { Input } from '../components/ui/Input'
+import { useStore } from '../store'
 
-const historyData = [
-  {
-    id: 'gen-42',
-    generation: 42,
-    timestamp: '2024-01-17T14:30:00Z',
-    mutations: [
-      { id: 'MUT-8042', agent: 'Agent 03', file: 'data-sort-worker.js', status: 'accepted', fitnessChange: +0.15, description: 'Optimized nested loop with Map' },
-      { id: 'MUT-8043', agent: 'Agent 01', file: 'cache-layer.ts', status: 'rejected', fitnessChange: -0.02, description: 'Attempted LRU cache implementation' },
-      { id: 'MUT-8044', agent: 'Agent 05', file: 'utils.py', status: 'accepted', fitnessChange: +0.08, description: 'Vectorized array operations' }
-    ],
-    totalFitness: 0.89,
-    fitnessGain: +0.04
-  },
-  {
-    id: 'gen-41',
-    generation: 41,
-    timestamp: '2024-01-17T14:15:00Z',
-    mutations: [
-      { id: 'MUT-8039', agent: 'Agent 02', file: 'api-router.go', status: 'accepted', fitnessChange: +0.06, description: 'Reduced middleware overhead' },
-      { id: 'MUT-8040', agent: 'Agent 04', file: 'db-pool.rs', status: 'rejected', fitnessChange: -0.01, description: 'Connection pooling refactor' },
-      { id: 'MUT-8041', agent: 'Agent 03', file: 'serializer.js', status: 'accepted', fitnessChange: +0.05, description: 'JSON streaming implementation' }
-    ],
-    totalFitness: 0.85,
-    fitnessGain: +0.03
-  },
-  {
-    id: 'gen-40',
-    generation: 40,
-    timestamp: '2024-01-17T14:00:00Z',
-    mutations: [
-      { id: 'MUT-8035', agent: 'Agent 01', file: 'auth-service.ts', status: 'accepted', fitnessChange: +0.12, description: 'JWT validation optimization' },
-      { id: 'MUT-8036', agent: 'Agent 05', file: 'logger.py', status: 'accepted', fitnessChange: +0.02, description: 'Async logging implementation' },
-      { id: 'MUT-8037', agent: 'Agent 02', file: 'middleware.go', status: 'rejected', fitnessChange: 0, description: 'Request batching attempt' },
-      { id: 'MUT-8038', agent: 'Agent 03', file: 'parser.js', status: 'accepted', fitnessChange: +0.04, description: 'Lazy parsing for large files' }
-    ],
-    totalFitness: 0.82,
-    fitnessGain: +0.06
-  },
-  {
-    id: 'gen-39',
-    generation: 39,
-    timestamp: '2024-01-17T13:45:00Z',
-    mutations: [
-      { id: 'MUT-8031', agent: 'Agent 04', file: 'query-optimizer.sql', status: 'accepted', fitnessChange: +0.08, description: 'Index usage optimization' },
-      { id: 'MUT-8032', agent: 'Agent 01', file: 'caching.ts', status: 'rejected', fitnessChange: -0.03, description: 'Redis integration attempt' }
-    ],
-    totalFitness: 0.76,
-    fitnessGain: +0.02
-  }
-]
+interface HistoryGeneration {
+  id: string
+  generation: number
+  timestamp: string
+  mutations: Array<{
+    id: string
+    agent: string
+    file: string
+    status: 'accepted' | 'rejected'
+    fitnessChange: number
+    description: string
+  }>
+  totalFitness: number
+  fitnessGain: number
+}
 
 export function History() {
+  const { workflows, workflowsLoading, workflowsError, fetchWorkflows } = useStore()
   const [searchQuery, setSearchQuery] = useState('')
-  const [expandedGen, setExpandedGen] = useState<string | null>('gen-42')
+  const [expandedGen, setExpandedGen] = useState<string | null>(null)
   const [statusFilter, setStatusFilter] = useState<'all' | 'accepted' | 'rejected'>('all')
+
+  // Fetch workflows on mount
+  useEffect(() => {
+    fetchWorkflows()
+  }, [fetchWorkflows])
+
+  // Transform workflows into history data format
+  const historyData = useMemo<HistoryGeneration[]>(() => {
+    const generations: HistoryGeneration[] = []
+
+    workflows.forEach(workflow => {
+      // Group steps by generation
+      const stepsByGeneration = new Map<number, typeof workflow.steps>()
+
+      workflow.steps?.forEach(step => {
+        if (!stepsByGeneration.has(step.generation)) {
+          stepsByGeneration.set(step.generation, [])
+        }
+        stepsByGeneration.get(step.generation)!.push(step)
+      })
+
+      // Convert each generation into history format
+      stepsByGeneration.forEach((steps, generation) => {
+        const mutations = steps.map(step => ({
+          id: step.id,
+          agent: step.agent_id || 'Unknown Agent',
+          file: step.commit_hash || 'Unknown file',
+          status: (step.improvement > 0 ? 'accepted' : 'rejected') as 'accepted' | 'rejected',
+          fitnessChange: step.improvement_percent / 100,
+          description: step.is_initial
+            ? 'Initial baseline measurement'
+            : `Score: ${step.baseline_score.toFixed(2)} → ${step.final_score.toFixed(2)}`,
+        }))
+
+        const lastStep = steps[steps.length - 1]
+        const firstStep = steps[0]
+        const fitnessGain = lastStep ? (lastStep.final_score - firstStep.baseline_score) : 0
+
+        generations.push({
+          id: `${workflow.workflow_id}-gen-${generation}`,
+          generation,
+          timestamp: lastStep?.timestamp || workflow.created_at || new Date().toISOString(),
+          mutations,
+          totalFitness: lastStep?.final_score || 0,
+          fitnessGain,
+        })
+      })
+    })
+
+    // Sort by generation descending
+    return generations.sort((a, b) => b.generation - a.generation)
+  }, [workflows])
+
+  // Set first generation expanded by default when data loads
+  useEffect(() => {
+    if (historyData.length > 0 && !expandedGen) {
+      setExpandedGen(historyData[0].id)
+    }
+  }, [historyData, expandedGen])
 
   return (
     <div className="min-h-screen">
@@ -221,12 +248,44 @@ export function History() {
           ))}
         </div>
 
-        {/* Load More */}
-        <div className="text-center">
-          <Button variant="secondary">
-            Load More Generations
-          </Button>
-        </div>
+        {/* Loading State */}
+        {workflowsLoading && (
+          <Card className="py-12 text-center">
+            <FontAwesomeIcon icon={faSpinner} className="text-4xl text-primary-500 mb-4 animate-spin" />
+            <h3 className="text-lg font-semibold text-slate-900 dark:text-white mb-2">Loading history...</h3>
+          </Card>
+        )}
+
+        {/* Error State */}
+        {workflowsError && !workflowsLoading && (
+          <Card className="py-12 text-center">
+            <h3 className="text-lg font-semibold text-red-500 mb-2">Error loading history</h3>
+            <p className="text-slate-500 mb-4">{workflowsError}</p>
+            <Button variant="primary" onClick={() => fetchWorkflows()}>
+              Retry
+            </Button>
+          </Card>
+        )}
+
+        {/* Empty State */}
+        {!workflowsLoading && !workflowsError && historyData.length === 0 && (
+          <Card className="py-12 text-center">
+            <FontAwesomeIcon icon={faHistory} className="text-4xl text-slate-300 dark:text-slate-600 mb-4" />
+            <h3 className="text-lg font-semibold text-slate-900 dark:text-white mb-2">No history yet</h3>
+            <p className="text-slate-500 mb-4">
+              Run your first optimization to see evolution history here.
+            </p>
+          </Card>
+        )}
+
+        {/* Load More - only shown when there's data and more to load */}
+        {historyData.length > 0 && (
+          <div className="text-center">
+            <Button variant="secondary" onClick={() => fetchWorkflows({ limit: 50 })}>
+              Load More Generations
+            </Button>
+          </div>
+        )}
       </div>
     </div>
   )

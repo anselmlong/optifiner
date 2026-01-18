@@ -19,12 +19,30 @@ import { Button } from '../components/ui/Button'
 import { Badge } from '../components/ui/Badge'
 import { Input } from '../components/ui/Input'
 import { ProgressBar } from '../components/ui/ProgressBar'
+import { ConfirmDialog } from '../components/ui/ConfirmDialog'
 import { useStore } from '../store'
 
 export function Projects() {
-  const { projects, projectsLoading, projectsError, fetchProjects } = useStore()
+  const {
+    projects,
+    projectsLoading,
+    projectsError,
+    fetchProjects,
+    deleteProject,
+    deleteProjectLoading,
+    pauseWorkflow,
+    resumeWorkflow,
+    pauseLoading,
+    resumeLoading,
+    fetchProjectWorkflows,
+    projectWorkflows,
+    updateProject,
+  } = useStore()
   const [searchQuery, setSearchQuery] = useState('')
   const [filter, setFilter] = useState<'all' | 'active' | 'paused' | 'completed'>('all')
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
+  const [projectToDelete, setProjectToDelete] = useState<string | null>(null)
+  const [actionLoading, setActionLoading] = useState<string | null>(null)
 
   // Fetch projects on mount
   useEffect(() => {
@@ -43,6 +61,51 @@ export function Projects() {
     active: projects.filter(p => p.status === 'active').length,
     paused: projects.filter(p => p.status === 'paused').length,
     completed: projects.filter(p => p.status === 'completed').length
+  }
+
+  const handleDeleteClick = (projectId: string) => {
+    setProjectToDelete(projectId)
+    setDeleteConfirmOpen(true)
+  }
+
+  const handleDeleteConfirm = async () => {
+    if (projectToDelete) {
+      const success = await deleteProject(projectToDelete)
+      if (success) {
+        setDeleteConfirmOpen(false)
+        setProjectToDelete(null)
+      }
+    }
+  }
+
+  const handlePauseResume = async (projectId: string, currentStatus: string) => {
+    setActionLoading(projectId)
+    try {
+      // Fetch workflows for this project to find the active one
+      const workflows = await fetchProjectWorkflows(projectId)
+
+      // Find the running or paused workflow
+      const activeWorkflow = workflows.find(w => w.status === 'running' || w.status === 'paused')
+
+      if (!activeWorkflow) {
+        // No active workflow, just update project status directly
+        await updateProject(projectId, {
+          status: currentStatus === 'active' ? 'paused' : 'active'
+        })
+      } else {
+        // Use workflow ID to pause/resume
+        if (currentStatus === 'active') {
+          await pauseWorkflow(activeWorkflow.workflow_id)
+        } else if (currentStatus === 'paused') {
+          await resumeWorkflow(activeWorkflow.workflow_id)
+        }
+      }
+
+      // Refresh projects to get updated status
+      fetchProjects()
+    } finally {
+      setActionLoading(null)
+    }
   }
 
   return (
@@ -217,14 +280,25 @@ export function Projects() {
                     Monitor
                   </Button>
                 </Link>
+                {project.status !== 'completed' && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    icon={project.status === 'active' ? faPause : faPlay}
+                    onClick={() => handlePauseResume(project.id, project.status)}
+                    disabled={actionLoading !== null || pauseLoading || resumeLoading}
+                    loading={actionLoading === project.id || ((pauseLoading || resumeLoading) && actionLoading === project.id)}
+                  >
+                    {project.status === 'active' ? 'Pause' : 'Resume'}
+                  </Button>
+                )}
                 <Button
                   variant="ghost"
                   size="sm"
-                  icon={project.status === 'active' ? faPause : faPlay}
-                >
-                  {project.status === 'active' ? 'Pause' : 'Resume'}
-                </Button>
-                <Button variant="ghost" size="sm" icon={faTrash} className="text-error-solid hover:bg-error-bg dark:hover:bg-error-bg-dark" />
+                  icon={faTrash}
+                  onClick={() => handleDeleteClick(project.id)}
+                  className="text-error-solid hover:bg-error-bg dark:hover:bg-error-bg-dark"
+                />
               </div>
             </Card>
           ))}
@@ -265,6 +339,21 @@ export function Projects() {
           </Card>
         )}
       </div>
+
+      {/* Delete Confirmation Dialog */}
+      <ConfirmDialog
+        isOpen={deleteConfirmOpen}
+        onConfirm={handleDeleteConfirm}
+        onCancel={() => {
+          setDeleteConfirmOpen(false)
+          setProjectToDelete(null)
+        }}
+        title="Delete Project"
+        message="Are you sure you want to delete this project? This action cannot be undone."
+        confirmLabel="Delete"
+        isLoading={deleteProjectLoading}
+        variant="danger"
+      />
     </div>
   )
 }

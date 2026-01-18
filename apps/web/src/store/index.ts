@@ -4,6 +4,10 @@ import * as api from '../api'
 import { getWorkflowSocket, getGlobalSocket, disconnectWorkflowSocket, type WebSocketMessage } from '../api/websocket'
 
 interface AppState {
+  // API Status
+  apiHealthy: boolean
+  apiError: string | null
+  checkApiHealth: () => Promise<boolean>
   // Theme
   theme: 'light' | 'dark'
   setTheme: (theme: 'light' | 'dark') => void
@@ -18,9 +22,12 @@ interface AppState {
   currentProject: Project | null
   projectsLoading: boolean
   projectsError: string | null
+  deleteProjectLoading: boolean
   fetchProjects: () => Promise<void>
   setCurrentProject: (project: Project | null) => void
   createProject: (data: { name: string; description?: string; repository_url?: string }) => Promise<Project | null>
+  updateProject: (id: string, data: Partial<api.Project>) => Promise<boolean>
+  deleteProject: (id: string) => Promise<boolean>
 
   // Workflows
   currentWorkflow: api.Workflow | null
@@ -29,6 +36,31 @@ interface AppState {
   fetchWorkflow: (workflowId: string) => Promise<void>
   connectWorkflowWs: (workflowId: string) => void
   disconnectWorkflowWs: (workflowId: string) => void
+
+  // Workflows list (for History page)
+  workflows: api.Workflow[]
+  workflowsLoading: boolean
+  workflowsError: string | null
+  fetchWorkflows: (params?: { project_id?: string; status?: string; skip?: number; limit?: number }) => Promise<void>
+
+  // Project workflows (workflows for a specific project)
+  projectWorkflows: Map<string, api.Workflow[]>
+  projectWorkflowsLoading: boolean
+  fetchProjectWorkflows: (projectId: string) => Promise<api.Workflow[]>
+
+  // Workflow control
+  pauseLoading: boolean
+  resumeLoading: boolean
+  stopLoading: boolean
+  startWorkflow: (data: api.StartWorkflowRequest) => Promise<api.StartWorkflowResponse | null>
+  pauseWorkflow: (workflowId: string) => Promise<boolean>
+  resumeWorkflow: (workflowId: string) => Promise<boolean>
+  stopWorkflow: (workflowId: string) => Promise<boolean>
+
+  // Workflow logs
+  workflowLogs: api.LogEntry[]
+  workflowLogsLoading: boolean
+  fetchWorkflowLogs: (workflowId: string, limit?: number) => Promise<void>
 
   // Agents (from workflow)
   agents: Agent[]
@@ -63,6 +95,19 @@ interface AppState {
 }
 
 export const useStore = create<AppState>((set, get) => ({
+  // API Status
+  apiHealthy: false,
+  apiError: null,
+  checkApiHealth: async () => {
+    const response = await api.checkHealth()
+    if (response.error) {
+      set({ apiHealthy: false, apiError: response.error })
+      return false
+    }
+    set({ apiHealthy: true, apiError: null })
+    return true
+  },
+
   // Theme
   theme: 'light',
   setTheme: (theme) => {
@@ -92,7 +137,8 @@ export const useStore = create<AppState>((set, get) => ({
   currentProject: null,
   projectsLoading: false,
   projectsError: null,
-  
+  deleteProjectLoading: false,
+
   fetchProjects: async () => {
     set({ projectsLoading: true, projectsError: null })
     const response = await api.getProjects()
@@ -153,6 +199,32 @@ export const useStore = create<AppState>((set, get) => ({
       repository: response.data.repository_url || undefined,
       targetFitness: response.data.target_fitness,
     }
+  },
+
+  updateProject: async (id: string, data: Partial<api.Project>) => {
+    const response = await api.updateProject(id, data)
+
+    if (response.error || !response.data) {
+      return false
+    }
+
+    // Refresh projects list
+    get().fetchProjects()
+    return true
+  },
+
+  deleteProject: async (id: string) => {
+    set({ deleteProjectLoading: true })
+    const response = await api.deleteProject(id)
+    set({ deleteProjectLoading: false })
+
+    if (response.error || !response.data?.success) {
+      return false
+    }
+
+    // Refresh projects list
+    get().fetchProjects()
+    return true
   },
 
   // Workflows
@@ -267,6 +339,152 @@ export const useStore = create<AppState>((set, get) => ({
   
   disconnectWorkflowWs: (workflowId: string) => {
     disconnectWorkflowSocket(workflowId)
+  },
+
+  // Workflows list (for History page)
+  workflows: [],
+  workflowsLoading: false,
+  workflowsError: null,
+
+  fetchWorkflows: async (params) => {
+    set({ workflowsLoading: true, workflowsError: null })
+    const response = await api.getWorkflows(params)
+
+    if (response.error) {
+      set({ workflowsError: response.error, workflowsLoading: false })
+      return
+    }
+
+    set({
+      workflows: response.data?.workflows || [],
+      workflowsLoading: false,
+    })
+  },
+
+  // Project workflows
+  projectWorkflows: new Map(),
+  projectWorkflowsLoading: false,
+
+  fetchProjectWorkflows: async (projectId: string) => {
+    set({ projectWorkflowsLoading: true })
+    const response = await api.getProjectWorkflows(projectId)
+    set({ projectWorkflowsLoading: false })
+
+    if (response.error || !response.data) {
+      return []
+    }
+
+    const workflows = response.data.workflows || []
+    set(state => {
+      const newMap = new Map(state.projectWorkflows)
+      newMap.set(projectId, workflows)
+      return { projectWorkflows: newMap }
+    })
+    return workflows
+  },
+
+  // Workflow control
+  pauseLoading: false,
+  resumeLoading: false,
+  stopLoading: false,
+
+  startWorkflow: async (data: api.StartWorkflowRequest) => {
+    const response = await api.startWorkflow(data)
+
+    if (response.error || !response.data) {
+      return null
+    }
+
+    return response.data
+  },
+
+  pauseWorkflow: async (workflowId: string) => {
+    set({ pauseLoading: true })
+    const response = await api.pauseWorkflow(workflowId)
+    set({ pauseLoading: false })
+
+    if (response.error || !response.data?.success) {
+      return false
+    }
+
+    // Update local state
+    set({ isPaused: true })
+
+    // Update currentWorkflow if it matches
+    const state = get()
+    if (state.currentWorkflow?.workflow_id === workflowId) {
+      set({
+        currentWorkflow: {
+          ...state.currentWorkflow,
+          status: 'paused',
+        },
+      })
+    }
+
+    return true
+  },
+
+  resumeWorkflow: async (workflowId: string) => {
+    set({ resumeLoading: true })
+    const response = await api.resumeWorkflow(workflowId)
+    set({ resumeLoading: false })
+
+    if (response.error || !response.data?.success) {
+      return false
+    }
+
+    // Update local state
+    set({ isPaused: false })
+
+    // Update currentWorkflow if it matches
+    const state = get()
+    if (state.currentWorkflow?.workflow_id === workflowId) {
+      set({
+        currentWorkflow: {
+          ...state.currentWorkflow,
+          status: 'running',
+        },
+      })
+    }
+
+    return true
+  },
+
+  stopWorkflow: async (workflowId: string) => {
+    set({ stopLoading: true })
+    const response = await api.stopWorkflow(workflowId)
+    set({ stopLoading: false })
+
+    if (response.error || !response.data?.success) {
+      return false
+    }
+
+    // Update currentWorkflow if it matches
+    const state = get()
+    if (state.currentWorkflow?.workflow_id === workflowId) {
+      set({
+        currentWorkflow: {
+          ...state.currentWorkflow,
+          status: 'stopped',
+        },
+      })
+    }
+
+    return true
+  },
+
+  // Workflow logs
+  workflowLogs: [],
+  workflowLogsLoading: false,
+
+  fetchWorkflowLogs: async (workflowId: string, limit = 100) => {
+    set({ workflowLogsLoading: true })
+    const response = await api.getWorkflowLogs(workflowId, limit)
+    set({ workflowLogsLoading: false })
+
+    if (response.data) {
+      set({ workflowLogs: response.data.logs })
+    }
   },
 
   // Agents - populated from workflow data

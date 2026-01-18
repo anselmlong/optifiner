@@ -25,23 +25,27 @@ import { useStore } from '../store'
 import { XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Area, AreaChart } from 'recharts'
 
 export function Dashboard() {
-  const { 
-    projects, 
-    metrics, 
+  const {
+    projects,
+    metrics,
     agents,
     dashboardStats,
     projectsLoading,
     fetchProjects,
     fetchDashboardStats,
     connectGlobalWs,
+    checkApiHealth,
+    apiHealthy,
+    apiError,
   } = useStore()
 
   // Fetch data on mount
   useEffect(() => {
+    checkApiHealth()
     fetchProjects()
     fetchDashboardStats()
     connectGlobalWs()
-  }, [fetchProjects, fetchDashboardStats, connectGlobalWs])
+  }, [fetchProjects, fetchDashboardStats, connectGlobalWs, checkApiHealth])
 
   const totalAgentsActive = agents.filter(a => a.status !== 'idle' && a.status !== 'waiting').length
   const stats = dashboardStats || { projects: { total: 0, active: 0, paused: 0, completed: 0 }, workflows: { running: 0 }, cost: { total_spent: 0 } }
@@ -50,11 +54,28 @@ export function Dashboard() {
     <div className="min-h-screen">
       <Header title="Evolution Dashboard" subtitle="Darwin-Alpha-9 • Online" />
 
+      {/* API Status Banner */}
+      {!apiHealthy && apiError && (
+        <div className="bg-red-50 dark:bg-red-950/30 border-b border-red-200 dark:border-red-900 px-6 py-3">
+          <p className="text-sm text-red-800 dark:text-red-200">
+            <span className="font-semibold">API Offline:</span> {apiError}. Make sure the backend is running on port 8000.
+          </p>
+        </div>
+      )}
+
       {/* Demo Disclaimer Banner */}
       <div className="bg-yellow-50 dark:bg-yellow-950/30 border-b border-yellow-200 dark:border-yellow-900 px-6 py-3">
-        <p className="text-sm text-yellow-800 dark:text-yellow-200">
-          <span className="font-semibold">Demo Version:</span> Some buttons and features might not work as expected.
-        </p>
+        <div className="flex items-center justify-between">
+          <p className="text-sm text-yellow-800 dark:text-yellow-200">
+            <span className="font-semibold">Demo Version:</span> Some buttons and features might not work as expected.
+          </p>
+          <div className="flex items-center gap-2 text-sm">
+            <span className={`w-2 h-2 rounded-full ${apiHealthy ? 'bg-green-500' : 'bg-red-500'}`} />
+            <span className={apiHealthy ? 'text-green-700 dark:text-green-400' : 'text-red-700 dark:text-red-400'}>
+              API: {apiHealthy ? 'Connected' : 'Offline'}
+            </span>
+          </div>
+        </div>
       </div>
 
       <div className="p-6 space-y-6">
