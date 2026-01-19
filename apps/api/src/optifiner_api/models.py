@@ -19,7 +19,7 @@ CLI Option Mapping:
     --min-improvement    -> min_improvement_pct
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # =============================================================================
@@ -429,3 +429,39 @@ class PullRequestRequest(BaseModel):
     title: str = Field(..., description="Pull request title")
     body: str | None = Field(None, description="Pull request body")
     base_branch: str | None = Field(None, description="Base branch for PR")
+
+
+# =============================================================================
+# Early Access Signup Models
+# =============================================================================
+
+class EarlyAccessSignupRequest(BaseModel):
+    """Request model for early access signup."""
+
+    email: str = Field(
+        ...,
+        description="Email address for early access notification"
+    )
+    source: str = Field(
+        "landing_page",
+        description="Source of the signup"
+    )
+
+    @field_validator('email')
+    @classmethod
+    def validate_email(cls, v: str) -> str:
+        """Validate email format."""
+        import re
+        email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+        if not re.match(email_pattern, v.strip()):
+            raise ValueError('Invalid email format')
+        return v.strip().lower()
+
+
+class EarlyAccessSignupResponse(BaseModel):
+    """Response model for early access signup."""
+
+    success: bool
+    message: str
+    email: str | None = None
+    already_registered: bool = False

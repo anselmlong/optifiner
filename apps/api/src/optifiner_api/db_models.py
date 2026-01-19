@@ -317,12 +317,12 @@ class LogEntry(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
     workflow_id = Column(UUID(as_uuid=True), ForeignKey("workflows.id"), nullable=False)
     agent_instance_id = Column(UUID(as_uuid=True), ForeignKey("agent_instances.id"), nullable=True)
-    
+
     level = Column(String(20), nullable=False)  # info, success, warning, error
     message = Column(Text, nullable=False)
     details = Column(Text, nullable=True)
     agent_name = Column(String(255), nullable=True)
-    
+
     created_at = Column(DateTime, default=datetime.utcnow)
 
     def to_dict(self) -> dict[str, Any]:
@@ -335,4 +335,29 @@ class LogEntry(Base):
             "details": self.details,
             "agent_name": self.agent_name,
             "timestamp": self.created_at.strftime("%H:%M:%S") if self.created_at else None,
+        }
+
+
+class EarlyAccessSignup(Base):
+    """Early access email signup model."""
+    __tablename__ = "early_access_signups"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    email = Column(String(255), nullable=False, unique=True, index=True)
+    source = Column(String(50), default="landing_page")
+    user_agent = Column(String(512), nullable=True)
+    ip_address = Column(String(45), nullable=True)
+    status = Column(String(50), default="pending")
+    notified_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": str(self.id),
+            "email": self.email,
+            "source": self.source,
+            "status": self.status,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "notified_at": self.notified_at.isoformat() if self.notified_at else None,
         }
