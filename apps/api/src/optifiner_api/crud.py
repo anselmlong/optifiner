@@ -358,3 +358,76 @@ async def get_workflow_logs(
     query = query.order_by(LogEntry.created_at.desc()).limit(limit)
     result = await db.execute(query)
     return list(result.scalars().all())
+
+
+# =============================================================================
+# EarlyAccessSignup CRUD
+# =============================================================================
+
+async def create_early_access_signup(
+    db: AsyncSession,
+    email: str,
+    source: str = "landing_page",
+    user_agent: str | None = None,
+    ip_address: str | None = None,
+) -> "EarlyAccessSignup":
+    """Create a new early access signup."""
+    from optifiner_api.db_models import EarlyAccessSignup
+
+    signup = EarlyAccessSignup(
+        email=email.lower().strip(),
+        source=source,
+        user_agent=user_agent,
+        ip_address=ip_address,
+    )
+    db.add(signup)
+    await db.flush()
+    await db.refresh(signup)
+    return signup
+
+
+async def get_early_access_signup_by_email(
+    db: AsyncSession,
+    email: str,
+) -> "EarlyAccessSignup | None":
+    """Get a signup by email."""
+    from optifiner_api.db_models import EarlyAccessSignup
+
+    result = await db.execute(
+        select(EarlyAccessSignup).where(
+            EarlyAccessSignup.email == email.lower().strip()
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_early_access_signups(
+    db: AsyncSession,
+    status: str | None = None,
+    skip: int = 0,
+    limit: int = 100,
+) -> list["EarlyAccessSignup"]:
+    """Get all early access signups with optional filtering."""
+    from optifiner_api.db_models import EarlyAccessSignup
+
+    query = select(EarlyAccessSignup)
+    if status:
+        query = query.where(EarlyAccessSignup.status == status)
+    query = query.order_by(EarlyAccessSignup.created_at.desc()).offset(skip).limit(limit)
+    result = await db.execute(query)
+    return list(result.scalars().all())
+
+
+async def count_early_access_signups(
+    db: AsyncSession,
+    status: str | None = None,
+) -> int:
+    """Count early access signups."""
+    from optifiner_api.db_models import EarlyAccessSignup
+    from sqlalchemy import func
+
+    query = select(func.count(EarlyAccessSignup.id))
+    if status:
+        query = query.where(EarlyAccessSignup.status == status)
+    result = await db.execute(query)
+    return result.scalar_one()
