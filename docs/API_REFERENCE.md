@@ -387,9 +387,9 @@ export MODEL_PROVIDER=google
 export MODEL_NAME=gemini-2.5-flash
 export GOOGLE_API_KEY=your-key-here
 
-# Anthropic Claude
+# Anthropic Claude (Opus 4, Sonnet 4.5, or Haiku 4)
 export MODEL_PROVIDER=anthropic
-export MODEL_NAME=claude-sonnet-4-20250514
+export MODEL_NAME=claude-sonnet-4-5-20250514  # or claude-opus-4-20250514, claude-haiku-4-20250514
 export ANTHROPIC_API_KEY=your-key-here
 
 # OpenAI GPT
@@ -460,6 +460,93 @@ export DATABASE_ECHO=0                # SQL query logging
 | 429 | Too Many Requests | Rate limit exceeded | Wait and retry |
 | 500 | Internal Server Error | Server error | Check server logs |
 | 503 | Service Unavailable | Server maintenance | Wait and retry |
+
+## Benchmark Script Output Format
+
+The benchmark script (optifiner_benchmark.py) must output JSON with the following fields:
+
+### Required Fields
+
+```json
+{
+  "score": 147734.0,
+  "metric_name": "cycles",
+  "test_gate": true
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `score` | number | Yes | Primary metric value (non-null) |
+| `metric_name` | string | Yes | Name of the metric (e.g., "FPS", "cycles", "latency_ms") |
+| `test_gate` | boolean | Yes | Must be true for benchmark to pass |
+
+### Optional Fields
+
+```json
+{
+  "score": 60.5,
+  "metric_name": "FPS",
+  "test_gate": true,
+  "higher_is_better": true,
+  "metrics": {
+    "frame_time_ms": 16.67,
+    "memory_mb": 256.4
+  },
+  "message": "Benchmark completed successfully"
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `higher_is_better` | boolean | auto-detected | True if higher scores are better (FPS, throughput), False if lower is better (cycles, latency) |
+| `metrics` | object | {} | Additional metrics for display |
+| `message` | string | "" | Human-readable status message |
+
+### Metric Direction Detection
+
+If `higher_is_better` is not specified, it is automatically inferred from the metric name:
+
+**Lower-is-better keywords** (will set `higher_is_better=false`):
+- `cycles`, `cycle`
+- `latency`, `time`, `ms`, `seconds`, `sec`, `duration`
+- `cost`, `memory`, `bytes`, `kb`, `mb`, `gb`
+- `error`, `errors`, `loss`
+
+**Examples:**
+- `"metric_name": "FPS"` → `higher_is_better=true` (default)
+- `"metric_name": "cycles"` → `higher_is_better=false` (auto-detected)
+- `"metric_name": "latency_ms"` → `higher_is_better=false` (auto-detected)
+- `"metric_name": "throughput"` → `higher_is_better=true` (default)
+
+### Complete Example
+
+```python
+#!/usr/bin/env python3
+"""Example benchmark script."""
+import json
+import sys
+
+def run_benchmark():
+    # Your benchmark code here
+    cycles = 147734  # Lower is better
+    return cycles
+
+if __name__ == "__main__":
+    cycles = run_benchmark()
+    result = {
+        "score": cycles,
+        "metric_name": "cycles",
+        "test_gate": True,
+        "higher_is_better": False,  # Explicitly set: lower cycles = better
+        "metrics": {
+            "cycles": cycles,
+            "values_match": True
+        },
+        "message": f"Cycles: {cycles}"
+    }
+    print(json.dumps(result))
+```
 
 ## Output Formats
 

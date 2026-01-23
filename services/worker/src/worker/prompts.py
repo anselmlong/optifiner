@@ -7,7 +7,7 @@ BASE_SYSTEM_PROMPT = """You are an expert performance optimization engineer impr
 ## Your Environment
 - Target codebase: {workspace_root}
 - Benchmark script: {benchmark_path} (always a Python script, run with `python3`)
-- Baseline score: {baseline_score} (already measured - don't re-run at start)
+- Baseline {metric_name}: {baseline_score} ({score_direction})
 
 ## Available Tools
 - `read_file`: Read file contents with line numbers
@@ -146,8 +146,8 @@ CHEATING (forbidden):
 - Modifying how metrics are measured
 
 ## Benchmark Output
-The benchmark outputs JSON: `{{"score": X, "metric_name": "FPS", "test_gate": true}}`
-Success requires: test_gate=true AND score > {baseline_score}
+The benchmark outputs JSON: `{{"score": X, "metric_name": "{metric_name}", "test_gate": true, "higher_is_better": {higher_is_better_str}}}`
+Success requires: test_gate=true AND {success_condition}
 
 ## ⏱️ CRITICAL: Benchmark Time Limit
 The benchmark script MUST complete within **{benchmark_timeout} seconds**. If it doesn't exit in time, the evaluation automatically FAILS with a timeout error.
@@ -162,10 +162,10 @@ The benchmark script MUST complete within **{benchmark_timeout} seconds**. If it
 
 ## Context
 - Generation: {generation}
-- Baseline Score: {baseline_score}
+- Baseline {metric_name}: {baseline_score}
 {baseline_details}
 
-**Goal**: Improve score above {baseline_score} through REAL optimizations while maintaining identical output quality.
+**Goal**: {improvement_goal} through REAL optimizations while maintaining identical output quality.
 """
 
 ANALYZER_PROMPT = """You specialize in profiling code and identifying the highest-impact optimization opportunities.
@@ -498,6 +498,8 @@ def get_system_prompt(
     baseline_score: float | None = None,
     baseline_data: dict | None = None,
     benchmark_timeout: int = 30,
+    higher_is_better: bool = True,
+    metric_name: str = "score",
 ) -> str:
     """Generate the system prompt for an agent.
 
@@ -509,6 +511,8 @@ def get_system_prompt(
         baseline_score: Current baseline benchmark score.
         baseline_data: Optional dict with detailed baseline metrics (fps, tests, etc.)
         benchmark_timeout: Timeout in seconds for benchmark execution.
+        higher_is_better: If True, higher scores are better (FPS). If False, lower is better (cycles).
+        metric_name: Name of the metric being optimized.
 
     Returns:
         Complete system prompt for the agent.
@@ -527,12 +531,9 @@ def get_system_prompt(
     agent_prompt = agent_prompts.get(agent_type, GENERAL_PROMPT)
 
     # Build baseline details string
-    # Note: score IS the primary metric (FPS, throughput, etc.) - don't show it separately
     baseline_details = ""
     if baseline_data:
         details_parts = []
-        if "metric_name" in baseline_data:
-            details_parts.append(f"- Metric: {baseline_data['metric_name']}")
         if "tests_passed" in baseline_data and "tests_total" in baseline_data:
             details_parts.append(f"- Tests: {baseline_data['tests_passed']}/{baseline_data['tests_total']} passed")
         if "metrics" in baseline_data:
@@ -545,15 +546,31 @@ def get_system_prompt(
     # Compute benchmark path
     benchmark_path = f"{workspace_root}/{BENCHMARK_SCRIPT_NAME}"
 
+    # Build direction-aware strings
+    score_direction = "higher is better" if higher_is_better else "lower is better"
+    higher_is_better_str = "true" if higher_is_better else "false"
+    
+    if higher_is_better:
+        success_condition = f"{metric_name} > {baseline_score}"
+        improvement_goal = f"Increase {metric_name} above {baseline_score}"
+    else:
+        success_condition = f"{metric_name} < {baseline_score}"
+        improvement_goal = f"Reduce {metric_name} below {baseline_score}"
+
     # Format base prompt with context
     base = BASE_SYSTEM_PROMPT.format(
-        task=task or "Improve the codebase to increase benchmark scores.",
+        task=task or f"Improve the codebase to optimize {metric_name}.",
         workspace_root=workspace_root,
         benchmark_path=benchmark_path,
         generation=generation,
         baseline_score=baseline_score if baseline_score is not None else "Not yet measured",
         baseline_details=baseline_details,
         benchmark_timeout=benchmark_timeout,
+        metric_name=metric_name,
+        score_direction=score_direction,
+        higher_is_better_str=higher_is_better_str,
+        success_condition=success_condition,
+        improvement_goal=improvement_goal,
     )
 
     return f"{base}\n\n{agent_prompt}"

@@ -104,7 +104,11 @@ class Workflow(Base):
     branch = Column(String(255), nullable=True)  # Optimization branch name
     original_branch = Column(String(255), nullable=True)
     
-    # Scores
+    # Metric info
+    metric_name = Column(String(100), default="score")  # e.g., "FPS", "cycles", "latency_ms"
+    higher_is_better = Column(Boolean, default=True)  # True = higher is better (FPS), False = lower is better (cycles)
+    
+    # Scores (metric values)
     baseline_score = Column(Float, nullable=True)
     current_best_score = Column(Float, nullable=True)
     baseline_data = Column(JSON, nullable=True)
@@ -164,6 +168,8 @@ class Workflow(Base):
             "repo_dir": self.repo_dir,
             "branch": self.branch,
             "original_branch": self.original_branch,
+            "metric_name": self.metric_name,
+            "higher_is_better": self.higher_is_better,
             "baseline_score": self.baseline_score,
             "current_best_score": self.current_best_score,
             "baseline_data": self.baseline_data,

@@ -247,9 +247,9 @@ Supported model providers:
 
 | Provider | Environment Variable | Example Models |
 |----------|---------------------|----------------|
-| Google | `GOOGLE_API_KEY` | `gemini-2.0-flash-exp`, `gemini-1.5-pro` |
-| Anthropic | `ANTHROPIC_API_KEY` | `claude-3-sonnet-20240229`, `claude-3-opus-20240229` |
-| OpenAI | `OPENAI_API_KEY` | `gpt-4`, `gpt-4-turbo` |
+| Google | `GOOGLE_API_KEY` | `gemini-2.0-flash-exp`, `gemini-3-flash-preview` |
+| Anthropic | `ANTHROPIC_API_KEY` | `claude-opus-4-20250514`, `claude-sonnet-4-5-20250514`, `claude-haiku-4-20250514` |
+| OpenAI | `OPENAI_API_KEY` | `gpt-4o`, `gpt-4-turbo` |
 
 ## Verbosity Levels
 

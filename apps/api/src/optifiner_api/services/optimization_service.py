@@ -177,17 +177,6 @@ class OptimizationService:
         if not _worker_available:
             return False, "Worker functions not available", None
         
-        provider_key_map = {
-            "anthropic": "ANTHROPIC_API_KEY",
-            "google": "GOOGLE_API_KEY", 
-            "openai": "OPENAI_API_KEY",
-        }
-        api_key_env = provider_key_map.get(model_config_dict.get("provider"))
-        original_key = None
-        if api_key_env and model_config_dict.get("api_key"):
-            original_key = os.environ.get(api_key_env)
-            os.environ[api_key_env] = model_config_dict["api_key"]
-        
         # Save original WORKSPACE_ROOT (if any) to restore later
         original_workspace_root = os.environ.get("WORKSPACE_ROOT")
         
@@ -205,7 +194,11 @@ class OptimizationService:
             set_observer(observer)
             
             model_name = model_config_dict.get("model_name", "gemini-2.0-flash-exp")
-            model_timeout = 120.0 if "gemini" in model_name.lower() and "flash" in model_name.lower() else 60.0
+            # Timeout based on model: Gemini Flash 120s, Gemini Pro 600s, others 600s
+            if "gemini" in model_name.lower():
+                model_timeout = 120.0 if "flash" in model_name.lower() else 600.0
+            else:
+                model_timeout = 600.0
             model_config = ModelConfig(
                 provider=ModelProvider(model_config_dict.get("provider", "google")),
                 model_name=model_name,
@@ -213,6 +206,7 @@ class OptimizationService:
                 max_tokens=8192,
                 timeout=model_timeout,
                 max_retries=3,
+                api_key=model_config_dict.get("api_key"),  # Pass API key directly (thread-safe)
             )
             
             set_benchmark_dev_mode(True)
@@ -274,12 +268,6 @@ class OptimizationService:
                 os.environ["WORKSPACE_ROOT"] = original_workspace_root
             elif "WORKSPACE_ROOT" in os.environ:
                 del os.environ["WORKSPACE_ROOT"]
-            
-            if api_key_env:
-                if original_key is not None:
-                    os.environ[api_key_env] = original_key
-                elif api_key_env in os.environ:
-                    del os.environ[api_key_env]
 
     async def start_optimization_workflow(
         self,
@@ -410,14 +398,19 @@ class OptimizationService:
         if baseline_score is None:
             return {"success": False, "error": "Baseline evaluation returned no score"}
 
+        # Extract metric metadata from baseline data
+        metric_name = baseline_data.get("metric_name", "score") if baseline_data else "score"
+        higher_is_better = baseline_data.get("higher_is_better", True) if baseline_data else True
+        direction_hint = "higher is better" if higher_is_better else "lower is better"
+
         # Log baseline (CLI style)
         if verbosity >= 1:
             logger.info(f"[OptimizationService] BASELINE EVALUATION COMPLETE")
-            logger.info(f"[OptimizationService] Baseline Score: {baseline_score}")
+            logger.info(f"[OptimizationService] Baseline {metric_name}: {baseline_score} ({direction_hint})")
             logger.info(f"[OptimizationService] Min Improvement Threshold: {min_improvement_pct}%")
 
         # Create initial git commit
-        commit_hash = git_commit(str(repo_path), f"Initial state - Score: {baseline_score}")
+        commit_hash = git_commit(str(repo_path), f"Initial state - {metric_name}: {baseline_score}")
 
         # Set default agent types
         if agent_types is None:
@@ -442,6 +435,8 @@ class OptimizationService:
                 repo_dir=repo_dir,
                 branch=optimization_branch,
                 original_branch=branch or cloned_branch,
+                metric_name=metric_name,
+                higher_is_better=higher_is_better,
                 baseline_score=baseline_score,
                 current_best_score=baseline_score,
                 baseline_data=baseline_data,
@@ -558,6 +553,10 @@ class OptimizationService:
                 models = workflow.models_config or []
                 agent_types = workflow.agent_types or ["optimizer", "refactoring", "feature", "analyzer", "general"]
                 
+                # Extract metric direction info
+                higher_is_better = workflow.higher_is_better if workflow.higher_is_better is not None else True
+                metric_name = workflow.metric_name or "score"
+                
                 workflow_data = workflow.to_dict()
 
             while generation < max_generations:
@@ -600,11 +599,11 @@ class OptimizationService:
                 # Wait for workers to complete
                 completed = await self._wait_for_workers(
                     workflow_id, instances, workflow_data.get("time_limit_seconds", 300),
-                    early_stop, min_improvement_pct, current_best_score, verbosity
+                    early_stop, min_improvement_pct, current_best_score, verbosity, higher_is_better
                 )
 
                 # Select best instance
-                best = self._select_best_instance(completed, current_best_score, min_improvement_pct)
+                best = self._select_best_instance(completed, current_best_score, min_improvement_pct, higher_is_better)
 
                 # Copy best instance's changes back to source workspace
                 if best:
@@ -698,7 +697,7 @@ class OptimizationService:
                 step_count += 1
                 total_improvements += 1
                 
-                _, improvement_pct = is_significant_improvement(old_score, current_best_score, min_improvement_pct)
+                _, improvement_pct = is_significant_improvement(old_score, current_best_score, min_improvement_pct, higher_is_better)
 
                 if verbosity >= 1:
                     logger.info(f"[OptimizationService] IMPROVED! {old_score:.2f} -> {current_best_score:.2f} (+{improvement_pct:.1f}%)")
@@ -797,9 +796,16 @@ class OptimizationService:
                     agent_name=best["instance_id"],
                 )
 
-            # Complete
-            final_improvement = current_best_score - workflow_data["baseline_score"]
-            final_pct = (final_improvement / workflow_data["baseline_score"] * 100) if workflow_data["baseline_score"] > 0 else 0
+            # Complete - calculate final improvement respecting metric direction
+            baseline = workflow_data["baseline_score"]
+            if higher_is_better:
+                # Higher is better: positive change is improvement
+                final_improvement = current_best_score - baseline
+                final_pct = (final_improvement / baseline * 100) if baseline > 0 else 0
+            else:
+                # Lower is better: negative change is improvement, but report as positive percentage
+                final_improvement = baseline - current_best_score  # Positive when improved (reduced)
+                final_pct = (final_improvement / baseline * 100) if baseline > 0 else 0
 
             async with get_db_context() as db:
                 await crud.update_workflow_status(
@@ -811,17 +817,19 @@ class OptimizationService:
                 )
 
             if verbosity >= 1:
+                direction_verb = "increased" if higher_is_better else "reduced"
                 logger.info(f"[OptimizationService] OPTIMIZATION COMPLETE!")
-                logger.info(f"[OptimizationService] Initial: {workflow_data['baseline_score']:.2f} -> Final: {current_best_score:.2f}")
-                logger.info(f"[OptimizationService] Improvement: +{final_improvement:.2f} (+{final_pct:.1f}%)")
+                logger.info(f"[OptimizationService] Initial {metric_name}: {baseline:.2f} -> Final: {current_best_score:.2f}")
+                logger.info(f"[OptimizationService] {metric_name} {direction_verb} by {final_pct:.1f}%")
 
             # Create PR if there were improvements
             pr_url = None
             if total_improvements > 0:
-                pr_title = f"[Optifiner] +{final_pct:.1f}% improvement ({workflow_data['baseline_score']:.2f} → {current_best_score:.2f})"
+                improvement_verb = "improved" if higher_is_better else "reduced"
+                pr_title = f"[Optifiner] {metric_name} {improvement_verb} by {final_pct:.1f}% ({baseline:.2f} → {current_best_score:.2f})"
                 pr_body = f"""## Optifiner Optimization Results
 
-**Score Improvement:** {workflow_data['baseline_score']:.2f} → {current_best_score:.2f} (+{final_pct:.1f}%)
+**{metric_name} Improvement:** {baseline:.2f} → {current_best_score:.2f} ({'+' if higher_is_better else '-'}{final_pct:.1f}%)
 
 ### Summary
 - **Generations:** {generation}
@@ -1071,59 +1079,45 @@ Please review the changes and run your tests before merging.
                         "score": baseline_score,
                     }
 
-        # Set API key
-        provider_key_map = {
-            "anthropic": "ANTHROPIC_API_KEY",
-            "google": "GOOGLE_API_KEY",
-            "openai": "OPENAI_API_KEY",
+        # Pass API key directly to worker (thread-safe, avoids env var race conditions)
+        api_key = instance.get("api_key")
+
+        agent_result, workspace_manager = run_single_agent_isolated(
+            source_workspace=source_workspace,
+            evaluator_path=workflow_data.get("evaluator_path"),
+            agent_type=instance.get("agent_type", "optimizer"),
+            agent_id=instance["instance_id"],
+            baseline_score=baseline_score,
+            task=workflow_data.get("user_prompt", "Improve the code to get a higher benchmark score."),
+            max_iterations=workflow_data.get("max_iterations_per_agent", 15),
+            model_provider=instance["model_provider"],
+            model_name=instance["model_name"],
+            verbosity=workflow_data.get("verbosity", 1),
+            log_dir=workflow_data.get("log_dir"),
+            baseline_data=workflow_data.get("baseline_data"),
+            min_improvement_pct=workflow_data.get("min_improvement_pct", 6.0),
+            stop_event=_stop_generation if workflow_data.get("early_stop") else None,
+            compact=workflow_data.get("parallel", 1) > 1,
+            higher_is_better=workflow_data.get("higher_is_better", True),
+            metric_name=workflow_data.get("metric_name", "score"),
+            api_key=api_key,  # Thread-safe: pass directly instead of using env vars
+        )
+
+        result = {
+            "success": agent_result.success,
+            "score": agent_result.final_score if agent_result.success else baseline_score,
+            "improvement": agent_result.improvement if agent_result.success else 0.0,
+            "error": agent_result.error,
         }
-        api_key_env = provider_key_map.get(instance["model_provider"])
-        original_key = None
-        if api_key_env and instance.get("api_key"):
-            original_key = os.environ.get(api_key_env)
-            os.environ[api_key_env] = instance["api_key"]
 
-        try:
-            agent_result, workspace_manager = run_single_agent_isolated(
-                source_workspace=source_workspace,
-                evaluator_path=workflow_data.get("evaluator_path"),
-                agent_type=instance.get("agent_type", "optimizer"),
-                agent_id=instance["instance_id"],
-                baseline_score=baseline_score,
-                task=workflow_data.get("user_prompt", "Improve the code to get a higher benchmark score."),
-                max_iterations=workflow_data.get("max_iterations_per_agent", 15),
-                model_provider=instance["model_provider"],
-                model_name=instance["model_name"],
-                verbosity=workflow_data.get("verbosity", 1),
-                log_dir=workflow_data.get("log_dir"),
-                baseline_data=workflow_data.get("baseline_data"),
-                min_improvement_pct=workflow_data.get("min_improvement_pct", 6.0),
-                stop_event=_stop_generation if workflow_data.get("early_stop") else None,
-                compact=workflow_data.get("parallel", 1) > 1,
-            )
+        # Keep workspace alive for now - copy-back happens after best selection
+        # to avoid race conditions where a less-improved agent overwrites a better one.
+        # Store workspace_manager reference; cleanup happens in _select_best_instance.
+        if workspace_manager:
+            result["_workspace_manager"] = workspace_manager
+            result["_workspace_path"] = str(workspace_manager.actual_root)
 
-            result = {
-                "success": agent_result.success,
-                "score": agent_result.final_score if agent_result.success else baseline_score,
-                "improvement": agent_result.improvement if agent_result.success else 0.0,
-                "error": agent_result.error,
-            }
-
-            # Keep workspace alive for now - copy-back happens after best selection
-            # to avoid race conditions where a less-improved agent overwrites a better one.
-            # Store workspace_manager reference; cleanup happens in _select_best_instance.
-            if workspace_manager:
-                result["_workspace_manager"] = workspace_manager
-                result["_workspace_path"] = str(workspace_manager.actual_root)
-
-            return result
-
-        finally:
-            if api_key_env:
-                if original_key is not None:
-                    os.environ[api_key_env] = original_key
-                elif api_key_env in os.environ:
-                    del os.environ[api_key_env]
+        return result
 
     async def _wait_for_workers(
         self,
@@ -1134,37 +1128,57 @@ Please review the changes and run your tests before merging.
         min_improvement_pct: float,
         current_best_score: float,
         verbosity: int,
+        higher_is_better: bool = True,
     ) -> list[dict[str, Any]]:
-        """Wait for workers to complete or time limit."""
+        """Wait for workers to complete.
+        
+        Behavior depends on early_stop:
+        - early_stop=True: Wait until one agent finds significant improvement, then
+          signal others to stop and wait up to 10s for them to finish.
+        - early_stop=False: Wait for ALL agents to complete (no time limit).
+        
+        The time_limit parameter is only used as a fallback when early_stop=True
+        and no improvement is found.
+        """
         global _stop_generation
         
         start_time = time.time()
         early_stop_triggered = False
+        early_stop_time = None  # Track when early stop was triggered
+        
+        # Collect all tasks for proper awaiting
+        tasks = [inst.get("_task") for inst in instances if inst.get("_task")]
 
-        while time.time() - start_time < time_limit:
+        # When early_stop=False, we wait indefinitely for all agents to complete
+        # When early_stop=True, we use time_limit as a fallback
+        effective_time_limit = float('inf') if not early_stop else time_limit
+
+        while time.time() - start_time < effective_time_limit:
             completed = [i for i in instances if i.get("completed_at")]
             pending = len(instances) - len(completed)
             
             if verbosity >= 2:
-                logger.debug(f"[OptimizationService] Waiting: {len(completed)}/{len(instances)} completed, {pending} pending")
+                elapsed = time.time() - start_time
+                logger.debug(f"[OptimizationService] Waiting ({elapsed:.0f}s): {len(completed)}/{len(instances)} completed, {pending} pending")
             
             if len(completed) == len(instances):
                 logger.info(f"[OptimizationService] All {len(instances)} agents completed")
                 break
 
-            # Check for early stop
+            # Check for early stop (only when early_stop=True)
             if early_stop and not early_stop_triggered:
                 for inst in completed:
                     result = inst.get("worker_result", {})
                     if result.get("success") and result.get("score"):
                         is_sig, pct = is_significant_improvement(
-                            current_best_score, result["score"], min_improvement_pct
+                            current_best_score, result["score"], min_improvement_pct, higher_is_better
                         )
                         if is_sig:
                             if verbosity >= 1:
                                 logger.info(f"[OptimizationService] Early stop triggered: +{pct:.1f}% improvement found")
                             _stop_generation.set()
                             early_stop_triggered = True
+                            early_stop_time = time.time()
                             
                             await self.ws_manager.send_log(
                                 str(workflow_id), "info",
@@ -1173,23 +1187,54 @@ Please review the changes and run your tests before merging.
                             break
 
             # If early stop triggered, wait a bit for running agents to notice and complete
-            if early_stop_triggered:
-                # Give agents up to 10 seconds to notice the stop event and complete
+            if early_stop_triggered and early_stop_time is not None:
                 await asyncio.sleep(1)
-                # Check if all tasks completed
                 completed = [i for i in instances if i.get("completed_at")]
                 if len(completed) == len(instances):
                     break
-                # After 10 seconds of early stop, just return what we have
-                if time.time() - start_time > 10:
-                    logger.info(f"[OptimizationService] Early stop timeout, returning {len(completed)} completed agents")
+                # After 10 seconds since early stop was triggered, return what we have
+                if time.time() - early_stop_time > 10:
+                    logger.info(f"[OptimizationService] Early stop timeout (10s), returning {len(completed)} completed agents")
                     break
 
             await asyncio.sleep(0.5)
 
-        # Return all completed instances
+        # If we exited due to time_limit (early_stop=True only), log it
+        elapsed = time.time() - start_time
         completed = [i for i in instances if i.get("completed_at")]
-        logger.info(f"[OptimizationService] Generation complete: {len(completed)}/{len(instances)} agents finished")
+        
+        if len(completed) < len(instances):
+            if early_stop:
+                logger.warning(
+                    f"[OptimizationService] Time limit reached ({time_limit}s): {len(completed)}/{len(instances)} agents completed. "
+                    f"Waiting for remaining agents to finish..."
+                )
+            
+            # CRITICAL: Wait for ALL tasks to actually complete before proceeding
+            # This prevents orphan agents from running in parallel with the next generation
+            pending_tasks = [inst.get("_task") for inst in instances 
+                           if inst.get("_task") and not inst.get("completed_at")]
+            
+            if pending_tasks:
+                logger.info(f"[OptimizationService] Waiting for {len(pending_tasks)} remaining agent(s) to finish...")
+                # Wait for all pending tasks with a generous timeout
+                try:
+                    await asyncio.wait(pending_tasks, timeout=600.0)  # 10 minute max wait
+                except Exception as e:
+                    logger.error(f"[OptimizationService] Error waiting for agents: {e}")
+                
+                # Update completed list after waiting
+                completed = [i for i in instances if i.get("completed_at")]
+        
+        logger.info(f"[OptimizationService] Generation complete: {len(completed)}/{len(instances)} agents finished in {elapsed:.1f}s")
+        
+        # Sanity check
+        if len(completed) == 0 and len(instances) > 0:
+            logger.warning(
+                f"[OptimizationService] WARNING: 0/{len(instances)} agents completed after {elapsed:.1f}s. "
+                f"This may indicate agent startup failure or a bug."
+            )
+        
         return completed
 
     def _select_best_instance(
@@ -1197,6 +1242,7 @@ Please review the changes and run your tests before merging.
         instances: list[dict[str, Any]],
         baseline_score: float,
         min_improvement_pct: float,
+        higher_is_better: bool = True,
     ) -> dict[str, Any] | None:
         """Select the best significantly improved instance."""
         improved = []
@@ -1204,7 +1250,7 @@ Please review the changes and run your tests before merging.
             result = inst.get("worker_result", {})
             score = result.get("score")
             if score and result.get("success"):
-                is_sig, pct = is_significant_improvement(baseline_score, score, min_improvement_pct)
+                is_sig, pct = is_significant_improvement(baseline_score, score, min_improvement_pct, higher_is_better)
                 if is_sig:
                     inst["evaluation_score"] = score
                     inst["_improvement_pct"] = pct
@@ -1213,7 +1259,8 @@ Please review the changes and run your tests before merging.
         if not improved:
             return None
 
-        improved.sort(key=lambda x: x["evaluation_score"], reverse=True)
+        # Sort by score: descending if higher is better, ascending if lower is better
+        improved.sort(key=lambda x: x["evaluation_score"], reverse=higher_is_better)
         return improved[0]
 
     async def get_workflow_status(self, workflow_id: str) -> dict[str, Any] | None:

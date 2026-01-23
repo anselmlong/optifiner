@@ -54,27 +54,36 @@ npm install
 
 #### 1. Create an Evaluator
 
-Your codebase needs a benchmark script that returns a numeric score:
+Your codebase needs a benchmark script that outputs JSON with your metric:
 
 ```python
-# evaluate.py
+# optifiner_benchmark.py
+import json
 import subprocess
 import time
 
 def evaluate():
-    """Run benchmarks and return a score (higher is better)."""
+    """Run benchmarks and return a score."""
     start = time.time()
     result = subprocess.run(['python', 'main.py'], capture_output=True)
     elapsed = time.time() - start
 
-    # Parse results and calculate score
     if result.returncode == 0:
         return 100.0 / (elapsed + 1)  # Faster = higher score
     return 0.0
 
 if __name__ == '__main__':
-    print(evaluate())
+    score = evaluate()
+    # Output JSON format (supports both higher-is-better and lower-is-better metrics)
+    print(json.dumps({
+        "score": score,
+        "metric_name": "throughput",     # e.g., "FPS", "throughput", "cycles", "latency_ms"
+        "test_gate": True,               # Set False if tests fail
+        "higher_is_better": True,        # True for FPS/throughput, False for cycles/latency
+    }))
 ```
+
+**Metric Direction**: The system auto-detects whether higher or lower is better based on metric names like "cycles", "latency", "ms" (lower is better) vs "FPS", "throughput" (higher is better). You can also explicitly set `"higher_is_better": false` for lower-is-better metrics.
 
 #### 2. Run Evolution
 
@@ -201,7 +210,7 @@ REDIS_URL=redis://localhost:6379
 
 | Provider | Models |
 |----------|--------|
-| Anthropic | `claude-sonnet-4-20250514` |
+| Anthropic | `claude-opus-4-20250514`, `claude-sonnet-4-5-20250514`, `claude-haiku-4-20250514` |
 | Google | `gemini-2.5-flash`, `gemini-3-flash-preview` |
 | OpenAI | `gpt-4o`, `gpt-4-turbo` |
 

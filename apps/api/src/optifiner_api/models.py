@@ -243,11 +243,11 @@ class StepMetadata(BaseModel):
     )
     baseline_score: float = Field(
         ..., 
-        description="Score before this improvement"
+        description="Metric value before this improvement"
     )
     final_score: float = Field(
         ..., 
-        description="Score after this improvement"
+        description="Metric value after this improvement"
     )
     improvement: float = Field(
         ..., 
@@ -302,14 +302,24 @@ class OptimizationWorkflowStatus(BaseModel):
         description="Original branch that was cloned"
     )
     
-    # Scores
+    # Metric info
+    metric_name: str | None = Field(
+        None,
+        description="Name of the metric being optimized (e.g., 'FPS', 'cycles', 'latency_ms')"
+    )
+    higher_is_better: bool = Field(
+        True,
+        description="True if higher metric values are better (FPS), False if lower is better (cycles)"
+    )
+    
+    # Scores (metric values)
     baseline_score: float | None = Field(
         None, 
-        description="Initial baseline score before any optimization"
+        description="Initial baseline metric value before any optimization"
     )
     current_best_score: float | None = Field(
         None, 
-        description="Current best score achieved"
+        description="Current best metric value achieved"
     )
     
     # Progress tracking

@@ -112,11 +112,11 @@ export function NewProject() {
     setIsCreating(true)
     setError(null)
 
-    // Map model selection to provider/model_name
+    // Map model selection to provider/model_name (using actual Anthropic API model names)
     const modelMapping: Record<string, { provider: string; model_name: string }> = {
-      'claude-opus-4.5': { provider: 'anthropic', model_name: 'claude-opus-4.5' },
-      'claude-sonnet-4.5': { provider: 'anthropic', model_name: 'claude-sonnet-4.5' },
-      'claude-haiku-4.5': { provider: 'anthropic', model_name: 'claude-haiku-4.5' },
+      'claude-opus-4.5': { provider: 'anthropic', model_name: 'claude-opus-4-20250514' },
+      'claude-sonnet-4.5': { provider: 'anthropic', model_name: 'claude-sonnet-4-5-20250514' },
+      'claude-haiku-4.5': { provider: 'anthropic', model_name: 'claude-haiku-4-20250514' },
       'gpt-5.2-codex': { provider: 'openai', model_name: 'gpt-5.2-codex' },
       'gpt-5.2': { provider: 'openai', model_name: 'gpt-5.2' },
       'gemini-3-flash-preview': { provider: 'google', model_name: 'gemini-3-flash-preview' },
@@ -144,7 +144,7 @@ export function NewProject() {
         models,
         parallel: formData.parallelAgents,
         generations: formData.generations,
-        early_stop: true,
+        early_stop: false,  // Wait for all agents to complete and pick the best
       })
 
       if (!result) {
