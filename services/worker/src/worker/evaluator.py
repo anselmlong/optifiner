@@ -53,6 +53,8 @@ class EvaluationResult:
     tests_total: int | None = None
     metrics: dict[str, Any] | None = None
     message: str | None = None
+    metric_name: str | None = None
+    higher_is_better: bool | None = None  # True = higher is better (FPS), False = lower is better (cycles)
     error: str | None = None
     raw_output: str | None = None
     duration_seconds: float = 0.0
@@ -67,6 +69,8 @@ class EvaluationResult:
             "tests_total": self.tests_total,
             "metrics": self.metrics,
             "message": self.message,
+            "metric_name": self.metric_name,
+            "higher_is_better": self.higher_is_better,
             "error": self.error,
             "raw_output": self.raw_output,
             "duration_seconds": self.duration_seconds,
@@ -237,6 +241,11 @@ class EvaluatorQueue:
                     duration_seconds=duration,
                 ).to_dict()
             
+            # higher_is_better must be explicitly set by benchmark script
+            # Default to True if not specified (common case: FPS, throughput)
+            metric_name = data.get("metric_name")
+            higher_is_better = data.get("higher_is_better", True)
+            
             return EvaluationResult(
                 success=True,
                 score=float(score),
@@ -245,6 +254,8 @@ class EvaluatorQueue:
                 tests_total=data.get("tests_total"),
                 metrics=data.get("metrics"),
                 message=data.get("message"),
+                metric_name=metric_name,
+                higher_is_better=higher_is_better,
                 raw_output=output,
                 duration_seconds=duration,
             ).to_dict()

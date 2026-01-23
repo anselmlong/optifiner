@@ -142,7 +142,8 @@ class AgentObserver:
         
         if self.compact:
             self._compact_print(f"[cyan]▶ Started[/cyan]")
-        elif self.verbosity >= 1:
+        elif self.verbosity >= 2:
+            # Only show full panel in verbose mode
             self.console.print()
             self.console.print(Panel(
                 f"[bold cyan]Agent Starting[/bold cyan]\n\n"
@@ -151,6 +152,9 @@ class AgentObserver:
                 title="🚀 Agent Execution",
                 border_style="cyan",
             ))
+        elif self.verbosity >= 1:
+            # Minimal start message in normal mode
+            self.console.print(f"\n[cyan]▶ {agent_id}[/cyan]")
     
     def on_agent_end(self, agent_id: str, success: bool, summary: str = ""):
         """Called when an agent finishes execution."""
@@ -162,18 +166,24 @@ class AgentObserver:
         self._record_event(event)
         
         if self.compact:
-            status = "[green]✓[/green]" if success else "[red]✗[/red]"
-            summary_preview = summary[:200].replace('\n', ' ') + "..." if len(summary) > 200 else summary.replace('\n', ' ')
-            self._compact_print(f"{status} Done ({self.current_iteration} iters){f': {summary_preview}' if summary_preview else ''}")
+            if success:
+                # Make success very visible in compact mode
+                status = "[bold green]✓ IMPROVED[/bold green]"
+            else:
+                status = "[dim]✗[/dim]"
+            summary_preview = summary[:100].replace('\n', ' ')
+            if len(summary) > 100:
+                summary_preview += "..."
+            self._compact_print(f"{status} ({self.current_iteration} iters){f': {summary_preview}' if summary_preview else ''}")
         elif self.verbosity >= 1:
-            status = "[green]✓ Success[/green]" if success else "[red]✗ Failed[/red]"
+            status = "[bold green]✓ IMPROVED[/bold green]" if success else "[red]✗ No improvement[/red]"
             self.console.print()
             self.console.print(Panel(
                 f"{status}\n\n"
                 f"[dim]Iterations:[/dim] {self.current_iteration}\n"
                 f"[dim]Summary:[/dim] {summary or 'No summary'}",
                 title="🏁 Agent Complete",
-                border_style="green" if success else "red",
+                border_style="green" if success else "dim",
             ))
     
     def on_system_prompt(self, prompt: str):
@@ -229,13 +239,15 @@ class AgentObserver:
         
         if self.compact:
             pass  # Don't print iteration start in compact mode - wait for tool calls
-        elif self.verbosity >= 1:
+        elif self.verbosity >= 2:
+            # Only show iteration headers in verbose mode to reduce noise
             self.console.print()
             self.console.print(f"[bold yellow]━━━ Iteration {iteration} ━━━[/bold yellow]")
     
     def on_model_call_complete(self, duration_seconds: float):
         """Called when a model API call completes."""
-        if self.verbosity >= 1:
+        # Only show model call timing in verbose mode (>=2) to reduce noise
+        if self.verbosity >= 2 and not self.compact:
             self.console.print(f"[dim]  ⏱ Model call: {duration_seconds:.2f}s[/dim]")
     
     def on_iteration_end(self, iteration: int):
@@ -290,12 +302,8 @@ class AgentObserver:
                 tools_text = ", ".join(tc.get("name", "unknown") for tc in tool_calls)
                 self.console.print(f"[cyan]🔧 Tool calls:[/cyan] {tools_text}")
         
-        elif self.verbosity >= 1 and content:
-            # Minimal output - just show there was reasoning
-            preview = content[:100].replace("\n", " ")
-            if len(content) > 100:
-                preview += "..."
-            self.console.print(f"[magenta]🧠[/magenta] [dim]{preview}[/dim]")
+        # Skip reasoning preview in normal mode (verbosity=1) to reduce noise
+        # User can use -vv to see reasoning if needed
     
     def on_tool_call(self, tool_name: str, tool_input: dict[str, Any], call_id: str = ""):
         """Called when a tool is being invoked."""

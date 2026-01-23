@@ -9,8 +9,9 @@ run it directly using python or bash commands - only use this evaluate tool.
 Required output format from the benchmark script:
 {
     "score": <number>,           # Primary metric value (required, non-null)
-    "metric_name": "<string>",   # Name of the metric, e.g. "FPS", "throughput" (required)
+    "metric_name": "<string>",   # Name of the metric, e.g. "FPS", "throughput", "cycles" (required)
     "test_gate": <boolean>,      # Must be true for benchmark to pass (required)
+    "higher_is_better": <bool>,  # REQUIRED: True if higher scores are better (FPS), False if lower is better (cycles)
     "metrics": {...},            # Optional additional metrics
     "message": "<string>"        # Optional human-readable message
 }
@@ -18,6 +19,13 @@ Required output format from the benchmark script:
 The benchmark is considered successful when:
 1. test_gate is true
 2. score is not null
+
+Metric Direction (MUST be explicitly set by benchmark script):
+- higher_is_better=true: Higher scores are better (FPS, throughput, ops/sec)
+- higher_is_better=false: Lower scores are better (cycles, latency, execution time)
+
+IMPORTANT: The benchmark script MUST explicitly set higher_is_better.
+Do NOT rely on auto-detection - always specify it explicitly in your benchmark output.
 
 Once both conditions are met, the benchmark agent's job is complete and
 the code becomes the base for evolution agents.
@@ -103,6 +111,7 @@ class BenchmarkResult(BaseModel):
     score: float | None = None
     metric_name: str = "score"
     test_gate: bool = False
+    higher_is_better: bool = True  # True = higher scores better (FPS), False = lower better (cycles)
     metrics: dict[str, Any] = Field(default_factory=dict)
     message: str = ""
     error: str | None = None
@@ -184,10 +193,15 @@ def _parse_benchmark_output(output: str) -> BenchmarkResult:
     if test_gate is None:
         test_gate = data.get("passed", True)  # Legacy format used 'passed'
     
+    # higher_is_better must be explicitly set by the benchmark script
+    # Default to True if not specified (common case: FPS, throughput, etc.)
+    higher_is_better = data.get("higher_is_better", True)
+    
     return BenchmarkResult(
         score=data.get("score"),
         metric_name=metric_name,
         test_gate=bool(test_gate),
+        higher_is_better=bool(higher_is_better),
         metrics=data.get("metrics", {}),
         message=data.get("message", ""),
     )
@@ -284,11 +298,12 @@ def evaluate(message: str = "") -> str:
 
     The benchmark script must output JSON with this format:
     {
-        "score": <number>,        # Primary metric value (required, non-null)
-        "metric_name": "<string>", # Name like "FPS", "throughput" (required)
-        "test_gate": <boolean>,   # Must be true for success (required)
-        "metrics": {...},         # Optional additional metrics
-        "message": "<string>"     # Optional message
+        "score": <number>,         # Primary metric value (required, non-null)
+        "metric_name": "<string>", # Name like "FPS", "throughput", "cycles" (required)
+        "test_gate": <boolean>,    # Must be true for success (required)
+        "higher_is_better": <bool>,# true if higher scores are better, false if lower is better (required)
+        "metrics": {...},          # Optional additional metrics
+        "message": "<string>"      # Optional message
     }
 
     The benchmark passes when test_gate=true AND score is not null.

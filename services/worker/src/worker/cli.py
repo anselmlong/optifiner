@@ -40,6 +40,7 @@ from worker.observability import AgentObserver, set_observer
 from worker.workspace import WorkspaceManager, set_workspace, isolated_workspace, BENCHMARK_SCRIPT_NAME
 from worker.evaluator import get_evaluator, evaluate as queue_evaluate
 from worker.tools.evaluate import set_benchmark_dev_mode, BENCHMARK_TIMEOUT
+from worker.config import set_stop_event
 
 # Set up console for rich output
 console = Console()
@@ -51,7 +52,8 @@ _stop_generation = threading.Event()
 def is_significant_improvement(
     baseline_score: float,
     new_score: float,
-    min_improvement_pct: float = 3.0
+    min_improvement_pct: float = 3.0,
+    higher_is_better: bool = True,
 ) -> tuple[bool, float]:
     """Check if an improvement is statistically significant (above noise threshold).
     
@@ -59,19 +61,37 @@ def is_significant_improvement(
     This function filters out noise by requiring a minimum percentage improvement.
     
     Args:
-        baseline_score: The original score to compare against.
-        new_score: The new score after changes.
+        baseline_score: The original metric value to compare against.
+        new_score: The new metric value after changes.
         min_improvement_pct: Minimum improvement percentage required (default 3%).
+        higher_is_better: If True, higher values are better (e.g., FPS).
+                         If False, lower values are better (e.g., cycles, latency).
     
     Returns:
         Tuple of (is_significant, improvement_percent).
+        improvement_percent is always positive when there's an improvement.
     """
-    if baseline_score <= 0:
-        # Can't calculate percentage improvement with zero/negative baseline
-        return new_score > baseline_score, 0.0
+    if baseline_score == 0:
+        # Can't calculate percentage improvement with zero baseline
+        if higher_is_better:
+            return new_score > baseline_score, 0.0
+        else:
+            return new_score < baseline_score, 0.0
     
-    improvement_pct = ((new_score - baseline_score) / baseline_score) * 100
-    is_significant = improvement_pct >= min_improvement_pct
+    # Calculate raw percentage change
+    raw_change_pct = ((new_score - baseline_score) / abs(baseline_score)) * 100
+    
+    # Determine if this is an improvement based on direction
+    if higher_is_better:
+        # Higher is better: positive change is improvement
+        is_improvement = raw_change_pct > 0
+        improvement_pct = raw_change_pct if is_improvement else 0.0
+    else:
+        # Lower is better: negative change is improvement
+        is_improvement = raw_change_pct < 0
+        improvement_pct = -raw_change_pct if is_improvement else 0.0  # Make it positive for display
+    
+    is_significant = is_improvement and improvement_pct >= min_improvement_pct
     return is_significant, improvement_pct
 
 
@@ -331,6 +351,7 @@ def run_evaluator(
         data = {
             "score": score,
             "metric_name": result.get("metric_name"),
+            "higher_is_better": result.get("higher_is_better", True),  # Default to True for backwards compat
             "passed": result.get("passed"),
             "tests_passed": result.get("tests_passed"),
             "tests_total": result.get("tests_total"),
@@ -420,6 +441,9 @@ def run_single_agent_isolated(
     stop_event: threading.Event | None = None,
     compact: bool = False,
     min_improvement_pct: float = 3.0,
+    higher_is_better: bool = True,
+    metric_name: str = "score",
+    api_key: str | None = None,
 ) -> tuple[AgentResult, WorkspaceManager | None]:
     """Run a single evolution agent in an isolated workspace.
 
@@ -428,7 +452,7 @@ def run_single_agent_isolated(
         evaluator_path: Path to the evaluator script.
         agent_type: Type of agent to run.
         agent_id: Unique ID for this agent.
-        baseline_score: Current baseline score to beat.
+        baseline_score: Current baseline metric value to beat.
         task: Task description.
         max_iterations: Maximum iterations.
         model_provider: LLM provider.
@@ -439,6 +463,10 @@ def run_single_agent_isolated(
         stop_event: Optional threading.Event to check for early stopping.
         compact: Enable compact logging mode for parallel execution.
         min_improvement_pct: Minimum improvement percentage to consider significant.
+        higher_is_better: If True, higher metric values are better (e.g., FPS).
+                         If False, lower values are better (e.g., cycles, latency).
+        metric_name: Name of the metric being optimized.
+        api_key: API key for the model provider (thread-safe, avoids env var race conditions).
 
     Returns:
         Tuple of (AgentResult, workspace_manager). Workspace is kept if successful
@@ -483,6 +511,10 @@ def run_single_agent_isolated(
     # across all threads and causes race conditions in parallel execution.
     # The workspace module uses ContextVar and thread-local for isolation.
     set_workspace(workspace)
+    
+    # Set the stop event in thread-local storage so the agent can check it
+    # This allows the agent to stop early if another agent finds an improvement
+    set_stop_event(stop_event)
 
     # Configure evaluator for improver mode (timeouts are hard fails)
     set_benchmark_dev_mode(False)
@@ -518,8 +550,11 @@ def run_single_agent_isolated(
     set_observer(observer)
 
     # Build config
-    # Timeout for gemini flash model
-    model_timeout = 120.0 if "gemini" in model_name.lower() and "flash" in model_name.lower() else 60.0
+    # Timeout based on model: Gemini Flash 120s, Gemini Pro 600s, others 600s
+    if "gemini" in model_name.lower():
+        model_timeout = 120.0 if "flash" in model_name.lower() else 600.0
+    else:
+        model_timeout = 600.0
     try:
         config = WorkerConfig(
             model=ModelConfig(
@@ -529,6 +564,7 @@ def run_single_agent_isolated(
                 max_tokens=8192,
                 timeout=model_timeout,
                 max_retries=3,
+                api_key=api_key,  # Thread-safe: pass API key directly instead of env var
             ),
             agent_type=AgentType(agent_type),
             max_iterations=max_iterations,
@@ -538,6 +574,7 @@ def run_single_agent_isolated(
         observer.close()
         workspace.cleanup()
         set_workspace(None)
+        set_stop_event(None)
         return AgentResult(
             agent_id=agent_id,
             agent_type=agent_type,
@@ -548,36 +585,40 @@ def run_single_agent_isolated(
             duration_seconds=time.time() - start_time,
         ), None
 
-    # Build baseline info string - use score as the primary metric
-    # Score IS the metric (FPS, throughput, etc.) so don't show them separately
-    baseline_info = f"Current baseline score: {baseline_score}"
+    # Build baseline info string using the metric name
+    direction_hint = "higher is better" if higher_is_better else "lower is better"
+    baseline_info = f"Current baseline {metric_name}: {baseline_score} ({direction_hint})"
     if baseline_data:
         if "tests_passed" in baseline_data and "tests_total" in baseline_data:
             baseline_info += f"\nBaseline tests: {baseline_data['tests_passed']}/{baseline_data['tests_total']} passed"
         if "metrics" in baseline_data:
-            # Filter out the primary metric from additional metrics display to avoid confusion
-            # The score already represents the primary metric
             additional_metrics = {k: v for k, v in baseline_data["metrics"].items()}
             if additional_metrics:
                 metrics_str = ", ".join(f"{k}={v}" for k, v in additional_metrics.items())
                 baseline_info += f"\nBaseline metrics: {metrics_str}"
 
+    # Build success condition based on metric direction
+    if higher_is_better:
+        success_condition = f"{metric_name} > {baseline_score}"
+    else:
+        success_condition = f"{metric_name} < {baseline_score}"
+
     # Run the agent
     try:
-        final_task = f"""Optimize this codebase to improve its benchmark score (currently {baseline_score}).
+        final_task = f"""Optimize this codebase to improve its benchmark {metric_name} (currently {baseline_score}, {direction_hint}).
 
 {task}
 
 {baseline_info}
 
 ## Your Mission
-Find and fix ONE performance bottleneck to beat the baseline score of {baseline_score}.
+Find and fix ONE performance bottleneck to beat the baseline {metric_name} of {baseline_score}.
 
 ## Workflow
 1. **READ** the main files to understand the code structure
 2. **IDENTIFY** the biggest performance bottleneck (look for: nested loops, object creation in hot paths, redundant calculations, Python loops that could be vectorized)
 3. **IMPLEMENT** your optimization
-4. **VERIFY** with `evaluate` - if score > {baseline_score}, you've succeeded!
+4. **VERIFY** with `evaluate` - if {success_condition}, you've succeeded!
 
 ## Quick Wins to Look For
 - Nested loops over collections → spatial partitioning or hash maps
@@ -596,18 +637,26 @@ Don't run `evaluate` until you've made changes - the baseline is already measure
             baseline_score=baseline_score,
             observer=observer,
             min_improvement_pct=min_improvement_pct,
+            higher_is_better=higher_is_better,
+            metric_name=metric_name,
         )
 
-        # Extract the final score
-        final_score = extract_score_from_messages(state.messages)
+        # Extract the final score - prefer best_score tracked during run
+        # This ensures we capture improvements even if the agent later broke things
+        final_score = getattr(state, 'best_score', None)
+        
+        # Fall back to extracting best score from messages (finds BEST score, not last)
+        if final_score is None:
+            final_score = extract_score_from_messages(state.messages, higher_is_better=higher_is_better)
 
-        # If we couldn't extract from messages, run evaluator directly
+        # If we still couldn't get a score, run evaluator directly
         if final_score is None:
             eval_result = run_evaluator(evaluator_path, str(workspace.actual_root))
             final_score, eval_error = eval_result[0], eval_result[1]
             if eval_error:
                 observer.close()
                 set_workspace(None)
+                set_stop_event(None)
                 workspace.cleanup()
                 return AgentResult(
                     agent_id=agent_id,
@@ -623,13 +672,18 @@ Don't run `evaluate` until you've made changes - the baseline is already measure
             final_score = baseline_score
 
         improvement = final_score - baseline_score
-        success = improvement > 0
+        # Success depends on metric direction
+        if higher_is_better:
+            success = improvement > 0
+        else:
+            success = improvement < 0  # For lower-is-better metrics, negative change is improvement
 
         if verbosity >= 2:
             observer.print_summary()
 
         observer.close()
         set_workspace(None)
+        set_stop_event(None)
 
         # Keep workspace if successful for copying back
         if not success:
@@ -651,6 +705,7 @@ Don't run `evaluate` until you've made changes - the baseline is already measure
         observer.on_error(str(e))
         observer.close()
         set_workspace(None)
+        set_stop_event(None)
         workspace.cleanup()
         return AgentResult(
             agent_id=agent_id,
@@ -711,8 +766,11 @@ def run_benchmark_builder_cli(
     set_observer(observer)
     
     try:
-        # Timeout for gemini flash model
-        model_timeout = 120.0 if "gemini" in model_name.lower() and "flash" in model_name.lower() else 60.0
+        # Timeout based on model: Gemini Flash 120s, Gemini Pro 600s, others 600s
+        if "gemini" in model_name.lower():
+            model_timeout = 120.0 if "flash" in model_name.lower() else 600.0
+        else:
+            model_timeout = 600.0
         model_config = ModelConfig(
             provider=ModelProvider(model_provider),
             model_name=model_name,

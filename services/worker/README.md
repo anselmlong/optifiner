@@ -55,11 +55,11 @@ evolution-cli ./my-project \
     --parallel 4 \
     --generations 3
 
-# Use different model
+# Use different model (Claude Opus 4, Sonnet 4.5, or Haiku 4)
 evolution-cli ./project \
     --evaluator ./eval.py \
     --model-provider anthropic \
-    --model-name claude-sonnet-4-20250514
+    --model-name claude-sonnet-4-5-20250514  # or claude-opus-4-20250514
 ```
 
 ## Evaluator Script

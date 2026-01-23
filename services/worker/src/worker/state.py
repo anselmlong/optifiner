@@ -33,6 +33,9 @@ class AgentState(BaseModel):
     baseline_score: float | None = Field(default=None, description="Baseline benchmark score")
     baseline_data: dict | None = Field(default=None, description="Detailed baseline metrics (fps, tests, etc.)")
     current_score: float | None = Field(default=None, description="Current benchmark score after changes")
+    best_score: float | None = Field(default=None, description="Best score achieved during this agent's run (for tracking improvements)")
+    higher_is_better: bool = Field(default=True, description="If True, higher scores are better (FPS). If False, lower is better (cycles).")
+    metric_name: str = Field(default="score", description="Name of the metric being optimized")
 
     # Agent tracking
     agent_id: str = Field(default="", description="Unique identifier for this agent instance")

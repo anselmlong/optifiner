@@ -168,6 +168,7 @@ Your benchmark script MUST output JSON to stdout with this EXACT format:
     "score": 60.5,
     "metric_name": "FPS",
     "test_gate": true,
+    "higher_is_better": true,
     "metrics": {{
         "memory_mb": 128.5,
         "load_time_ms": 150
@@ -176,14 +177,19 @@ Your benchmark script MUST output JSON to stdout with this EXACT format:
 }}
 ```
 
-### Required Fields (ALL THREE ARE MANDATORY):
-- `score`: Primary benchmark score as a NUMBER (higher is better). Must NOT be null for success.
-- `metric_name`: STRING naming what the score measures (e.g., "FPS", "throughput", "benchmark_score")
+### Required Fields (ALL FOUR ARE MANDATORY):
+- `score`: Primary benchmark score as a NUMBER. Must NOT be null for success.
+- `metric_name`: STRING naming what the score measures (e.g., "FPS", "throughput", "cycles")
 - `test_gate`: BOOLEAN - true if all tests pass, false otherwise. Must be true for success.
+- `higher_is_better`: BOOLEAN - true if higher scores are better (FPS, throughput), false if lower is better (cycles, latency, time)
 
 ### Optional Fields:
 - `metrics`: Object with additional metrics
 - `message`: Human-readable summary
+
+### Examples of higher_is_better:
+- `true`: FPS, throughput, ops/sec, requests/sec, score (usually)
+- `false`: cycles, latency, time, ms, seconds, memory usage, cost
 
 ### SUCCESS CRITERIA:
 The benchmark is considered SUCCESSFUL when BOTH conditions are met:

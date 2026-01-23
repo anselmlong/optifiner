@@ -8,7 +8,7 @@ from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, Tool
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 
-from worker.config import AgentType, ModelConfig, WorkerConfig, get_llm
+from worker.config import AgentType, ModelConfig, WorkerConfig, get_llm, should_stop_early
 from worker.observability import AgentObserver, get_observer
 from worker.prompts import get_system_prompt
 from worker.state import AgentState
@@ -92,6 +92,8 @@ def create_evolution_agent(
             baseline_score=state.baseline_score,
             baseline_data=state.baseline_data,
             benchmark_timeout=state.benchmark_timeout,
+            higher_is_better=state.higher_is_better,
+            metric_name=state.metric_name,
         )
 
         # Log system prompt (only once per agent run)
@@ -205,60 +207,102 @@ def create_evolution_agent(
                 content = msg.content if isinstance(msg.content, str) else str(msg.content)
             
             # Check for improvement indicators in evaluate output
-            if "Score:" in content and state.baseline_score is not None:
+            # IMPORTANT: Only count scores from PASSED benchmarks - failed benchmarks are not valid
+            if "Score:" in content and "BENCHMARK PASSED" in content and state.baseline_score is not None:
                 # Try to extract score
                 import re
                 match = re.search(r"Score:\s*([\d.]+)", content)
                 if match:
                     try:
                         score = float(match.group(1))
-                        if score > state.baseline_score:
-                            return True
+                        # Compare based on metric direction
+                        if state.higher_is_better:
+                            if score > state.baseline_score:
+                                return True
+                        else:
+                            if score < state.baseline_score:
+                                return True
                     except ValueError:
                         pass
             
-            # Also check for explicit improvement messages
-            if "improved" in content.lower() and "score" in content.lower():
+            # Also check for explicit improvement messages (but only if benchmark passed)
+            if "improved" in content.lower() and "score" in content.lower() and "BENCHMARK FAILED" not in content:
                 return True
         
         return False
 
-    def check_evaluate_improvement_in_last_tool_result(state: AgentState) -> bool:
-        """Check if the most recent tool result was an evaluate that showed improvement."""
+    def extract_score_from_evaluate_result(content: str) -> float | None:
+        """Extract score from an evaluate tool result content."""
+        if "Score:" not in content:
+            return None
+        match = re.search(r"Score:\s*([\d.]+)", content)
+        if match:
+            try:
+                return float(match.group(1))
+            except ValueError:
+                pass
+        return None
+    
+    def check_evaluate_improvement_in_last_tool_result(state: AgentState) -> tuple[bool, float | None]:
+        """Check if the most recent tool result was an evaluate that showed improvement.
+        
+        Returns:
+            Tuple of (is_improvement, score). score is the extracted score if found.
+        """
         if not state.messages or state.baseline_score is None:
-            return False
+            return False, None
         
         # Look for the most recent ToolMessage
         for msg in reversed(state.messages):
             if isinstance(msg, ToolMessage):
                 content = msg.content if isinstance(msg.content, str) else str(msg.content)
                 
-                # Check if this is an evaluate result (contains Score: and BENCHMARK)
-                if "Score:" in content and "BENCHMARK" in content:
-                    # Extract score and compare to baseline with minimum improvement threshold
-                    match = re.search(r"Score:\s*([\d.]+)", content)
-                    if match:
-                        try:
-                            score = float(match.group(1))
-                            baseline = state.baseline_score
-                            if baseline > 0:
+                # Check if this is an evaluate result that PASSED (must have Score: and BENCHMARK PASSED)
+                # IMPORTANT: Reject scores from failed benchmarks - they are not valid improvements
+                if "Score:" in content and "BENCHMARK PASSED" in content:
+                    score = extract_score_from_evaluate_result(content)
+                    if score is not None:
+                        baseline = state.baseline_score
+                        if baseline > 0:
+                            # Calculate improvement percentage based on direction
+                            if state.higher_is_better:
+                                # Higher is better: positive change is improvement
                                 improvement_pct = ((score - baseline) / baseline) * 100
                                 if improvement_pct >= state.min_improvement_pct:
-                                    return True
-                            elif score > baseline:
-                                # Can't calculate percentage with zero/negative baseline
-                                return True
-                        except ValueError:
-                            pass
+                                    return True, score
+                            else:
+                                # Lower is better: negative change is improvement
+                                improvement_pct = ((baseline - score) / baseline) * 100
+                                if improvement_pct >= state.min_improvement_pct:
+                                    return True, score
+                        else:
+                            # Can't calculate percentage with zero/negative baseline
+                            # Check direct comparison based on direction
+                            if state.higher_is_better and score > baseline:
+                                return True, score
+                            elif not state.higher_is_better and score < baseline:
+                                return True, score
+                        # Score found but not an improvement
+                        return False, score
                 # Only check the most recent tool message
                 break
         
-        return False
+        return False, None
 
     # Define the routing function
     def should_continue(state: AgentState) -> Literal["tools", "retry", "end"]:
         """Determine whether to continue, retry, or end."""
         nonlocal retry_count
+        
+        # Check if another agent already found an improvement (early stop signal)
+        if should_stop_early():
+            if obs:
+                obs.on_agent_end(
+                    agent_id=state.agent_id or "anonymous",
+                    success=False,
+                    summary="Stopped early - another agent found improvement",
+                )
+            return "end"
         
         # Check iteration limit
         if state.iteration >= state.max_iterations:
@@ -296,15 +340,44 @@ def create_evolution_agent(
             obs.on_error(f"Agent failed to improve after {max_retries} retry prompts")
         return "end"
 
-    def should_continue_after_tools(state: AgentState) -> Literal["agent", "end"]:
-        """Check if we should continue after tool execution, or end early due to improvement."""
+    def should_continue_after_tools(state: AgentState) -> dict[str, Any] | Literal["agent", "end"]:
+        """Check if we should continue after tool execution, or end early due to improvement.
+        
+        Returns either:
+        - "agent" to continue
+        - "end" to stop
+        - A dict with state updates AND the next step
+        """
+        # Check if another agent already found an improvement (early stop signal)
+        if should_stop_early():
+            if obs:
+                obs.on_agent_end(
+                    agent_id=state.agent_id or "anonymous",
+                    success=False,
+                    summary="Stopped early - another agent found improvement",
+                )
+            return "end"
+        
         # Check if evaluate just returned an improved score - if so, end immediately
-        if check_evaluate_improvement_in_last_tool_result(state):
+        is_improvement, score = check_evaluate_improvement_in_last_tool_result(state)
+        
+        # Update best_score tracking if we got a valid score
+        if score is not None:
+            current_best = state.best_score
+            if current_best is None:
+                # First score - always track it
+                state.best_score = score
+            elif state.higher_is_better and score > current_best:
+                state.best_score = score
+            elif not state.higher_is_better and score < current_best:
+                state.best_score = score
+        
+        if is_improvement:
             if obs:
                 obs.on_agent_end(
                     agent_id=state.agent_id or "anonymous",
                     success=True,
-                    summary="Improved score achieved - stopping early",
+                    summary=f"Improved score achieved ({score}) - stopping early",
                 )
             return "end"
         return "agent"
@@ -388,6 +461,8 @@ def run_evolution_agent(
     observer: AgentObserver | None = None,
     benchmark_timeout: int | None = None,
     min_improvement_pct: float = 3.0,
+    higher_is_better: bool = True,
+    metric_name: str = "score",
 ) -> AgentState:
     """Run an evolution agent to completion.
 
@@ -401,6 +476,8 @@ def run_evolution_agent(
         observer: Optional observer for logging/tracing.
         benchmark_timeout: Timeout in seconds for benchmark execution. If None, uses thread-local value.
         min_improvement_pct: Minimum improvement percentage to stop early (default 3.0).
+        higher_is_better: If True, higher scores are better (FPS). If False, lower is better (cycles).
+        metric_name: Name of the metric being optimized.
 
     Returns:
         Final agent state after completion.
@@ -443,6 +520,8 @@ def run_evolution_agent(
         max_iterations=config.max_iterations,
         benchmark_timeout=actual_timeout,
         min_improvement_pct=min_improvement_pct,
+        higher_is_better=higher_is_better,
+        metric_name=metric_name,
     )
 
     # Log initial user message
@@ -472,22 +551,50 @@ def run_evolution_agent(
         raise
 
 
-def extract_score_from_messages(messages) -> float | None:
-    """Extract the latest score from agent messages."""
-    for msg in reversed(messages):
+def extract_score_from_messages(messages, higher_is_better: bool = True) -> float | None:
+    """Extract the best score from agent messages.
+    
+    Scans all messages for benchmark scores and returns the best one found.
+    This ensures we capture improvements even if the agent later made changes
+    that reduced the score or caused errors.
+    
+    IMPORTANT: Only scores from PASSED benchmarks are considered valid.
+    Scores from FAILED benchmarks are explicitly rejected.
+    
+    Args:
+        messages: List of messages to scan
+        higher_is_better: If True, returns highest score. If False, returns lowest.
+        
+    Returns:
+        Best score found, or None if no scores found.
+    """
+    scores = []
+    
+    for msg in messages:
         content = ""
         if hasattr(msg, "content"):
             content = msg.content if isinstance(msg.content, str) else str(msg.content)
 
-        # Look for "Score: X" pattern
-        match = re.search(r"Score:\s*([\d.]+)", content)
-        if match:
-            try:
-                return float(match.group(1))
-            except ValueError:
-                pass
-
-    return None
+        # Look for "Score: X" pattern in successful benchmarks
+        # Only count scores from passed benchmarks - NEVER from failed ones
+        if "Score:" in content and "BENCHMARK PASSED" in content:
+            match = re.search(r"Score:\s*([\d.]+)", content)
+            if match:
+                try:
+                    scores.append(float(match.group(1)))
+                except ValueError:
+                    pass
+    
+    if not scores:
+        # No passed benchmarks found - return None
+        # Do NOT fall back to failed benchmark scores, as they are invalid
+        return None
+    
+    # Return best score based on direction
+    if higher_is_better:
+        return max(scores)
+    else:
+        return min(scores)
 
 
 # Convenience functions for specific agent types

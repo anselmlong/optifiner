@@ -293,6 +293,13 @@ export function EvolutionMonitor() {
     clearLogs()
     clearAgents()
     
+    // Map display model names to actual Anthropic API model names
+    const modelNameMapping: Record<string, string> = {
+      'claude-opus-4.5': 'claude-opus-4-20250514',
+      'claude-sonnet-4.5': 'claude-sonnet-4-5-20250514',
+      'claude-haiku-4.5': 'claude-haiku-4-20250514',
+    }
+    
     try {
       const response = await api.startWorkflow({
         repo_url: project?.repository || '',
@@ -300,7 +307,7 @@ export function EvolutionMonitor() {
         user_prompt: config.userPrompt,
         models: config.models.map(m => ({
           provider: m.provider,
-          model_name: m.modelName,
+          model_name: modelNameMapping[m.modelName] || m.modelName,
           api_key: m.apiKey,
           instances: m.instances,
         })),
