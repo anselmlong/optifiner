@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     GITHUB_APP_CLIENT_ID: str | None = None  # GitHub App Client ID
 
     # Worker
-    WORKER_WORKSPACE_PATH: str = "apps/workspace"
+    WORKER_WORKSPACE_PATH: str = "/tmp/optifiner_workspaces"
 
     # CORS
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173", "http://localhost:8000"]

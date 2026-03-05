@@ -1,5 +1,9 @@
 # Optifiner API
 
+> **Status: Work in Progress** — The API backend is not required to use Optifiner. The core CLI in `services/worker/` works standalone without any server infrastructure. The API is for building web integrations and GitHub-based workflows on top of the evolution engine.
+>
+> **Prerequisites:** PostgreSQL, a GitHub App (for repo cloning), and the evolution worker running.
+
 REST API for code optimization workflows. This API provides complete feature parity with the CLI (`services/worker/src/worker/cli.py`).
 
 ## Quick Start

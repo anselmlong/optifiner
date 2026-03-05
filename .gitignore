@@ -113,6 +113,7 @@ celerybeat.pid
 sandbox_outputs/
 evolution_runs/
 .evolution_cache/
+apps/workspace/
 
 # Generated benchmarks
 benchmarks/generated/
