@@ -1,6 +1,7 @@
 import { motion } from 'framer-motion'
 import { Link } from 'react-router-dom'
-import { LandingButton } from './ui/button'
+import { LandingButton } from '@/components/ui/Button'
+
 
 const Header = () => {
   return (

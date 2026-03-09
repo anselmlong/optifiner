@@ -33,9 +33,8 @@ services:
 
   # API backend (FastAPI)
   api:
-    build:
-      context: ../..
-      dockerfile: infra/docker/Dockerfile.api
+      dockerfile: infra/docker/Dockerfile
+      target: api
     ports:
       - "8000:8000"
     environment:
@@ -54,9 +53,8 @@ services:
 
   # Worker container - runs LangGraph agents
   worker:
-    build:
-      context: ../..
-      dockerfile: infra/docker/Dockerfile.worker
+      dockerfile: infra/docker/Dockerfile
+      target: worker
     environment:
       - OPTIFINER_ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - OPTIFINER_GOOGLE_API_KEY=${GOOGLE_API_KEY}
@@ -81,9 +79,8 @@ services:
 
   # Web frontend (React)
   web:
-    build:
-      context: ../..
-      dockerfile: infra/docker/Dockerfile.web
+      dockerfile: infra/docker/Dockerfile
+      target: web
     ports:
       - "3000:3000"
     environment:
