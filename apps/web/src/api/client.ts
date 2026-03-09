@@ -20,12 +20,18 @@ export interface HealthStatus {
 
 export async function checkHealth(): Promise<ApiResponse<HealthStatus>> {
   try {
-    const response = await fetch('/health')
-    const data = await response.json()
-    if (!response.ok) {
-      return { error: data.detail || 'Health check failed' }
+    const response = await fetch('/api/v1/health') // Changed from /health
+    const text = await response.text()
+    
+    try {
+      const data = JSON.parse(text)
+      if (!response.ok) {
+        return { error: data.detail || 'Health check failed' }
+      }
+      return { data }
+    } catch (e) {
+      return { error: `Invalid JSON response: ${text.slice(0, 50)}...` }
     }
-    return { data }
   } catch (error) {
     return { error: error instanceof Error ? error.message : 'API not reachable' }
   }
@@ -33,12 +39,18 @@ export async function checkHealth(): Promise<ApiResponse<HealthStatus>> {
 
 export async function getApiInfo(): Promise<ApiResponse<{ name: string; version: string }>> {
   try {
-    const response = await fetch('/')
-    const data = await response.json()
-    if (!response.ok) {
-      return { error: data.detail || 'Failed to get API info' }
+    const response = await fetch('/api/v1/') // Changed from /
+    const text = await response.text()
+    
+    try {
+      const data = JSON.parse(text)
+      if (!response.ok) {
+        return { error: data.detail || 'Failed to get API info' }
+      }
+      return { data }
+    } catch (e) {
+      return { error: `Invalid JSON response: ${text.slice(0, 50)}...` }
     }
-    return { data }
   } catch (error) {
     return { error: error instanceof Error ? error.message : 'API not reachable' }
   }
@@ -57,7 +69,13 @@ async function fetchApi<T>(
       ...options,
     })
 
-    const data = await response.json()
+    const text = await response.text()
+    let data;
+    try {
+      data = JSON.parse(text)
+    } catch (e) {
+      return { error: `Invalid JSON response from ${endpoint}: ${text.slice(0, 50)}...` }
+    }
 
     if (!response.ok) {
       // Handle FastAPI/Pydantic validation errors (array of error objects)
