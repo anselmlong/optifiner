@@ -1,15 +1,18 @@
 {
   "version": 2,
-  "builds": [
-    {
-      "src": "api/main.py",
-      "use": "@vercel/python",
-      "config": { "runtime": "python3.11" }
-    }
-  ],
   "rewrites": [
-    { "source": "/api/(.*)", "destination": "api/main.py" },
-    { "source": "/health", "destination": "api/main.py" },
-    { "source": "/", "destination": "api/main.py" }
+    {
+      "source": "/api/v1/(.*)",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/health",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/apps/web/$1",
+      "check": true
+    }
   ]
 }
