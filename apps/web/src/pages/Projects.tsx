@@ -11,7 +11,7 @@ import {
   faChartLine,
   faFolder,
   faSpinner,
-  faHardDrive,
+  faHdd,
   faCheck,
   faExclamationTriangle
 } from '@fortawesome/free-solid-svg-icons'
@@ -134,7 +134,7 @@ export function Projects() {
           <Card className="cursor-pointer hover:border-amber-300 dark:hover:border-amber-700 transition-colors" onClick={() => setFilter('local')}>
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-lg bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center">
-                <FontAwesomeIcon icon={faHardDrive} className="text-amber-500" />
+                <FontAwesomeIcon icon={faHdd} className="text-amber-500" />
               </div>
               <div>
                 <p className="text-2xl font-bold text-slate-900 dark:text-white">{stats.local}</p>
@@ -225,7 +225,7 @@ export function Projects() {
                       : 'bg-gradient-to-br from-primary-400 to-primary-600'
                   }`}>
                     {project.isLocal ? (
-                      <FontAwesomeIcon icon={faHardDrive} className="text-lg" />
+                      <FontAwesomeIcon icon={faHdd} className="text-lg" />
                     ) : (
                       project.name.split(' ').map(w => w[0]).join('').slice(0, 2)
                     )}

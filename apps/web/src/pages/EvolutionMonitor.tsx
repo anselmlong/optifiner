@@ -7,7 +7,7 @@ import {
   faSearch,
   faCodeBranch,
   faMemory,
-  faGaugeHigh,
+  faTachometerAlt,
   faArrowLeft,
   faPlay,
   faPause,
@@ -533,7 +533,7 @@ export function EvolutionMonitor() {
                     <>
                       <Card>
                         <div className="flex items-center gap-2 mb-4">
-                          <FontAwesomeIcon icon={faGaugeHigh} className="text-primary-500" />
+                          <FontAwesomeIcon icon={faTachometerAlt} className="text-primary-500" />
                           <span className="text-sm font-semibold text-slate-900 dark:text-white">METRICS</span>
                         </div>
 
@@ -639,7 +639,7 @@ export function EvolutionMonitor() {
                 className={`p-2 rounded-lg transition-all ${activeTab === 'fitness' ? 'bg-primary-100 text-primary-600 dark:bg-primary-900/30 dark:text-primary-400' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'}`}
                 title="Fitness Overview"
                >
-                 <FontAwesomeIcon icon={faGaugeHigh} className="text-xl" />
+                 <FontAwesomeIcon icon={faTachometerAlt} className="text-xl" />
                </button>
                <button 
                 onClick={() => setActiveTab(activeTab === 'agents' ? null : 'agents')} 

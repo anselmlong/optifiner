@@ -6,10 +6,17 @@ export default {
   ],
   darkMode: 'class',
   theme: {
+    container: {
+      center: true,
+      padding: '2rem',
+      screens: { '2xl': '1400px' },
+    },
     extend: {
       colors: {
         // Primary brand colors - Green theme
         primary: {
+          DEFAULT: 'hsl(var(--primary) / <alpha-value>)',
+          foreground: 'hsl(var(--primary-foreground) / <alpha-value>)',
           50: '#F0FDF4',
           100: '#DCFCE7',
           200: '#BBEF63',
@@ -65,10 +72,10 @@ export default {
         info: {
           bg: '#DCFCE7',
           border: '#86EFAC',
-          text: '#166534',
+          text: '#166634',
           solid: '#22C55E',
           'bg-dark': '#14532D',
-          'border-dark': '#166534',
+          'border-dark': '#166634',
           'text-dark': '#86EFAC',
         },
         // Status colors
@@ -105,6 +112,7 @@ export default {
         },
         // Border colors - light
         border: {
+          DEFAULT: 'hsl(var(--border) / <alpha-value>)',
           primary: '#E2E8F0',
           secondary: '#CBD5E1',
           subtle: '#F1F5F9',
@@ -121,6 +129,35 @@ export default {
           variable: '#06B6D4',
           type: '#F97316',
         },
+        // -- Semantic tokens for landing page components --
+        background: 'hsl(var(--background) / <alpha-value>)',
+        foreground: 'hsl(var(--foreground) / <alpha-value>)',
+        card: {
+          DEFAULT: 'hsl(var(--card) / <alpha-value>)',
+          foreground: 'hsl(var(--card-foreground) / <alpha-value>)',
+        },
+        popover: {
+          DEFAULT: 'hsl(var(--popover) / <alpha-value>)',
+          foreground: 'hsl(var(--popover-foreground) / <alpha-value>)',
+        },
+        secondary: {
+          DEFAULT: 'hsl(var(--secondary) / <alpha-value>)',
+          foreground: 'hsl(var(--secondary-foreground) / <alpha-value>)',
+        },
+        muted: {
+          DEFAULT: 'hsl(var(--muted) / <alpha-value>)',
+          foreground: 'hsl(var(--muted-foreground) / <alpha-value>)',
+        },
+        accent: {
+          DEFAULT: 'hsl(var(--accent) / <alpha-value>)',
+          foreground: 'hsl(var(--accent-foreground) / <alpha-value>)',
+        },
+        destructive: {
+          DEFAULT: 'hsl(var(--destructive) / <alpha-value>)',
+          foreground: 'hsl(var(--destructive-foreground) / <alpha-value>)',
+        },
+        input: 'hsl(var(--input) / <alpha-value>)',
+        ring: 'hsl(var(--ring) / <alpha-value>)',
       },
       fontFamily: {
         sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'Helvetica Neue', 'Arial', 'sans-serif'],
@@ -163,6 +200,8 @@ export default {
         'spin-slow': 'spin 2s linear infinite',
         'fade-in': 'fadeIn 0.2s ease-out',
         'slide-up': 'slideUp 0.2s ease-out',
+        float: 'float 6s ease-in-out infinite',
+        'grid-move': 'grid-move 20s linear infinite',
       },
       keyframes: {
         fadeIn: {
@@ -172,6 +211,14 @@ export default {
         slideUp: {
           '0%': { opacity: '0', transform: 'translateY(10px)' },
           '100%': { opacity: '1', transform: 'translateY(0)' },
+        },
+        float: {
+          '0%, 100%': { transform: 'translateY(0)' },
+          '50%': { transform: 'translateY(-10px)' },
+        },
+        'grid-move': {
+          '0%': { transform: 'translateY(0)' },
+          '100%': { transform: 'translateY(40px)' },
         },
       },
     },

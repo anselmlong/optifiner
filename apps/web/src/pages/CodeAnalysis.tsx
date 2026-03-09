@@ -11,7 +11,7 @@ import {
   faLightbulb,
   faShieldAlt,
   faLink,
-  faCodeCompare,
+  faExchangeAlt,
   faArrowLeft
 } from '@fortawesome/free-solid-svg-icons'
 import { Button } from '../components/ui/Button'
@@ -107,7 +107,7 @@ export function CodeAnalysis() {
                 <div className="flex text-xs text-slate-500 gap-4">
                   <span className="flex items-center gap-1"><FontAwesomeIcon icon={faCodeBranch} /> master</span>
                   <span className="text-slate-300 dark:text-slate-600">→</span>
-                  <span className="flex items-center gap-1 text-primary-500 font-medium"><FontAwesomeIcon icon={faCodeCompare} /> {mockMutation.candidate}</span>
+                  <span className="flex items-center gap-1 text-primary-500 font-medium"><FontAwesomeIcon icon={faExchangeAlt} /> {mockMutation.candidate}</span>
                 </div>
               </div>
             </div>
