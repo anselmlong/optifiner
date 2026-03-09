@@ -1,10 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import { faGithub } from '@fortawesome/free-brands-svg-icons'
-import { EarlyAccessModal } from '../components/EarlyAccessModal'
 
 export const Landing = () => {
-  const [isEarlyAccessModalOpen, setIsEarlyAccessModalOpen] = useState(false)
   const [isVisible, setIsVisible] = useState({
     hero: false,
     section1: false,
@@ -254,12 +252,23 @@ export const Landing = () => {
           <div className={`${isVisible.cta ? 'fade-in-up' : 'opacity-0'}`}>
             <h2 className="text-4xl md:text-5xl font-bold mb-8 text-green-400 text-balance">Ready to evolve?</h2>
 
+<<<<<<< HEAD
             <button
               onClick={() => setIsEarlyAccessModalOpen(true)}
               className="inline-block px-8 py-4 border-2 border-green-500 text-green-500 font-bold text-lg hover:bg-green-500/10 transition-all duration-150 rounded hover:scale-105"
             >
               Sign up for early access →
             </button>
+=======
+            <a
+              href="https://github.com/anselmlong/optifiner"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-block px-8 py-4 border-2 border-green-500 text-green-500 font-bold text-lg hover:bg-green-500/10 transition-all duration-150 rounded hover:scale-105"
+            >
+              View on GitHub →
+            </a>
+>>>>>>> b282149dd4bf62387268a945bab360e9ff57f599
 
             <div className="mt-12 text-green-600 text-sm">
               <p className="terminal-prompt text-pretty">optifiner helps you create better code through evolution</p>
@@ -268,11 +277,14 @@ export const Landing = () => {
         </div>
       </section>
 
+<<<<<<< HEAD
       <EarlyAccessModal
         isOpen={isEarlyAccessModalOpen}
         onClose={() => setIsEarlyAccessModalOpen(false)}
       />
 
+=======
+>>>>>>> b282149dd4bf62387268a945bab360e9ff57f599
       {/* Footer */}
       <footer className="border-t border-green-900/30 bg-black/50 py-8 px-6">
         <div className="max-w-6xl mx-auto">
