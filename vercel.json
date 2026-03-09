@@ -11,8 +11,7 @@
     },
     {
       "source": "/(.*)",
-      "destination": "/apps/web/$1",
-      "check": true
+      "destination": "/apps/web/$1"
     }
   ]
 }
