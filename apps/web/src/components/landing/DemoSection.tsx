@@ -86,6 +86,34 @@ const DemoSection = () => {
           {/* Decorative elements */}
           <div className="absolute -z-10 -inset-8 bg-gradient-to-r from-primary/10 via-transparent to-primary/10 blur-3xl opacity-50" />
         </motion.div>
+
+        {/* Launch video: the whole idea in 20 seconds */}
+        <motion.div
+          initial={{ opacity: 0, y: 40 }}
+          whileInView={{ opacity: 1, y: 0 }}
+          viewport={{ once: true }}
+          transition={{ duration: 0.8 }}
+          className="max-w-3xl mx-auto mt-16"
+        >
+          <div className="rounded-2xl overflow-hidden border border-border bg-card">
+            <div className="flex items-center gap-2 px-4 py-3 bg-secondary/50 border-b border-border">
+              <div className="flex gap-2">
+                <div className="w-3 h-3 rounded-full bg-destructive/80" />
+                <div className="w-3 h-3 rounded-full bg-accent/80" />
+                <div className="w-3 h-3 rounded-full bg-primary/80" />
+              </div>
+              <span className="font-mono text-xs text-muted-foreground ml-4">optifiner-in-20-seconds.mp4</span>
+            </div>
+            <video
+              src="/videos/optifiner-launch.mp4"
+              poster="/videos/optifiner-launch.jpg"
+              className="w-full aspect-video bg-background"
+              controls
+              playsInline
+              preload="none"
+            />
+          </div>
+        </motion.div>
       </div>
     </section>
   )
