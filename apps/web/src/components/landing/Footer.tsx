@@ -28,6 +28,14 @@ const Footer = () => {
             >
               Devpost
             </a>
+            <a
+              href="https://ko-fi.com/anselmlong"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-muted-foreground hover:text-foreground transition-colors text-sm"
+            >
+              ☕ Ko-fi
+            </a>
           </div>
 
           <p className="text-sm text-muted-foreground">
